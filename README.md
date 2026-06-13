@@ -33,4 +33,8 @@ wasm-pack build crates/bin --target web --out-dir ../../pkg/compiler
 
 ## GitHub Pages
 
-`.github/workflows/pages.yml` 会在推送到 `main` 分支后发布静态页面。
+静态页面发布在 `gh-pages` 分支：
+
+```text
+https://open-nan.github.io/js_vm/
+```
