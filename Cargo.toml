@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/bin",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+js_token_core = { path = "crates/core" }
+wasm-bindgen = "0.2"
+swc_common = "14"
+swc_ecma_parser = "24"
+swc_ecma_ast = "15"

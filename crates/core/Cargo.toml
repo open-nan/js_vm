@@ -1,0 +1,6 @@
+[package]
+name = "js_token_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

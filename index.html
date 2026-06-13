@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JS VM Workbench</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #181b1f;
+      --panel-2: #1f2329;
+      --line: #313741;
+      --line-soft: #242a31;
+      --text: #e8edf2;
+      --muted: #9aa7b4;
+      --accent: #29b6a8;
+      --accent-2: #e7a93b;
+      --danger: #f16d75;
+      --code: #d7e0ea;
+      --shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    button,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    button {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: #20262d;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0 11px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #46515f;
+      background: #252c34;
+    }
+
+    button.primary {
+      border-color: #1d9187;
+      background: #168477;
+    }
+
+    button.primary:hover {
+      background: #1a9a8b;
+    }
+
+    button.icon {
+      width: 34px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 15px;
+    }
+
+    select {
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #14181d;
+      color: var(--text);
+      padding: 0 28px 0 10px;
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr) 28px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      background: #15181c;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand strong {
+      font-size: 15px;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(360px, 48%) minmax(380px, 52%);
+    }
+
+    .editor-pane,
+    .output-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 40px minmax(0, 1fr);
+      background: var(--panel);
+    }
+
+    .editor-pane {
+      border-right: 1px solid var(--line);
+    }
+
+    .pane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--panel-2);
+    }
+
+    .pane-title {
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: 0;
+      color: #cfd8e3;
+    }
+
+    .editor-shell {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      background: #111417;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 1.58;
+    }
+
+    .line-numbers {
+      margin: 0;
+      padding: 14px 10px 14px 0;
+      overflow: hidden;
+      text-align: right;
+      color: #64707d;
+      border-right: 1px solid #222830;
+      user-select: none;
+      white-space: pre;
+    }
+
+    .editor-stack {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .highlight-layer {
+      position: absolute;
+      inset: 0;
+      margin: 0;
+      padding: 14px 16px;
+      overflow: auto;
+      color: var(--code);
+      pointer-events: none;
+      tab-size: 2;
+      white-space: pre;
+      line-height: inherit;
+    }
+
+    .highlight-layer::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tok-keyword {
+      color: #6fb7ff;
+    }
+
+    .tok-control {
+      color: #d9a8ff;
+    }
+
+    .tok-string {
+      color: #8fd694;
+    }
+
+    .tok-template {
+      color: #9bd7ff;
+    }
+
+    .tok-number {
+      color: #f0c674;
+    }
+
+    .tok-comment {
+      color: #6f7f8f;
+      font-style: italic;
+    }
+
+    .tok-builtin {
+      color: #58d4c8;
+    }
+
+    .tok-function {
+      color: #f5d76e;
+    }
+
+    .tok-property {
+      color: #83c9ff;
+    }
+
+    .tok-operator {
+      color: #ff9f80;
+    }
+
+    .tok-punct {
+      color: #8d99a6;
+    }
+
+    #editor {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 14px 16px;
+      resize: none;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: transparent;
+      caret-color: var(--accent);
+      tab-size: 2;
+      white-space: pre;
+      overflow: auto;
+      line-height: inherit;
+      -webkit-text-fill-color: transparent;
+    }
+
+    #editor::selection {
+      background: rgba(41, 182, 168, 0.28);
+      -webkit-text-fill-color: transparent;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+      overflow: auto;
+    }
+
+    .tab {
+      height: 28px;
+      border-radius: 5px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border-color: transparent;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+
+    .tab.active {
+      color: #ffffff;
+      background: #263039;
+      border-color: #38434f;
+    }
+
+    .output-wrap {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: #111417;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line-soft);
+      background: #15191e;
+    }
+
+    .metric {
+      padding: 9px 12px;
+      border-right: 1px solid var(--line-soft);
+      min-width: 0;
+    }
+
+    .metric:last-child {
+      border-right: none;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .metric strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .output {
+      margin: 0;
+      padding: 14px 16px;
+      overflow: auto;
+      color: var(--code);
+      font: 13px/1.58 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .output.error {
+      color: #ffd8db;
+      background: #211416;
+    }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-top: 1px solid var(--line);
+      background: #15181c;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status-left,
+    .status-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      flex: 0 0 auto;
+    }
+
+    .dot.ready {
+      background: var(--accent);
+    }
+
+    .dot.error {
+      background: var(--danger);
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 42px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #20262d;
+      color: var(--text);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+      font-size: 13px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 900px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        min-height: 100%;
+        height: auto;
+        grid-template-rows: auto auto 28px;
+      }
+
+      .topbar {
+        min-height: 52px;
+        flex-wrap: wrap;
+        padding: 9px 10px;
+      }
+
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: 52vh 58vh;
+      }
+
+      .editor-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .meta-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <strong>JS VM Workbench</strong>
+        <span id="wasmState">WASM loading</span>
+      </div>
+      <div class="actions">
+        <select id="exampleSelect" aria-label="示例">
+          <option value="basic">基础执行</option>
+          <option value="extern">外部对象</option>
+          <option value="class">类与方法</option>
+          <option value="module">模块语法</option>
+          <option value="exception">异常</option>
+        </select>
+        <button id="compileBtn" class="primary" type="button" title="编译">▶</button>
+        <button id="executeBtn" type="button" title="执行">↵</button>
+        <button id="copyBtn" class="icon" type="button" title="复制当前输出">⧉</button>
+        <button id="clearBtn" class="icon" type="button" title="清空控制台">×</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="editor-pane">
+        <div class="pane-head">
+          <div class="pane-title">JavaScript</div>
+          <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
+        </div>
+        <div class="editor-shell">
+          <pre id="lineNumbers" class="line-numbers">1</pre>
+          <div class="editor-stack">
+            <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
+            <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section class="output-pane">
+        <div class="pane-head">
+          <div class="tabs" role="tablist" aria-label="输出">
+            <button class="tab active" type="button" data-view="ir">IR</button>
+            <button class="tab" type="button" data-view="bytecode">Bytecode</button>
+            <button class="tab" type="button" data-view="bytes">Bytes</button>
+            <button class="tab" type="button" data-view="run">Run</button>
+            <button class="tab" type="button" data-view="externs">Externs</button>
+          </div>
+          <div class="pane-title" id="compileTime">0ms</div>
+        </div>
+        <div class="output-wrap">
+          <div class="meta-grid">
+            <div class="metric"><span>IR</span><strong id="metricIr">0 lines</strong></div>
+            <div class="metric"><span>BYTECODE</span><strong id="metricBytecode">0 lines</strong></div>
+            <div class="metric"><span>BYTES</span><strong id="metricBytes">0 B</strong></div>
+            <div class="metric"><span>EXTERNS</span><strong id="metricExterns">0</strong></div>
+          </div>
+          <pre id="output" class="output"></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <div class="status-left">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">Initializing</span>
+      </div>
+      <div class="status-right">
+        <span id="sizeInfo">0 chars</span>
+        <span id="lineInfo">1 lines</span>
+      </div>
+    </footer>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script type="module">
+    import init, { Compiler } from './pkg/compiler/js_token_bin.js';
+
+    const examples = {
+      basic: `function fib(n) {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+const value = fib(6);
+value;`,
+      extern: `console.log("vm boot");
+console.log(1 + 2);
+
+const title = window.title;
+console.log(title);
+42;`,
+      class: `class Counter {
+  constructor(value) {
+    this.value = value;
+  }
+
+  inc() {
+    this.value = this.value + 1;
+    return this.value;
+  }
+}
+
+const counter = new Counter(3);
+counter.inc();`,
+      module: `import def, { value as importedValue } from "pkg";
+
+export class Box {
+  get() {
+    return importedValue;
+  }
+}
+
+export default def;`,
+      exception: `try {
+  throw "boom";
+} catch (err) {
+  console.log(err);
+} finally {
+  console.log("done");
+}
+
+7;`,
+    };
+
+    const state = {
+      compiler: null,
+      activeView: 'ir',
+      views: {
+        ir: '',
+        bytecode: '',
+        bytes: '',
+        run: '',
+        externs: '',
+      },
+      ready: false,
+      timer: 0,
+    };
+
+    const editor = document.getElementById('editor');
+    const highlightLayer = document.getElementById('highlightLayer');
+    const lineNumbers = document.getElementById('lineNumbers');
+    const output = document.getElementById('output');
+    const compileBtn = document.getElementById('compileBtn');
+    const executeBtn = document.getElementById('executeBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const exampleSelect = document.getElementById('exampleSelect');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const wasmState = document.getElementById('wasmState');
+    const cursorInfo = document.getElementById('cursorInfo');
+    const sizeInfo = document.getElementById('sizeInfo');
+    const lineInfo = document.getElementById('lineInfo');
+    const compileTime = document.getElementById('compileTime');
+    const metricIr = document.getElementById('metricIr');
+    const metricBytecode = document.getElementById('metricBytecode');
+    const metricBytes = document.getElementById('metricBytes');
+    const metricExterns = document.getElementById('metricExterns');
+    const toast = document.getElementById('toast');
+
+    editor.value = examples.basic;
+
+    const keywordSet = new Set([
+      'as', 'async', 'await', 'class', 'const', 'debugger', 'default', 'delete',
+      'export', 'extends', 'from', 'function', 'get', 'import', 'in', 'instanceof',
+      'let', 'new', 'of', 'return', 'set', 'static', 'super', 'this', 'typeof',
+      'var', 'void', 'with', 'yield',
+    ]);
+
+    const controlSet = new Set([
+      'break', 'case', 'catch', 'continue', 'do', 'else', 'finally', 'for',
+      'if', 'switch', 'throw', 'try', 'while',
+    ]);
+
+    const literalSet = new Set(['false', 'Infinity', 'NaN', 'null', 'true', 'undefined']);
+
+    const builtinSet = new Set([
+      'Array', 'Boolean', 'console', 'Date', 'Error', 'JSON', 'Map', 'Math',
+      'Number', 'Object', 'Promise', 'Reflect', 'RegExp', 'Set', 'String',
+      'Symbol', 'WeakMap', 'WeakSet', 'WebAssembly', 'window', 'document',
+      'globalThis',
+    ]);
+
+    function setStatus(kind, text) {
+      statusDot.className = `dot ${kind}`;
+      statusText.textContent = text;
+    }
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add('show');
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1300);
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function span(className, value) {
+      return `<span class="${className}">${escapeHtml(value)}</span>`;
+    }
+
+    function isIdentStart(char) {
+      return /[A-Za-z_$]/.test(char);
+    }
+
+    function isIdentPart(char) {
+      return /[A-Za-z0-9_$]/.test(char);
+    }
+
+    function readQuoted(source, start, quote) {
+      let index = start + 1;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === '\\') {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (char === quote) break;
+      }
+      return index;
+    }
+
+    function readTemplate(source, start) {
+      let index = start + 1;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === '\\') {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (char === '`') break;
+      }
+      return index;
+    }
+
+    function previousSignificant(source, index) {
+      let cursor = index - 1;
+      while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+      return cursor >= 0 ? source[cursor] : '';
+    }
+
+    function nextSignificant(source, index) {
+      let cursor = index;
+      while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+      return cursor < source.length ? source[cursor] : '';
+    }
+
+    function highlightJavaScript(source) {
+      let html = '';
+      let index = 0;
+
+      while (index < source.length) {
+        const char = source[index];
+        const next = source[index + 1] || '';
+
+        if (char === '/' && next === '/') {
+          const end = source.indexOf('\n', index);
+          const stop = end === -1 ? source.length : end;
+          html += span('tok-comment', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '/' && next === '*') {
+          const end = source.indexOf('*/', index + 2);
+          const stop = end === -1 ? source.length : end + 2;
+          html += span('tok-comment', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '"' || char === "'") {
+          const stop = readQuoted(source, index, char);
+          html += span('tok-string', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '`') {
+          const stop = readTemplate(source, index);
+          html += span('tok-template', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/\d/.test(char)) {
+          const match = source.slice(index).match(/^(?:0[xX][\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?n?)/);
+          if (match) {
+            html += span('tok-number', match[0]);
+            index += match[0].length;
+            continue;
+          }
+        }
+
+        if (isIdentStart(char)) {
+          let stop = index + 1;
+          while (stop < source.length && isIdentPart(source[stop])) stop += 1;
+          const word = source.slice(index, stop);
+          const prev = previousSignificant(source, index);
+          const nextSig = nextSignificant(source, stop);
+          if (controlSet.has(word)) {
+            html += span('tok-control', word);
+          } else if (keywordSet.has(word) || literalSet.has(word)) {
+            html += span('tok-keyword', word);
+          } else if (prev === '.') {
+            html += span('tok-property', word);
+          } else if (nextSig === '(') {
+            html += span('tok-function', word);
+          } else if (builtinSet.has(word)) {
+            html += span('tok-builtin', word);
+          } else {
+            html += escapeHtml(word);
+          }
+          index = stop;
+          continue;
+        }
+
+        if (/[+\-*%=&|!<>?:~^]/.test(char)) {
+          let stop = index + 1;
+          while (stop < source.length && /[+\-*%=&|!<>?:~^]/.test(source[stop])) stop += 1;
+          html += span('tok-operator', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/[()[\]{}.,;]/.test(char)) {
+          html += span('tok-punct', char);
+          index += 1;
+          continue;
+        }
+
+        html += escapeHtml(char);
+        index += 1;
+      }
+
+      return html || ' ';
+    }
+
+    function updateHighlight() {
+      highlightLayer.innerHTML = highlightJavaScript(editor.value);
+      highlightLayer.scrollTop = editor.scrollTop;
+      highlightLayer.scrollLeft = editor.scrollLeft;
+    }
+
+    function updateEditorStats() {
+      const text = editor.value;
+      const beforeCursor = text.slice(0, editor.selectionStart);
+      const lines = text.split('\n').length;
+      const line = beforeCursor.split('\n').length;
+      const col = beforeCursor.length - beforeCursor.lastIndexOf('\n');
+      lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
+      cursorInfo.textContent = `Ln ${line}, Col ${col}`;
+      sizeInfo.textContent = `${text.length} chars`;
+      lineInfo.textContent = `${lines} lines`;
+      updateHighlight();
+    }
+
+    function syncScroll() {
+      lineNumbers.scrollTop = editor.scrollTop;
+      highlightLayer.scrollTop = editor.scrollTop;
+      highlightLayer.scrollLeft = editor.scrollLeft;
+    }
+
+    function lineCount(text) {
+      return text ? text.split('\n').length : 0;
+    }
+
+    function formatBytes(bytes) {
+      return Array.from(bytes, (byte, index) => {
+        const hex = byte.toString(16).padStart(2, '0');
+        const prefix = index % 16 === 0 ? `${index.toString(16).padStart(6, '0')}: ` : '';
+        const suffix = index % 16 === 15 ? '\n' : ' ';
+        return `${prefix}${hex}${suffix}`;
+      }).join('').trimEnd();
+    }
+
+    function setActiveView(view) {
+      state.activeView = view;
+      document.querySelectorAll('.tab').forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.view === view);
+      });
+      output.classList.remove('error');
+      output.textContent = state.views[view] || '';
+    }
+
+    function updateMetrics(bytes, externs) {
+      metricIr.textContent = `${lineCount(state.views.ir)} lines`;
+      metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
+      metricBytes.textContent = `${bytes.length} B`;
+      metricExterns.textContent = `${externs.length}`;
+    }
+
+    function disposeCompiler() {
+      if (state.compiler) {
+        state.compiler.free();
+        state.compiler = null;
+      }
+    }
+
+    function compile() {
+      if (!state.ready) return;
+
+      const started = performance.now();
+      disposeCompiler();
+
+      try {
+        const compiler = new Compiler(editor.value);
+        const bytes = compiler.to_bytes();
+        const externs = compiler.extern_slots();
+        state.compiler = compiler;
+        state.views.ir = compiler.to_text();
+        state.views.bytecode = compiler.to_bytecode_text();
+        state.views.bytes = formatBytes(bytes);
+        state.views.externs = externs.length
+          ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
+          : '(empty)';
+        state.views.run = '';
+        compileTime.textContent = `${Math.round(performance.now() - started)}ms`;
+        updateMetrics(bytes, externs);
+        setStatus('ready', 'Compiled');
+        setActiveView(state.activeView);
+      } catch (err) {
+        state.views[state.activeView] = String(err);
+        output.classList.add('error');
+        output.textContent = String(err);
+        setStatus('error', 'Compile error');
+      }
+    }
+
+    function execute() {
+      if (!state.compiler) compile();
+      if (!state.compiler) return;
+
+      const logs = [];
+      const originalLog = console.log;
+      console.log = (...args) => {
+        logs.push(args.map(String).join(' '));
+        originalLog(...args);
+      };
+
+      try {
+        const result = state.compiler.execute();
+        state.views.run = [...logs, `=> ${result}`].join('\n');
+        setStatus('ready', 'Executed');
+      } catch (err) {
+        state.views.run = [...logs, String(err)].join('\n');
+        setStatus('error', 'Runtime error');
+      } finally {
+        console.log = originalLog;
+      }
+
+      setActiveView('run');
+    }
+
+    function scheduleCompile() {
+      window.clearTimeout(state.timer);
+      state.timer = window.setTimeout(compile, 220);
+    }
+
+    editor.addEventListener('input', () => {
+      updateEditorStats();
+      scheduleCompile();
+    });
+
+    editor.addEventListener('scroll', syncScroll);
+    editor.addEventListener('click', updateEditorStats);
+    editor.addEventListener('keyup', updateEditorStats);
+
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        editor.setRangeText('  ', start, end, 'end');
+        updateEditorStats();
+        scheduleCompile();
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        execute();
+      }
+    });
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => setActiveView(tab.dataset.view));
+    });
+
+    compileBtn.addEventListener('click', compile);
+    executeBtn.addEventListener('click', execute);
+
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(output.textContent);
+      showToast('Copied');
+    });
+
+    clearBtn.addEventListener('click', () => {
+      state.views.run = '';
+      if (state.activeView === 'run') output.textContent = '';
+      showToast('Cleared');
+    });
+
+    exampleSelect.addEventListener('change', () => {
+      editor.value = examples[exampleSelect.value];
+      updateEditorStats();
+      compile();
+      editor.focus();
+    });
+
+    window.addEventListener('beforeunload', disposeCompiler);
+
+    updateEditorStats();
+    setStatus('', 'Initializing');
+
+    try {
+      await init();
+      state.ready = true;
+      wasmState.textContent = 'WASM ready';
+      setStatus('ready', 'Ready');
+      compile();
+      editor.focus();
+    } catch (err) {
+      wasmState.textContent = 'WASM failed';
+      output.classList.add('error');
+      output.textContent = String(err);
+      setStatus('error', 'Initialization failed');
+    }
+  </script>
+</body>
+</html>

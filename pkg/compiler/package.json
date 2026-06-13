@@ -1,0 +1,15 @@
+{
+  "name": "js_token_bin",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "js_token_bin_bg.wasm",
+    "js_token_bin.js",
+    "js_token_bin.d.ts"
+  ],
+  "main": "js_token_bin.js",
+  "types": "js_token_bin.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

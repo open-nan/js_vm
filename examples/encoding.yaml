@@ -1,0 +1,51 @@
+magic: "JSTKBC01"
+
+opcodes:
+  MARKER: 0
+  LABEL: 1
+  DECLARE: 2
+  LOAD_CONST: 3
+  LOAD_NAME: 4
+  STORE_NAME: 5
+  STORE_MEMBER: 6
+  MOVE: 7
+  BINARY: 8
+  UNARY: 9
+  MEMBER: 10
+  ARRAY: 11
+  OBJECT: 12
+  CALL: 13
+  NEW: 14
+  TEMPLATE: 15
+  FUNCTION_START: 16
+  FUNCTION_END: 17
+  FUNCTION_EXPR_START: 18
+  FUNCTION_EXPR_END: 19
+  CLASS: 20
+  IMPORT: 21
+  EXPORT: 22
+  THROW: 23
+  TRY_START: 24
+  CATCH_START: 25
+  FINALLY_START: 26
+  TRY_END: 27
+  RETURN: 28
+  POP: 29
+  JUMP: 30
+  JUMP_IF_FALSE: 31
+  UNSUPPORTED: 32
+
+operand_tags:
+  register: 0
+  constant: 1
+  name: 2
+  label: 3
+  count: 4
+  none: 5
+
+constant_tags:
+  number: 0
+  string: 1
+  bool: 2
+  null: 3
+  undefined: 4

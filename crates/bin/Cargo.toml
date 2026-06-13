@@ -1,0 +1,22 @@
+[package]
+name = "js_token_bin"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "js-compiler"
+path = "src/bin/compiler.rs"
+
+[[bin]]
+name = "js-executor"
+path = "src/bin/executor.rs"
+
+[dependencies]
+js_token_core.workspace = true
+wasm-bindgen.workspace = true
+swc_common.workspace = true
+swc_ecma_parser.workspace = true
+swc_ecma_ast.workspace = true

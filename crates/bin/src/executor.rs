@@ -1,0 +1,1015 @@
+use std::{collections::BTreeMap, fmt};
+
+use js_token_core::{
+    BytecodeConstant, BytecodeInstruction, BytecodeModule, BytecodeOp, BytecodeOperand,
+};
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = log)]
+    fn wasm_console_log(value: &str);
+}
+
+#[derive(Debug, Default)]
+pub struct Executor {
+    registers: Vec<Value>,
+    globals: BTreeMap<String, Value>,
+    labels: BTreeMap<String, usize>,
+    last_value: Value,
+    exports: BTreeMap<String, Value>,
+}
+
+impl Executor {
+    pub fn run(module: &BytecodeModule) -> Result<Value, ExecuteError> {
+        let mut executor = Self::default();
+        executor.inject_externals(module.extern_slots.iter().cloned());
+        executor.labels = collect_labels(module)?;
+        match executor.execute_range(module, 0, module.instructions.len())? {
+            Flow::Value(value) | Flow::Return(value) => Ok(value),
+            Flow::Throw(value) => Err(ExecuteError::Thrown(value)),
+        }
+    }
+
+    pub fn run_with_external_names(
+        module: &BytecodeModule,
+        externals: &[String],
+    ) -> Result<Value, ExecuteError> {
+        let mut executor = Self::default();
+        executor.inject_externals(module.extern_slots.iter().cloned());
+        executor.inject_externals(externals.iter().cloned());
+        executor.labels = collect_labels(module)?;
+        match executor.execute_range(module, 0, module.instructions.len())? {
+            Flow::Value(value) | Flow::Return(value) => Ok(value),
+            Flow::Throw(value) => Err(ExecuteError::Thrown(value)),
+        }
+    }
+
+    fn inject_externals(&mut self, externals: impl IntoIterator<Item = String>) {
+        for name in externals {
+            self.globals
+                .entry(name.clone())
+                .or_insert(Value::ExternalObject(name));
+        }
+    }
+
+    fn execute_range(
+        &mut self,
+        module: &BytecodeModule,
+        start: usize,
+        end: usize,
+    ) -> Result<Flow, ExecuteError> {
+        let mut pc = start;
+        while pc < end {
+            let instruction = &module.instructions[pc];
+            match instruction.op {
+                BytecodeOp::Marker | BytecodeOp::Label | BytecodeOp::Declare => {}
+                BytecodeOp::LoadConst => {
+                    let dst = register(instruction, 0)?;
+                    let value = self.read_value(module, operand(instruction, 1)?)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::LoadName => {
+                    let dst = register(instruction, 0)?;
+                    let name = self.read_name(module, operand(instruction, 1)?)?;
+                    let value = self.get_name(&name);
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::StoreName => {
+                    let name = self.read_name(module, operand(instruction, 0)?)?;
+                    let value = self.read_value(module, operand(instruction, 1)?)?;
+                    self.globals.insert(name, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::StoreMember => {
+                    let object_operand = operand(instruction, 0)?;
+                    let mut object = self.read_value(module, object_operand)?;
+                    let property = self.read_constant_string(module, operand(instruction, 1)?)?;
+                    let value = self.read_value(module, operand(instruction, 2)?)?;
+                    set_member(&mut object, &property, value.clone())?;
+                    self.write_operand_target(module, object_operand, object)?;
+                    self.last_value = value;
+                }
+                BytecodeOp::Move => {
+                    let dst = register(instruction, 0)?;
+                    let value = self.read_value(module, operand(instruction, 1)?)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Binary => {
+                    let dst = register(instruction, 0)?;
+                    let op = self.read_constant_string(module, operand(instruction, 1)?)?;
+                    let left = self.read_value(module, operand(instruction, 2)?)?;
+                    let right = self.read_value(module, operand(instruction, 3)?)?;
+                    let value = binary(&op, left, right)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Unary => {
+                    let dst = register(instruction, 0)?;
+                    let op = self.read_constant_string(module, operand(instruction, 1)?)?;
+                    let arg = self.read_value(module, operand(instruction, 2)?)?;
+                    let value = unary(&op, arg)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Member => {
+                    let dst = register(instruction, 0)?;
+                    let object = self.read_value(module, operand(instruction, 1)?)?;
+                    let property = self.read_constant_string(module, operand(instruction, 2)?)?;
+                    let value = get_member(&object, &property);
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Array => {
+                    let dst = register(instruction, 0)?;
+                    let count = count_operand(instruction, 1)? as usize;
+                    let mut items = Vec::with_capacity(count);
+                    for index in 0..count {
+                        items.push(self.read_value(module, operand(instruction, 2 + index)?)?);
+                    }
+                    let value = Value::Array(items);
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Object => {
+                    let dst = register(instruction, 0)?;
+                    let count = count_operand(instruction, 1)? as usize;
+                    let mut props = BTreeMap::new();
+                    for index in 0..count {
+                        let key = self
+                            .read_constant_string(module, operand(instruction, 2 + index * 2)?)?;
+                        let value =
+                            self.read_value(module, operand(instruction, 3 + index * 2)?)?;
+                        props.insert(key, value);
+                    }
+                    let value = Value::Object(props);
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Call => {
+                    let dst = register(instruction, 0)?;
+                    let callee = self.read_value(module, operand(instruction, 1)?)?;
+                    let count = count_operand(instruction, 2)? as usize;
+                    let args = self.read_args(module, instruction, 3, count)?;
+                    let value = self.call(module, callee, args)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::New => {
+                    let dst = register(instruction, 0)?;
+                    let callee = self.read_value(module, operand(instruction, 1)?)?;
+                    let count = count_operand(instruction, 2)? as usize;
+                    let args = self.read_args(module, instruction, 3, count)?;
+                    let value = self.construct(module, callee, args)?;
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::Template => {
+                    let dst = register(instruction, 0)?;
+                    let quasi_count = count_operand(instruction, 1)? as usize;
+                    let mut out = String::new();
+                    for index in 0..quasi_count {
+                        out.push_str(
+                            &self.read_constant_string(module, operand(instruction, 2 + index)?)?,
+                        );
+                        if let Ok(expr) = operand(instruction, 3 + quasi_count + index) {
+                            out.push_str(&self.read_value(module, expr)?.to_string());
+                        }
+                    }
+                    let value = Value::String(out);
+                    self.write_register(dst, value.clone());
+                    self.last_value = value;
+                }
+                BytecodeOp::FunctionStart => {
+                    let function = self.function_from_start(module, pc, false)?;
+                    let name = self.read_name(module, operand(instruction, 0)?)?;
+                    let end_pc = function.end_pc;
+                    self.globals.insert(name, Value::Function(function));
+                    pc = end_pc + 1;
+                    continue;
+                }
+                BytecodeOp::FunctionExprStart => {
+                    let dst = register(instruction, 0)?;
+                    let function = self.function_from_start(module, pc, true)?;
+                    let end_pc = function.end_pc;
+                    self.write_register(dst, Value::Function(function));
+                    pc = end_pc + 1;
+                    continue;
+                }
+                BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                    return Ok(Flow::Value(self.last_value.clone()));
+                }
+                BytecodeOp::Class => {
+                    let value = self.class_from_instruction(module, instruction)?;
+                    if let BytecodeOperand::Register(dst) = operand(instruction, 0)? {
+                        self.write_register(*dst, value.clone());
+                    }
+                    if let BytecodeOperand::Name(index) = operand(instruction, 1)? {
+                        self.globals
+                            .insert(constant_string(module, *index)?, value.clone());
+                    }
+                    self.last_value = value;
+                }
+                BytecodeOp::Import => {
+                    let source = self.read_constant_string(module, operand(instruction, 0)?)?;
+                    self.last_value = Value::Module(ModuleValue {
+                        source,
+                        exports: BTreeMap::new(),
+                    });
+                }
+                BytecodeOp::Export => {
+                    let count = count_operand(instruction, 1)? as usize;
+                    for index in 0..count {
+                        let name = self.read_name(module, operand(instruction, 2 + index)?)?;
+                        self.exports.insert(name.clone(), self.get_name(&name));
+                    }
+                }
+                BytecodeOp::TryStart => {
+                    let parts = find_try_parts(module, pc)?;
+                    let flow = self.execute_range(module, parts.body_start, parts.body_end)?;
+                    let flow = match flow {
+                        Flow::Throw(value) if parts.catch_start < parts.catch_end => {
+                            if let Some(param) = parts.catch_param {
+                                self.globals.insert(param, value);
+                            }
+                            self.execute_range(module, parts.catch_start, parts.catch_end)?
+                        }
+                        flow => flow,
+                    };
+                    let flow = if parts.finally_start < parts.finally_end {
+                        match self.execute_range(module, parts.finally_start, parts.finally_end)? {
+                            Flow::Value(_) => flow,
+                            final_flow => final_flow,
+                        }
+                    } else {
+                        flow
+                    };
+                    pc = parts.end + 1;
+                    match flow {
+                        Flow::Value(value) => self.last_value = value,
+                        Flow::Return(value) => return Ok(Flow::Return(value)),
+                        Flow::Throw(value) => return Ok(Flow::Throw(value)),
+                    }
+                    continue;
+                }
+                BytecodeOp::CatchStart | BytecodeOp::FinallyStart | BytecodeOp::TryEnd => {
+                    return Ok(Flow::Value(self.last_value.clone()));
+                }
+                BytecodeOp::Throw => {
+                    let value = self.read_value(module, operand(instruction, 0)?)?;
+                    return Ok(Flow::Throw(value));
+                }
+                BytecodeOp::Return => {
+                    let value = self.read_value(module, operand(instruction, 0)?)?;
+                    return Ok(Flow::Return(value));
+                }
+                BytecodeOp::Pop => {
+                    self.last_value = self.read_value(module, operand(instruction, 0)?)?;
+                }
+                BytecodeOp::Jump => {
+                    let label = self.read_label(module, operand(instruction, 0)?)?;
+                    pc = *self
+                        .labels
+                        .get(&label)
+                        .ok_or_else(|| ExecuteError::UnknownLabel(label))?;
+                    continue;
+                }
+                BytecodeOp::JumpIfFalse => {
+                    let test = self.read_value(module, operand(instruction, 0)?)?;
+                    if !test.is_truthy() {
+                        let label = self.read_label(module, operand(instruction, 1)?)?;
+                        pc = *self
+                            .labels
+                            .get(&label)
+                            .ok_or_else(|| ExecuteError::UnknownLabel(label))?;
+                        continue;
+                    }
+                }
+                BytecodeOp::Unsupported => {
+                    return Err(ExecuteError::Unsupported(instruction.op.mnemonic()));
+                }
+            }
+            pc += 1;
+        }
+        Ok(Flow::Value(self.last_value.clone()))
+    }
+
+    fn read_args(
+        &self,
+        module: &BytecodeModule,
+        instruction: &BytecodeInstruction,
+        offset: usize,
+        count: usize,
+    ) -> Result<Vec<Value>, ExecuteError> {
+        (0..count)
+            .map(|index| self.read_value(module, operand(instruction, offset + index)?))
+            .collect()
+    }
+
+    fn call(
+        &self,
+        module: &BytecodeModule,
+        callee: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, ExecuteError> {
+        match callee {
+            Value::Function(function) => {
+                self.call_function(module, &function, Value::Undefined, args)
+            }
+            Value::BoundFunction(function, this_value) => {
+                self.call_function(module, &function, *this_value, args)
+            }
+            Value::NativeFunction(name) => call_native(&name, args),
+            Value::Class(class) => Ok(Value::Object(class.static_props)),
+            _ => Err(ExecuteError::Runtime(format!("{callee} is not callable"))),
+        }
+    }
+
+    fn construct(
+        &self,
+        module: &BytecodeModule,
+        callee: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, ExecuteError> {
+        match callee {
+            Value::Class(class) => Ok(Value::Object(class.static_props)),
+            Value::Function(function) => {
+                let this_value = Value::Object(BTreeMap::new());
+                let result = self.call_function(module, &function, this_value.clone(), args)?;
+                if matches!(result, Value::Undefined) {
+                    Ok(this_value)
+                } else {
+                    Ok(result)
+                }
+            }
+            Value::BoundFunction(function, this_value) => {
+                self.call_function(module, &function, *this_value, args)
+            }
+            _ => Err(ExecuteError::Runtime(format!(
+                "{callee} is not constructable"
+            ))),
+        }
+    }
+
+    fn call_function(
+        &self,
+        module: &BytecodeModule,
+        function: &FunctionValue,
+        this_value: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, ExecuteError> {
+        let mut frame = Executor {
+            registers: Vec::new(),
+            globals: function.env.clone(),
+            labels: collect_labels(module)?,
+            last_value: Value::Undefined,
+            exports: self.exports.clone(),
+        };
+        for (name, value) in &self.globals {
+            frame
+                .globals
+                .entry(name.clone())
+                .or_insert_with(|| value.clone());
+        }
+        frame.globals.insert("this".to_string(), this_value);
+        for (index, param) in function.params.iter().enumerate() {
+            frame.globals.insert(
+                param.clone(),
+                args.get(index).cloned().unwrap_or(Value::Undefined),
+            );
+        }
+        match frame.execute_range(module, function.body_start, function.body_end)? {
+            Flow::Value(value) | Flow::Return(value) => Ok(value),
+            Flow::Throw(value) => Err(ExecuteError::Thrown(value)),
+        }
+    }
+
+    fn function_from_start(
+        &self,
+        module: &BytecodeModule,
+        pc: usize,
+        expr: bool,
+    ) -> Result<FunctionValue, ExecuteError> {
+        let instruction = &module.instructions[pc];
+        let (name_operand_index, param_count_index, param_start) =
+            if expr { (1, 2, 3) } else { (0, 1, 2) };
+        let name = match operand(instruction, name_operand_index)? {
+            BytecodeOperand::None => None,
+            operand => Some(self.read_name(module, operand)?),
+        };
+        let param_count = count_operand(instruction, param_count_index)? as usize;
+        let mut params = Vec::with_capacity(param_count);
+        for index in 0..param_count {
+            params.push(self.read_name(module, operand(instruction, param_start + index)?)?);
+        }
+        let end_op = if expr {
+            BytecodeOp::FunctionExprEnd
+        } else {
+            BytecodeOp::FunctionEnd
+        };
+        let end_pc = find_matching_end(module, pc + 1, end_op)?;
+        Ok(FunctionValue {
+            name,
+            params,
+            body_start: pc + 1,
+            body_end: end_pc,
+            end_pc,
+            env: self.globals.clone(),
+        })
+    }
+
+    fn class_from_instruction(
+        &self,
+        module: &BytecodeModule,
+        instruction: &BytecodeInstruction,
+    ) -> Result<Value, ExecuteError> {
+        let name = match operand(instruction, 1)? {
+            BytecodeOperand::None => None,
+            operand => Some(self.read_name(module, operand)?),
+        };
+        let member_count = count_operand(instruction, 3)? as usize;
+        let mut static_props = BTreeMap::new();
+        for index in 0..member_count {
+            let member = self.read_constant_string(module, operand(instruction, 4 + index)?)?;
+            static_props.insert(member, Value::Undefined);
+        }
+        Ok(Value::Class(ClassValue { name, static_props }))
+    }
+
+    fn read_value(
+        &self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+    ) -> Result<Value, ExecuteError> {
+        match operand {
+            BytecodeOperand::Register(index) => Ok(self
+                .registers
+                .get(*index as usize)
+                .cloned()
+                .unwrap_or(Value::Undefined)),
+            BytecodeOperand::Constant(index) => constant_value(module, *index),
+            BytecodeOperand::Name(index) => {
+                let name = constant_string(module, *index)?;
+                Ok(self.get_name(&name))
+            }
+            BytecodeOperand::None => Ok(Value::Undefined),
+            BytecodeOperand::Label(_) | BytecodeOperand::Count(_) => {
+                Err(ExecuteError::InvalidOperand("value"))
+            }
+        }
+    }
+
+    fn get_name(&self, name: &str) -> Value {
+        self.globals.get(name).cloned().unwrap_or(Value::Undefined)
+    }
+
+    fn read_name(
+        &self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+    ) -> Result<String, ExecuteError> {
+        match operand {
+            BytecodeOperand::Name(index) | BytecodeOperand::Constant(index) => {
+                constant_string(module, *index)
+            }
+            _ => Err(ExecuteError::InvalidOperand("name")),
+        }
+    }
+
+    fn read_label(
+        &self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+    ) -> Result<String, ExecuteError> {
+        match operand {
+            BytecodeOperand::Label(index) | BytecodeOperand::Constant(index) => {
+                constant_string(module, *index)
+            }
+            _ => Err(ExecuteError::InvalidOperand("label")),
+        }
+    }
+
+    fn read_constant_string(
+        &self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+    ) -> Result<String, ExecuteError> {
+        match operand {
+            BytecodeOperand::Constant(index) => constant_string(module, *index),
+            _ => Err(ExecuteError::InvalidOperand("constant string")),
+        }
+    }
+
+    fn write_operand_target(
+        &mut self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+        value: Value,
+    ) -> Result<(), ExecuteError> {
+        match operand {
+            BytecodeOperand::Register(index) => {
+                self.write_register(*index, value);
+                Ok(())
+            }
+            BytecodeOperand::Name(index) => {
+                self.globals.insert(constant_string(module, *index)?, value);
+                Ok(())
+            }
+            _ => Err(ExecuteError::InvalidOperand("assignable object")),
+        }
+    }
+
+    fn write_register(&mut self, index: u32, value: Value) {
+        let index = index as usize;
+        if self.registers.len() <= index {
+            self.registers.resize(index + 1, Value::Undefined);
+        }
+        self.registers[index] = value;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Flow {
+    Value(Value),
+    Return(Value),
+    Throw(Value),
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum Value {
+    Number(f64),
+    String(String),
+    Bool(bool),
+    Array(Vec<Value>),
+    Object(BTreeMap<String, Value>),
+    Function(FunctionValue),
+    BoundFunction(FunctionValue, Box<Value>),
+    ExternalObject(String),
+    NativeFunction(String),
+    Class(ClassValue),
+    Module(ModuleValue),
+    Null,
+    #[default]
+    Undefined,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionValue {
+    pub name: Option<String>,
+    pub params: Vec<String>,
+    pub body_start: usize,
+    pub body_end: usize,
+    pub env: BTreeMap<String, Value>,
+    end_pc: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassValue {
+    pub name: Option<String>,
+    pub static_props: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleValue {
+    pub source: String,
+    pub exports: BTreeMap<String, Value>,
+}
+
+impl Value {
+    fn is_truthy(&self) -> bool {
+        match self {
+            Value::Number(value) => *value != 0.0 && !value.is_nan(),
+            Value::String(value) => !value.is_empty(),
+            Value::Bool(value) => *value,
+            Value::Array(_)
+            | Value::Object(_)
+            | Value::Function(_)
+            | Value::BoundFunction(_, _)
+            | Value::ExternalObject(_)
+            | Value::NativeFunction(_)
+            | Value::Class(_)
+            | Value::Module(_) => true,
+            Value::Null | Value::Undefined => false,
+        }
+    }
+
+    fn to_number(&self) -> f64 {
+        match self {
+            Value::Number(value) => *value,
+            Value::String(value) => value.parse().unwrap_or(f64::NAN),
+            Value::Bool(value) => f64::from(*value as u8),
+            Value::Null => 0.0,
+            Value::Array(_)
+            | Value::Object(_)
+            | Value::Function(_)
+            | Value::BoundFunction(_, _)
+            | Value::ExternalObject(_)
+            | Value::NativeFunction(_)
+            | Value::Class(_)
+            | Value::Module(_)
+            | Value::Undefined => f64::NAN,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Number(value) => write!(f, "{value}"),
+            Value::String(value) => write!(f, "{value}"),
+            Value::Bool(value) => write!(f, "{value}"),
+            Value::Array(items) => {
+                let items = items
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                write!(f, "[{items}]")
+            }
+            Value::Object(_) => write!(f, "[object Object]"),
+            Value::Function(function) => write!(
+                f,
+                "function {}",
+                function.name.as_deref().unwrap_or("<anonymous>")
+            ),
+            Value::BoundFunction(function, _) => write!(
+                f,
+                "function {}",
+                function.name.as_deref().unwrap_or("<anonymous>")
+            ),
+            Value::ExternalObject(name) => write!(f, "[external {name}]"),
+            Value::NativeFunction(name) => write!(f, "function {name}"),
+            Value::Class(class) => write!(
+                f,
+                "class {}",
+                class.name.as_deref().unwrap_or("<anonymous>")
+            ),
+            Value::Module(module) => write!(f, "module {}", module.source),
+            Value::Null => write!(f, "null"),
+            Value::Undefined => write!(f, "undefined"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecuteError {
+    MissingOperand { op: &'static str, index: usize },
+    InvalidOperand(&'static str),
+    BadConstant(u32),
+    UnknownLabel(String),
+    Unsupported(&'static str),
+    Thrown(Value),
+    Runtime(String),
+}
+
+impl fmt::Display for ExecuteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecuteError::MissingOperand { op, index } => {
+                write!(f, "{op} missing operand {index}")
+            }
+            ExecuteError::InvalidOperand(kind) => write!(f, "invalid {kind} operand"),
+            ExecuteError::BadConstant(index) => write!(f, "bad constant index {index}"),
+            ExecuteError::UnknownLabel(label) => write!(f, "unknown label {label}"),
+            ExecuteError::Unsupported(op) => write!(f, "unsupported opcode {op}"),
+            ExecuteError::Thrown(value) => write!(f, "uncaught exception {value}"),
+            ExecuteError::Runtime(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for ExecuteError {}
+
+struct TryParts {
+    body_start: usize,
+    body_end: usize,
+    catch_start: usize,
+    catch_end: usize,
+    catch_param: Option<String>,
+    finally_start: usize,
+    finally_end: usize,
+    end: usize,
+}
+
+fn find_try_parts(module: &BytecodeModule, try_start: usize) -> Result<TryParts, ExecuteError> {
+    let mut depth = 0usize;
+    let mut catch = None;
+    let mut finally = None;
+    let mut end = None;
+    for index in try_start + 1..module.instructions.len() {
+        match module.instructions[index].op {
+            BytecodeOp::TryStart => depth += 1,
+            BytecodeOp::TryEnd if depth == 0 => {
+                end = Some(index);
+                break;
+            }
+            BytecodeOp::TryEnd => depth -= 1,
+            BytecodeOp::CatchStart if depth == 0 => catch = Some(index),
+            BytecodeOp::FinallyStart if depth == 0 => finally = Some(index),
+            _ => {}
+        }
+    }
+    let end = end.ok_or(ExecuteError::Runtime("missing TRY_END".to_string()))?;
+    let body_end = catch.or(finally).unwrap_or(end);
+    let catch_start = catch.map(|index| index + 1).unwrap_or(end);
+    let catch_end = finally.unwrap_or(end);
+    let catch_param = catch
+        .map(|index| match operand(&module.instructions[index], 0)? {
+            BytecodeOperand::None => Ok(None),
+            BytecodeOperand::Name(value) | BytecodeOperand::Constant(value) => {
+                constant_string(module, *value).map(Some)
+            }
+            _ => Err(ExecuteError::InvalidOperand("catch param")),
+        })
+        .transpose()?
+        .flatten();
+    let finally_start = finally.map(|index| index + 1).unwrap_or(end);
+    let finally_end = end;
+    Ok(TryParts {
+        body_start: try_start + 1,
+        body_end,
+        catch_start,
+        catch_end,
+        catch_param,
+        finally_start,
+        finally_end,
+        end,
+    })
+}
+
+fn find_matching_end(
+    module: &BytecodeModule,
+    start: usize,
+    end_op: BytecodeOp,
+) -> Result<usize, ExecuteError> {
+    let mut depth = 0usize;
+    for index in start..module.instructions.len() {
+        match module.instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => depth += 1,
+            op if op == end_op && depth == 0 => return Ok(index),
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                depth = depth.saturating_sub(1)
+            }
+            _ => {}
+        }
+    }
+    Err(ExecuteError::Runtime(format!(
+        "missing matching {}",
+        end_op.mnemonic()
+    )))
+}
+
+fn collect_labels(module: &BytecodeModule) -> Result<BTreeMap<String, usize>, ExecuteError> {
+    let mut labels = BTreeMap::new();
+    for (index, instruction) in module.instructions.iter().enumerate() {
+        if instruction.op == BytecodeOp::Label {
+            let label = match operand(instruction, 0)? {
+                BytecodeOperand::Label(index) | BytecodeOperand::Constant(index) => {
+                    constant_string(module, *index)?
+                }
+                _ => return Err(ExecuteError::InvalidOperand("label")),
+            };
+            labels.insert(label, index + 1);
+        }
+    }
+    Ok(labels)
+}
+
+fn operand(
+    instruction: &BytecodeInstruction,
+    index: usize,
+) -> Result<&BytecodeOperand, ExecuteError> {
+    instruction
+        .operands
+        .get(index)
+        .ok_or_else(|| ExecuteError::MissingOperand {
+            op: instruction.op.mnemonic(),
+            index,
+        })
+}
+
+fn register(instruction: &BytecodeInstruction, index: usize) -> Result<u32, ExecuteError> {
+    match operand(instruction, index)? {
+        BytecodeOperand::Register(index) => Ok(*index),
+        _ => Err(ExecuteError::InvalidOperand("register")),
+    }
+}
+
+fn count_operand(instruction: &BytecodeInstruction, index: usize) -> Result<u32, ExecuteError> {
+    match operand(instruction, index)? {
+        BytecodeOperand::Count(value) => Ok(*value),
+        _ => Err(ExecuteError::InvalidOperand("count")),
+    }
+}
+
+fn constant_value(module: &BytecodeModule, index: u32) -> Result<Value, ExecuteError> {
+    match module.constants.get(index as usize) {
+        Some(BytecodeConstant::Number(value)) => Ok(Value::Number(*value)),
+        Some(BytecodeConstant::String(value)) => Ok(Value::String(value.clone())),
+        Some(BytecodeConstant::Bool(value)) => Ok(Value::Bool(*value)),
+        Some(BytecodeConstant::Null) => Ok(Value::Null),
+        Some(BytecodeConstant::Undefined) => Ok(Value::Undefined),
+        None => Err(ExecuteError::BadConstant(index)),
+    }
+}
+
+fn constant_string(module: &BytecodeModule, index: u32) -> Result<String, ExecuteError> {
+    match module.constants.get(index as usize) {
+        Some(BytecodeConstant::String(value)) => Ok(value.clone()),
+        Some(value) => Ok(value.to_string()),
+        None => Err(ExecuteError::BadConstant(index)),
+    }
+}
+
+fn get_member(object: &Value, property: &str) -> Value {
+    match object {
+        Value::Object(props) => match props.get(property).cloned() {
+            Some(Value::Function(function)) => {
+                Value::BoundFunction(function, Box::new(object.clone()))
+            }
+            Some(value) => value,
+            None => Value::Undefined,
+        },
+        Value::ExternalObject(name) => Value::NativeFunction(format!("{name}.{property}")),
+        Value::Array(items) if property == "length" => Value::Number(items.len() as f64),
+        Value::Array(items) => property
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| items.get(index).cloned())
+            .unwrap_or(Value::Undefined),
+        Value::String(value) if property == "length" => Value::Number(value.chars().count() as f64),
+        _ => Value::Undefined,
+    }
+}
+
+fn set_member(object: &mut Value, property: &str, value: Value) -> Result<(), ExecuteError> {
+    match object {
+        Value::Object(props) => {
+            props.insert(property.to_string(), value);
+            Ok(())
+        }
+        Value::Array(items) => {
+            let index = property
+                .parse::<usize>()
+                .map_err(|_| ExecuteError::InvalidOperand("array index"))?;
+            if items.len() <= index {
+                items.resize(index + 1, Value::Undefined);
+            }
+            items[index] = value;
+            Ok(())
+        }
+        _ => Err(ExecuteError::Runtime(format!(
+            "cannot set {property} on {object}"
+        ))),
+    }
+}
+
+fn call_native(name: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
+    match name {
+        "console.log" | "window.console.log" => {
+            let message = args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            host_log(&message);
+            Ok(Value::Undefined)
+        }
+        _ => Ok(Value::Undefined),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn host_log(message: &str) {
+    wasm_console_log(message);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn host_log(message: &str) {
+    println!("{message}");
+}
+
+fn binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteError> {
+    match op {
+        "+" => match (left, right) {
+            (Value::String(left), right) => Ok(Value::String(format!("{left}{right}"))),
+            (left, Value::String(right)) => Ok(Value::String(format!("{left}{right}"))),
+            (left, right) => Ok(Value::Number(left.to_number() + right.to_number())),
+        },
+        "-" => Ok(Value::Number(left.to_number() - right.to_number())),
+        "*" => Ok(Value::Number(left.to_number() * right.to_number())),
+        "/" => Ok(Value::Number(left.to_number() / right.to_number())),
+        "%" => Ok(Value::Number(left.to_number() % right.to_number())),
+        "==" | "===" => Ok(Value::Bool(left == right)),
+        "!=" | "!==" => Ok(Value::Bool(left != right)),
+        "<" => Ok(Value::Bool(left.to_number() < right.to_number())),
+        "<=" => Ok(Value::Bool(left.to_number() <= right.to_number())),
+        ">" => Ok(Value::Bool(left.to_number() > right.to_number())),
+        ">=" => Ok(Value::Bool(left.to_number() >= right.to_number())),
+        "&&" => Ok(if left.is_truthy() { right } else { left }),
+        "||" => Ok(if left.is_truthy() { left } else { right }),
+        "??" => Ok(match left {
+            Value::Null | Value::Undefined => right,
+            value => value,
+        }),
+        _ => Err(ExecuteError::Unsupported("BINARY")),
+    }
+}
+
+fn unary(op: &str, arg: Value) -> Result<Value, ExecuteError> {
+    match op {
+        "-" => Ok(Value::Number(-arg.to_number())),
+        "+" => Ok(Value::Number(arg.to_number())),
+        "!" => Ok(Value::Bool(!arg.is_truthy())),
+        "void" => Ok(Value::Undefined),
+        "typeof" => Ok(Value::String(
+            match arg {
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Bool(_) => "boolean",
+                Value::Function(_) | Value::BoundFunction(_, _) | Value::NativeFunction(_) => {
+                    "function"
+                }
+                Value::Null => "object",
+                Value::Array(_)
+                | Value::Object(_)
+                | Value::Class(_)
+                | Value::Module(_)
+                | Value::ExternalObject(_) => "object",
+                Value::Undefined => "undefined",
+            }
+            .to_string(),
+        )),
+        _ => Err(ExecuteError::Unsupported("UNARY")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Executor, Value};
+    use crate::compiler::compile_to_bytecode;
+
+    #[test]
+    fn executes_arithmetic_and_globals() {
+        let module = compile_to_bytecode("const a = 1 + 2; a;").unwrap();
+        assert_eq!(Executor::run(&module).unwrap(), Value::Number(3.0));
+    }
+
+    #[test]
+    fn executes_branch_and_loop_bytecode() {
+        let branch = compile_to_bytecode("let a = 1; if (a < 2) { a = a + 5; } a;").unwrap();
+        assert_eq!(Executor::run(&branch).unwrap(), Value::Number(6.0));
+
+        let loop_module =
+            compile_to_bytecode("let a = 0; while (a < 3) { a = a + 1; } a;").unwrap();
+        assert_eq!(Executor::run(&loop_module).unwrap(), Value::Number(3.0));
+    }
+
+    #[test]
+    fn executes_objects_arrays_and_functions() {
+        let object = compile_to_bytecode("const obj = {a: 1}; obj.a;").unwrap();
+        assert_eq!(Executor::run(&object).unwrap(), Value::Number(1.0));
+
+        let array = compile_to_bytecode("const arr = [1, 2]; arr[0];").unwrap();
+        assert_eq!(Executor::run(&array).unwrap(), Value::Number(1.0));
+
+        let function = compile_to_bytecode("function f(x) { return x + 1; } f(2);").unwrap();
+        assert_eq!(Executor::run(&function).unwrap(), Value::Number(3.0));
+    }
+
+    #[test]
+    fn executes_try_catch() {
+        let module = compile_to_bytecode("try { throw 4; } catch (e) { e + 1; }").unwrap();
+        assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
+    }
+
+    #[test]
+    fn executes_this_bound_object_methods() {
+        let module = compile_to_bytecode(
+            r#"
+            const obj = { a: 2, inc(x) { return this.a + x; } };
+            obj.inc(3);
+            "#,
+        )
+        .unwrap();
+        assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
+    }
+
+    #[test]
+    fn executes_closures() {
+        let module = compile_to_bytecode(
+            r#"
+            function make(y) {
+                return function(x) { return x + y; };
+            }
+            const add2 = make(2);
+            add2(3);
+            "#,
+        )
+        .unwrap();
+        assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
+    }
+}
