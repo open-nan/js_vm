@@ -28,8 +28,11 @@ cargo check -p js_token_bin --target wasm32-unknown-unknown
 ## Build wasm
 
 ```bash
-wasm-pack build crates/bin --target web --out-dir ../../pkg/compiler
+sh scripts/build-wasm.sh
 ```
+
+Release 构建开启了 `opt-level = "z"`、LTO、单 codegen unit、`panic = "abort"` 和 symbol strip。
+脚本会让 `wasm-pack` 先生成 web 目标，再用 `wasm-opt -Oz` 做二次体积优化。
 
 ## GitHub Pages
 

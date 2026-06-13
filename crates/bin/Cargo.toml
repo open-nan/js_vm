@@ -20,3 +20,6 @@ wasm-bindgen.workspace = true
 swc_common.workspace = true
 swc_ecma_parser.workspace = true
 swc_ecma_ast.workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
