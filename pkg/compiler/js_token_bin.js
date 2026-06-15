@@ -200,6 +200,36 @@ export class Compiler {
         }
     }
     /**
+     * @param {any[]} extern_slots
+     * @returns {string}
+     */
+    to_bytecode_text_with_extern_slots(extern_slots) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArrayJsValueToWasm0(extern_slots, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.compiler_to_bytecode_text_with_extern_slots(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr2 = r0;
+            var len2 = r1;
+            if (r3) {
+                ptr2 = 0; len2 = 0;
+                throw takeObject(r2);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export3(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * @returns {Uint8Array}
      */
     to_bytes() {
@@ -235,6 +265,33 @@ export class Compiler {
             var v2 = getArrayU8FromWasm0(r0, r1).slice();
             wasm.__wbindgen_export3(r0, r1 * 1, 1);
             return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {string} yaml
+     * @param {any[]} extern_slots
+     * @returns {Uint8Array}
+     */
+    to_bytes_with_encoding_and_extern_slots(yaml, extern_slots) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(yaml, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArrayJsValueToWasm0(extern_slots, wasm.__wbindgen_export);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.compiler_to_bytes_with_encoding_and_extern_slots(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            var v3 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export3(r0, r1 * 1, 1);
+            return v3;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }

@@ -12,8 +12,10 @@ export class Compiler {
     to_bytecode(): string;
     to_bytecode_bytes(): Uint8Array;
     to_bytecode_text(): string;
+    to_bytecode_text_with_extern_slots(extern_slots: any[]): string;
     to_bytes(): Uint8Array;
     to_bytes_with_encoding(yaml: string): Uint8Array;
+    to_bytes_with_encoding_and_extern_slots(yaml: string, extern_slots: any[]): Uint8Array;
     to_bytes_with_seed(seed: string): Uint8Array;
     to_text(): string;
     static with_externals(source: string, externals: any[]): Compiler;
@@ -45,7 +47,9 @@ export interface InitOutput {
     readonly compiler_new: (a: number, b: number, c: number) => void;
     readonly compiler_to_bytecode: (a: number, b: number) => void;
     readonly compiler_to_bytecode_bytes: (a: number, b: number) => void;
+    readonly compiler_to_bytecode_text_with_extern_slots: (a: number, b: number, c: number, d: number) => void;
     readonly compiler_to_bytes_with_encoding: (a: number, b: number, c: number, d: number) => void;
+    readonly compiler_to_bytes_with_encoding_and_extern_slots: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly compiler_to_bytes_with_seed: (a: number, b: number, c: number, d: number) => void;
     readonly compiler_to_text: (a: number, b: number) => void;
     readonly compiler_with_externals: (a: number, b: number, c: number, d: number, e: number) => void;

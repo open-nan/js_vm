@@ -376,9 +376,13 @@
       background: #111417;
     }
 
+    .output-wrap.bytes-mode {
+      grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 32%);
+    }
+
     .meta-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       border-bottom: 1px solid var(--line-soft);
       background: #15191e;
     }
@@ -410,7 +414,6 @@
     }
 
     .output {
-      grid-row: 2;
       margin: 0;
       padding: 14px 16px;
       overflow: auto;
@@ -424,8 +427,146 @@
       background: #211416;
     }
 
+    .output:focus {
+      outline: 1px solid #3c8f72;
+      outline-offset: -1px;
+    }
+
     .output.hidden {
       display: none;
+    }
+
+    .output.hex-output {
+      padding: 0;
+      white-space: normal;
+    }
+
+    .hex-section {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .hex-section:last-child {
+      border-bottom: none;
+    }
+
+    .hex-section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #15191e;
+      color: var(--muted);
+      font: 12px/1.4 Inter, system-ui, sans-serif;
+    }
+
+    .hex-section-title strong {
+      color: var(--text);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .hex-bytecode {
+      margin: 0;
+      padding: 12px 14px;
+      min-height: 0;
+      overflow: auto;
+      color: var(--code);
+      font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .hex-dump {
+      min-width: max-content;
+      overflow: auto;
+      padding: 10px 12px 14px;
+      color: var(--code);
+      font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .hex-header,
+    .hex-row {
+      display: grid;
+      grid-template-columns: 76px repeat(16, 28px) 18px 156px;
+      align-items: center;
+      column-gap: 0;
+    }
+
+    .hex-header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding-bottom: 5px;
+      color: #718191;
+      background: #111417;
+    }
+
+    .hex-row {
+      min-height: 23px;
+    }
+
+    .hex-offset {
+      color: #778898;
+      user-select: none;
+    }
+
+    .hex-column {
+      text-align: center;
+      user-select: none;
+    }
+
+    .hex-byte {
+      display: inline-flex;
+      width: 24px;
+      height: 20px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      cursor: default;
+    }
+
+    .hex-byte.empty {
+      color: #3a444e;
+    }
+
+    .hex-gap {
+      color: #46525e;
+      text-align: center;
+      user-select: none;
+    }
+
+    .hex-ascii {
+      display: flex;
+      gap: 0;
+      color: #a7b5c2;
+    }
+
+    .hex-char {
+      display: inline-flex;
+      width: 9px;
+      height: 20px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      cursor: default;
+    }
+
+    .hex-byte.selected,
+    .hex-char.selected {
+      color: #08120f;
+      background: #8ddfbc;
+      box-shadow: 0 0 0 1px rgba(141, 223, 188, 0.42);
+    }
+
+    .hex-byte.related,
+    .hex-char.related {
+      color: #dffcf2;
+      background: #263f38;
     }
 
     .byte-changed {
@@ -573,7 +714,26 @@
       font-size: 12px;
     }
 
-    .opcode-seed code {
+    .seed-row {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) 34px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .seed-placeholder {
+      width: 34px;
+      height: 30px;
+    }
+
+    .seed-input {
+      width: 100%;
+      min-width: 0;
+      height: 30px;
+      border: 1px solid #2a323b;
+      border-radius: 5px;
+      padding: 0 9px;
+      background: #0f1317;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -582,8 +742,31 @@
       font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
     }
 
+    .seed-input:focus {
+      outline: 1px solid #3c8f72;
+      border-color: #3c8f72;
+    }
+
+    .bytes-seed {
+      display: none;
+      gap: 5px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #12171c;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .bytes-seed.active {
+      display: grid;
+    }
+
     .opcode-table-wrap {
       overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      padding-bottom: 12px;
     }
 
     .opcode-table {
@@ -591,6 +774,28 @@
       border-collapse: collapse;
       font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       table-layout: fixed;
+    }
+
+    .tag-table {
+      margin: 0 12px;
+    }
+
+    .tag-table:first-child {
+      margin-top: 0;
+    }
+
+    .extern-obfuscation-table th:first-child,
+    .extern-obfuscation-table td:first-child {
+      width: 68%;
+    }
+
+    .table-caption {
+      padding: 9px 10px;
+      border-bottom: 1px solid #222830;
+      color: var(--muted);
+      background: #15191e;
+      font-size: 12px;
+      font-weight: 650;
     }
 
     .opcode-table th,
@@ -758,7 +963,7 @@
           <option value="module">模块语法</option>
           <option value="exception">异常</option>
         </select>
-        <button id="copyBtn" class="icon" type="button" title="复制当前输出">⧉</button>
+        <button id="downloadPkgBtn" type="button">下载运行包</button>
         <button id="clearBtn" class="icon" type="button" title="清空控制台">×</button>
       </div>
     </header>
@@ -768,8 +973,7 @@
         <div class="pane-head">
           <div class="editor-tabs" role="tablist" aria-label="编辑区">
             <button class="config-tab active" type="button" data-config-view="javascript">JavaScript</button>
-            <button class="config-tab" type="button" data-config-view="externs">Externs</button>
-            <button class="config-tab" type="button" data-config-view="opcodes">Opcodes</button>
+            <button class="config-tab" type="button" data-config-view="opcodes">Obfuscation</button>
           </div>
           <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
         </div>
@@ -781,27 +985,35 @@
             <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
           </div>
         </div>
-        <div id="externPanel" class="config-view extern-panel">
-          <div class="extern-toolbar">
-            <span id="externStatus">编译后显示自动解析的外部槽位</span>
-          </div>
-          <pre id="externList" class="extern-list">(empty)</pre>
-        </div>
         <div id="opcodePanel" class="config-view opcode-panel">
           <div class="opcode-toolbar">
-            <span id="opcodeStatus">选择两行交换指令名称</span>
+            <span id="opcodeStatus">Obfuscation map</span>
             <div class="opcode-actions">
-              <button id="shuffleOpcodesBtn" type="button">随机打乱</button>
-              <button id="applySeedBtn" type="button">应用种子</button>
+              <button id="shuffleOpcodesBtn" type="button">Randomize</button>
               <button id="resetOpcodesBtn" type="button">重置</button>
             </div>
           </div>
           <div class="opcode-seed">
             <span>Seed</span>
-            <code id="opcodeSeed">(build pending)</code>
+            <div class="seed-row">
+              <button id="syncSeedBtn" class="icon" type="button" title="从 Bytes seed 同步并还原 Obfuscation">↺</button>
+              <input id="opcodeSeedInput" class="seed-input" type="text" value="(build pending)" spellcheck="false">
+              <span class="seed-placeholder"></span>
+            </div>
           </div>
           <div class="opcode-table-wrap">
-            <table class="opcode-table">
+            <table class="opcode-table tag-table extern-obfuscation-table">
+              <caption class="table-caption">externs</caption>
+              <thead>
+                <tr>
+                  <th>value</th>
+                  <th>HostBridge slot</th>
+                </tr>
+              </thead>
+              <tbody id="externSlotTableBody"></tbody>
+            </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">opcodes</caption>
               <thead>
                 <tr>
                   <th>code</th>
@@ -813,6 +1025,32 @@
               </thead>
               <tbody id="opcodeTableBody"></tbody>
             </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">operand_tags</caption>
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>名称</th>
+                </tr>
+              </thead>
+              <tbody id="operandTagTableBody"></tbody>
+            </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">constant_tags</caption>
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>名称</th>
+                </tr>
+              </thead>
+              <tbody id="constantTagTableBody"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -822,22 +1060,31 @@
           <div class="tabs" role="tablist" aria-label="输出">
             <button class="tab active" type="button" data-view="ir">IR</button>
             <button class="tab" type="button" data-view="bytecode">Bytecode</button>
-            <button class="tab" type="button" data-view="bytes">Bytes</button>
+            <button class="tab" type="button" data-view="bytes">Hex</button>
           </div>
-          <div class="pane-title" id="timingInfo">Compile 0ms · Run 0ms</div>
+          <div class="pane-title" id="timingInfo">Compile 0ms</div>
         </div>
-        <div class="output-wrap">
+        <div id="outputWrap" class="output-wrap">
           <div class="meta-grid">
+            <div class="metric"><span>JAVASCRIPT</span><strong id="metricJavaScriptBytes">0 B</strong></div>
             <div class="metric"><span>IR</span><strong id="metricIr">0 lines</strong></div>
             <div class="metric"><span>BYTECODE</span><strong id="metricBytecode">0 lines</strong></div>
             <div class="metric"><span>BYTES</span><strong id="metricBytes">0 B</strong></div>
             <div class="metric"><span>EXTERNS</span><strong id="metricExterns">0</strong></div>
           </div>
-          <pre id="output" class="output"></pre>
+          <div id="bytesSeedPanel" class="bytes-seed">
+            <span>Seed</span>
+            <div class="seed-row">
+              <span class="seed-placeholder"></span>
+              <input id="bytesSeedInput" class="seed-input" type="text" spellcheck="false">
+              <span class="seed-placeholder"></span>
+            </div>
+          </div>
+          <pre id="output" class="output" tabindex="0"></pre>
           <div class="console-panel" aria-label="运行日志">
             <div class="console-head">
               <strong>Console</strong>
-              <span id="logInfo">0 logs</span>
+              <span id="logInfo">Compile 0ms · Run 0ms · 0 logs</span>
             </div>
             <pre id="consoleLog" class="console-log"></pre>
           </div>
@@ -859,7 +1106,7 @@
   <div id="toast" class="toast"></div>
 
   <script type="module">
-    import init, * as wasmPkg from './pkg/compiler/js_token_bin.js?v=seed';
+    import init, * as wasmPkg from './pkg/compiler/js_token_bin.js?v=compact-seed';
 
     const {
       Compiler,
@@ -938,12 +1185,22 @@ export default def;`,
       ready: false,
       timer: 0,
       opcodeRows: [],
+      operandTagRows: [],
+      constantTagRows: [],
+      externRows: [],
       selectedOpcodeRows: [],
+      selectedOperandTagRows: [],
+      selectedConstantTagRows: [],
+      selectedExternRows: [],
       activeConfigView: 'javascript',
       logs: [],
       byteTokens: [],
       bytesHtml: '',
+      hexSelectedIndex: null,
+      compileDuration: 0,
+      runDuration: 0,
       opcodeSeed: '',
+      compiledBytes: null,
     };
 
     const editor = document.getElementById('editor');
@@ -951,10 +1208,11 @@ export default def;`,
     const highlightLayer = document.getElementById('highlightLayer');
     const completionMenu = document.getElementById('completionMenu');
     const lineNumbers = document.getElementById('lineNumbers');
+    const outputWrap = document.getElementById('outputWrap');
     const output = document.getElementById('output');
     const consoleLog = document.getElementById('consoleLog');
     const logInfo = document.getElementById('logInfo');
-    const copyBtn = document.getElementById('copyBtn');
+    const downloadPkgBtn = document.getElementById('downloadPkgBtn');
     const clearBtn = document.getElementById('clearBtn');
     const exampleSelect = document.getElementById('exampleSelect');
     const statusDot = document.getElementById('statusDot');
@@ -964,23 +1222,38 @@ export default def;`,
     const sizeInfo = document.getElementById('sizeInfo');
     const lineInfo = document.getElementById('lineInfo');
     const timingInfo = document.getElementById('timingInfo');
+    const metricJavaScriptBytes = document.getElementById('metricJavaScriptBytes');
     const metricIr = document.getElementById('metricIr');
     const metricBytecode = document.getElementById('metricBytecode');
     const metricBytes = document.getElementById('metricBytes');
     const metricExterns = document.getElementById('metricExterns');
-    const externPanel = document.getElementById('externPanel');
-    const externList = document.getElementById('externList');
-    const externStatus = document.getElementById('externStatus');
     const opcodePanel = document.getElementById('opcodePanel');
+    const externSlotTableBody = document.getElementById('externSlotTableBody');
     const opcodeTableBody = document.getElementById('opcodeTableBody');
+    const operandTagTableBody = document.getElementById('operandTagTableBody');
+    const constantTagTableBody = document.getElementById('constantTagTableBody');
     const opcodeStatus = document.getElementById('opcodeStatus');
-    const opcodeSeed = document.getElementById('opcodeSeed');
-    const applySeedBtn = document.getElementById('applySeedBtn');
+    const opcodeSeedInput = document.getElementById('opcodeSeedInput');
+    const bytesSeedPanel = document.getElementById('bytesSeedPanel');
+    const bytesSeedInput = document.getElementById('bytesSeedInput');
+    const syncSeedBtn = document.getElementById('syncSeedBtn');
     const resetOpcodesBtn = document.getElementById('resetOpcodesBtn');
     const shuffleOpcodesBtn = document.getElementById('shuffleOpcodesBtn');
     const toast = document.getElementById('toast');
 
     editor.value = examples.basic;
+
+    const textEncoder = new TextEncoder();
+
+    function byteLength(text) {
+      return textEncoder.encode(text).length;
+    }
+
+    function formatByteSize(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+      return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+    }
 
     const defaultOpcodeRows = [
       ['MARKER', 0],
@@ -1019,6 +1292,26 @@ export default def;`,
     ].map(([name, code]) => ({ name, code }));
 
     state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
+
+    const defaultOperandTagRows = [
+      ['register', 0],
+      ['constant', 1],
+      ['name', 2],
+      ['label', 3],
+      ['count', 4],
+      ['none', 5],
+    ].map(([name, code]) => ({ name, code }));
+
+    const defaultConstantTagRows = [
+      ['number', 0],
+      ['string', 1],
+      ['bool', 2],
+      ['null', 3],
+      ['undefined', 4],
+    ].map(([name, code]) => ({ name, code }));
+
+    state.operandTagRows = defaultOperandTagRows.map((row) => ({ ...row }));
+    state.constantTagRows = defaultConstantTagRows.map((row) => ({ ...row }));
 
     const keywordSet = new Set([
       'as', 'async', 'await', 'class', 'const', 'debugger', 'default', 'delete',
@@ -1264,10 +1557,12 @@ export default def;`,
       const lines = text.split('\n').length;
       const line = beforeCursor.split('\n').length;
       const col = beforeCursor.length - beforeCursor.lastIndexOf('\n');
+      const jsBytes = byteLength(text);
       lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
       cursorInfo.textContent = `Ln ${line}, Col ${col}`;
-      sizeInfo.textContent = `${text.length} chars`;
+      sizeInfo.textContent = `${text.length} chars · ${formatByteSize(jsBytes)}`;
       lineInfo.textContent = `${lines} lines`;
+      metricJavaScriptBytes.textContent = formatByteSize(jsBytes);
       updateHighlight();
     }
 
@@ -1463,17 +1758,63 @@ export default def;`,
       return changed;
     }
 
-    function renderBytesHtml(bytes, changed, seed) {
-      const body = bytes.map((byte, index) => {
-        const hex = byte.toString(16).padStart(2, '0');
-        const prefix = index % 16 === 0 ? `${index.toString(16).padStart(6, '0')}: ` : '';
-        const suffix = index % 16 === 15 ? '\n' : ' ';
-        const content = changed.has(index)
-          ? `<span class="byte-changed">${hex}</span>`
-          : hex;
-        return `${prefix}${content}${suffix}`;
-      }).join('').trimEnd();
-      return `${body}\n\n# seed\n${escapeHtml(seed)}`;
+    function printableByte(byte) {
+      return byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.';
+    }
+
+    function renderHexView(bytes, changed) {
+      const columns = Array.from({ length: 16 }, (_, index) => (
+        `<span class="hex-column">${index.toString(16).padStart(2, '0')}</span>`
+      )).join('');
+      const rows = [];
+      for (let offset = 0; offset < bytes.length; offset += 16) {
+        const slice = bytes.slice(offset, offset + 16);
+        const hexCells = [];
+        const asciiCells = [];
+        for (let column = 0; column < 16; column += 1) {
+          const index = offset + column;
+          const byte = slice[column];
+          if (byte === undefined) {
+            hexCells.push('<span class="hex-byte empty">--</span>');
+            asciiCells.push('<span class="hex-char"> </span>');
+            continue;
+          }
+          const isChanged = changed.has(index);
+          const changedClass = isChanged ? ' byte-changed' : '';
+          const selectedClass = state.hexSelectedIndex === index ? ' selected' : '';
+          const hex = byte.toString(16).padStart(2, '0');
+          const printable = printableByte(byte);
+          const char = escapeHtml(printable);
+          const title = `offset 0x${index.toString(16).padStart(8, '0')} · byte 0x${hex} · ascii ${printable}`;
+          hexCells.push(`<span class="hex-byte${changedClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${hex}</span>`);
+          asciiCells.push(`<span class="hex-char${changedClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${char}</span>`);
+        }
+        rows.push(`
+          <div class="hex-row">
+            <span class="hex-offset">${offset.toString(16).padStart(8, '0')}</span>
+            ${hexCells.join('')}
+            <span class="hex-gap">|</span>
+            <span class="hex-ascii">${asciiCells.join('')}</span>
+          </div>
+        `);
+      }
+      return `
+        <section class="hex-section">
+          <div class="hex-section-title">
+            <strong>Hex</strong>
+            <span>${bytes.length} bytes</span>
+          </div>
+          <div class="hex-dump">
+            <div class="hex-header">
+              <span class="hex-offset">offset</span>
+              ${columns}
+              <span class="hex-gap">|</span>
+              <span>ascii</span>
+            </div>
+            ${rows.join('')}
+          </div>
+        </section>
+      `;
     }
 
     function opcodeYaml() {
@@ -1481,21 +1822,29 @@ export default def;`,
       for (const row of state.opcodeRows) {
         lines.push(`  ${row.name}: ${row.code}`);
       }
+      lines.push('operand_tags:');
+      for (const row of state.operandTagRows) {
+        lines.push(`  ${row.name}: ${row.code}`);
+      }
+      lines.push('constant_tags:');
+      for (const row of state.constantTagRows) {
+        lines.push(`  ${row.name}: ${row.code}`);
+      }
       return lines.join('\n');
     }
 
-    function opcodeRowsFromYaml(yaml) {
+    function rowsFromYamlSection(yaml, sectionName, defaults) {
       const byCode = new Map();
-      let inOpcodes = false;
+      let active = false;
       for (const rawLine of yaml.split('\n')) {
         const line = rawLine.split('#')[0];
         const trimmed = line.trim();
         if (!trimmed) continue;
         if (!line.startsWith(' ') && trimmed.endsWith(':')) {
-          inOpcodes = trimmed === 'opcodes:';
+          active = trimmed === `${sectionName}:`;
           continue;
         }
-        if (!inOpcodes) continue;
+        if (!active) continue;
         const parts = trimmed.split(':');
         if (parts.length < 2) continue;
         const name = parts[0].trim();
@@ -1504,22 +1853,28 @@ export default def;`,
           byCode.set(code, name);
         }
       }
-      if (byCode.size !== defaultOpcodeRows.length) {
-        throw new Error(`Seed restored ${byCode.size} opcodes, expected ${defaultOpcodeRows.length}`);
+      if (byCode.size !== defaults.length) {
+        throw new Error(`Seed restored ${byCode.size} ${sectionName}, expected ${defaults.length}`);
       }
-      return defaultOpcodeRows.map((row) => ({
+      return defaults.map((row) => ({
         code: row.code,
         name: byCode.get(row.code),
       }));
     }
 
     function applyOpcodeSeed() {
-      const seed = window.prompt('输入 Opcodes seed', state.opcodeSeed || '');
+      const seed = opcodeSeedInput.value.trim();
       if (!seed) return;
       try {
         const yaml = js_encoding_yaml_from_seed(seed);
-        state.opcodeRows = opcodeRowsFromYaml(yaml);
+        state.opcodeRows = rowsFromYamlSection(yaml, 'opcodes', defaultOpcodeRows);
+        state.operandTagRows = rowsFromYamlSection(yaml, 'operand_tags', defaultOperandTagRows);
+        state.constantTagRows = rowsFromYamlSection(yaml, 'constant_tags', defaultConstantTagRows);
+        state.opcodeSeed = seed;
+        opcodeSeedInput.value = seed;
         state.selectedOpcodeRows = [];
+        state.selectedOperandTagRows = [];
+        state.selectedConstantTagRows = [];
         renderOpcodeTable();
         syncOpcodesToBytes();
         showToast('Seed applied');
@@ -1529,15 +1884,158 @@ export default def;`,
       }
     }
 
-    function renderOpcodeTable() {
-      const selected = new Set(state.selectedOpcodeRows);
-      const half = Math.ceil(state.opcodeRows.length / 2);
-      const rows = [];
+    function syncSeedInputs(seed) {
+      state.opcodeSeed = seed;
+      opcodeSeedInput.value = seed;
+      opcodeSeedInput.title = seed;
+      bytesSeedInput.value = seed;
+      bytesSeedInput.title = seed;
+    }
+
+    function updateBytesSeedDisplay(seed) {
+      if (!state.byteTokens.length) return;
+      state.views.bytes = formatBytes(state.byteTokens);
+      state.bytesHtml = renderHexView(state.byteTokens, new Set());
+      if (state.activeView === 'bytes') {
+        setActiveView('bytes');
+      }
+    }
+
+    function rerunWithBytesSeed() {
+      if (!state.compiledBytes) return;
+      const seed = bytesSeedInput.value.trim();
+      updateBytesSeedDisplay(seed);
+      resetLogs();
+      appendLog('compile', 'Re-running bytecode with provided seed');
+      const started = performance.now();
+      const run = executeBytecode(state.compiledBytes, seed);
+      state.compileDuration = 0;
+      state.runDuration = run.duration || performance.now() - started;
+      timingInfo.textContent = 'Compile 0ms';
+      renderLogs();
+      setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Seed accepted' : 'Seed rejected');
+    }
+
+    function syncBytesSeedToObfuscation() {
+      opcodeSeedInput.value = bytesSeedInput.value.trim();
+      applyOpcodeSeed();
+    }
+
+    function byteArrayLiteral(bytes) {
+      return Array.from(bytes, (byte) => byte.toString()).join(', ');
+    }
+
+    function runtimeRunnerModuleCode() {
+      const seed = bytesSeedInput.value.trim();
+      if (!state.compiledBytes || !seed) {
+        throw new Error('missing compiled bytecode or seed');
+      }
+      return `// JS VM runtime package:
+// Put the downloaded pkg folder next to this HTML file as ./pkg/compiler/.
+// GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/compiler/
+import init, { js_execute_bytes_with_seed } from './pkg/compiler/js_token_bin.js';
+
+const bytes = new Uint8Array([${byteArrayLiteral(state.compiledBytes)}]);
+const seed = ${JSON.stringify(seed)};
+
+await init('./pkg/compiler/js_token_bin_bg.wasm');
+const result = js_execute_bytes_with_seed(bytes, seed);
+console.log('[js-vm]', result);`;
+    }
+
+    function downloadTextFile(filename, text) {
+      const blob = new Blob([text], { type: 'text/javascript;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+    }
+
+    async function downloadRemoteFile(url, filename) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200);
+      } catch (_err) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.rel = 'noopener';
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+    }
+
+    async function copyRunnerScript(script) {
+      try {
+        window.focus();
+        await navigator.clipboard.writeText(script);
+        return true;
+      } catch (_err) {
+        const textarea = document.createElement('textarea');
+        textarea.value = script;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        return ok;
+      }
+    }
+
+    async function downloadRuntimePackage() {
+      try {
+        const moduleCode = runtimeRunnerModuleCode();
+        const script = `<script type="module">\n${moduleCode}\n</` + 'script>';
+        const baseUrl = 'https://raw.githubusercontent.com/open-nan/js_vm/main/pkg/compiler';
+        const copied = await copyRunnerScript(script);
+        await Promise.all([
+          downloadRemoteFile(`${baseUrl}/js_token_bin.js`, 'js_token_bin.js'),
+          downloadRemoteFile(`${baseUrl}/js_token_bin_bg.wasm`, 'js_token_bin_bg.wasm'),
+        ]);
+        downloadTextFile('js-vm-runner.js', moduleCode);
+        if (copied) {
+          appendLog('compile', 'Downloaded runtime pkg files and copied runner script to clipboard');
+          showToast('Runtime ready');
+        } else {
+          appendLog('error', 'Clipboard Error\nBrowser rejected clipboard write; js-vm-runner.js was downloaded instead');
+          showToast('Downloaded');
+        }
+      } catch (err) {
+        appendLog('error', `Download Error\n${formatLogValue(err)}`);
+        showToast('Download failed');
+      }
+    }
+
+    function renderDoubleColumnTable(tbody, rows, selectedIndexes) {
+      const selected = new Set(selectedIndexes);
+      const half = Math.ceil(rows.length / 2);
+      const htmlRows = [];
       for (let index = 0; index < half; index += 1) {
-        const left = state.opcodeRows[index];
+        const left = rows[index];
         const rightIndex = index + half;
-        const right = state.opcodeRows[rightIndex];
-        rows.push(`
+        const right = rows[rightIndex];
+        htmlRows.push(`
           <tr>
             <td class="opcode-code opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}">${left.code}</td>
             <td class="opcode-name opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}" title="${escapeHtml(left.name)}">${escapeHtml(left.name)}</td>
@@ -1552,41 +2050,123 @@ export default def;`,
           </tr>
         `);
       }
-      opcodeTableBody.innerHTML = rows.join('');
+      tbody.innerHTML = htmlRows.join('');
+    }
+
+    function renderExternSlotTable() {
+      if (!state.externRows.length) {
+        externSlotTableBody.innerHTML = `
+          <tr>
+            <td class="opcode-name" colspan="2">(empty)</td>
+          </tr>
+        `;
+        return;
+      }
+      const selected = new Set(state.selectedExternRows);
+      externSlotTableBody.innerHTML = state.externRows.map((row, index) => `
+        <tr>
+          <td class="opcode-name" title="${escapeHtml(row.value)}">${escapeHtml(row.value)}</td>
+          <td class="opcode-name opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}" title="e${row.slot}">
+            e${row.slot}
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function renderOpcodeTable() {
+      renderExternSlotTable();
+      renderDoubleColumnTable(opcodeTableBody, state.opcodeRows, state.selectedOpcodeRows);
+      renderDoubleColumnTable(operandTagTableBody, state.operandTagRows, state.selectedOperandTagRows);
+      renderDoubleColumnTable(constantTagTableBody, state.constantTagRows, state.selectedConstantTagRows);
       const changed = state.opcodeRows.filter((row, index) => row.name !== defaultOpcodeRows[index].name).length;
-      opcodeStatus.textContent = changed
-        ? `已混淆 ${changed} 项；code 顺序固定，选择两行交换指令名称`
-        : 'code 顺序固定，选择两行交换指令名称';
+      const operandChanged = state.operandTagRows.filter((row, index) => row.name !== defaultOperandTagRows[index].name).length;
+      const constantChanged = state.constantTagRows.filter((row, index) => row.name !== defaultConstantTagRows[index].name).length;
+      const externChanged = state.externRows.filter((row, index) => row.slot !== index).length;
+      opcodeStatus.textContent = (externChanged || changed || operandChanged || constantChanged)
+        ? `Obfuscated externs ${externChanged}, opcodes ${changed}, operand tags ${operandChanged}, constant tags ${constantChanged}`
+        : 'Extern values stay fixed; select two names or slots inside one table to swap';
+    }
+
+    function swapRowNames(rows, first, second) {
+      if (first === second) return;
+      const temp = rows[first].name;
+      rows[first].name = rows[second].name;
+      rows[second].name = temp;
     }
 
     function swapOpcodeNames(first, second) {
-      if (first === second) return;
-      const temp = state.opcodeRows[first].name;
-      state.opcodeRows[first].name = state.opcodeRows[second].name;
-      state.opcodeRows[second].name = temp;
+      swapRowNames(state.opcodeRows, first, second);
       state.selectedOpcodeRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapOperandTagNames(first, second) {
+      swapRowNames(state.operandTagRows, first, second);
+      state.selectedOperandTagRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapConstantTagNames(first, second) {
+      swapRowNames(state.constantTagRows, first, second);
+      state.selectedConstantTagRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapExternSlots(first, second) {
+      if (first === second) return;
+      const temp = state.externRows[first].slot;
+      state.externRows[first].slot = state.externRows[second].slot;
+      state.externRows[second].slot = temp;
+      state.selectedExternRows = [];
       renderOpcodeTable();
       syncOpcodesToBytes();
     }
 
     function resetOpcodeTable() {
       state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
+      state.operandTagRows = defaultOperandTagRows.map((row) => ({ ...row }));
+      state.constantTagRows = defaultConstantTagRows.map((row) => ({ ...row }));
+      state.externRows = state.externRows.map((row, index) => ({ ...row, slot: index }));
       state.selectedOpcodeRows = [];
+      state.selectedOperandTagRows = [];
+      state.selectedConstantTagRows = [];
+      state.selectedExternRows = [];
       renderOpcodeTable();
       syncOpcodesToBytes();
     }
 
-    function shuffleOpcodeNames() {
-      const names = state.opcodeRows.map((row) => row.name);
+    function shuffleRowNames(rows) {
+      const names = rows.map((row) => row.name);
       for (let index = names.length - 1; index > 0; index -= 1) {
         const swapIndex = Math.floor(Math.random() * (index + 1));
         [names[index], names[swapIndex]] = [names[swapIndex], names[index]];
       }
-      state.opcodeRows = state.opcodeRows.map((row, index) => ({
+      return rows.map((row, index) => ({
         ...row,
         name: names[index],
       }));
+    }
+
+    function shuffleOpcodeNames() {
+      state.opcodeRows = shuffleRowNames(state.opcodeRows);
+      state.operandTagRows = shuffleRowNames(state.operandTagRows);
+      state.constantTagRows = shuffleRowNames(state.constantTagRows);
+      const slots = state.externRows.map((row) => row.slot);
+      for (let index = slots.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [slots[index], slots[swapIndex]] = [slots[swapIndex], slots[index]];
+      }
+      state.externRows = state.externRows.map((row, index) => ({
+        ...row,
+        slot: slots[index],
+      }));
       state.selectedOpcodeRows = [];
+      state.selectedOperandTagRows = [];
+      state.selectedConstantTagRows = [];
+      state.selectedExternRows = [];
       renderOpcodeTable();
       syncOpcodesToBytes();
     }
@@ -1596,13 +2176,42 @@ export default def;`,
       document.querySelectorAll('.tab').forEach((tab) => {
         tab.classList.toggle('active', tab.dataset.view === view);
       });
+      outputWrap.classList.toggle('bytes-mode', view === 'bytes');
+      bytesSeedPanel.classList.toggle('active', view === 'bytes');
       output.classList.remove('hidden');
+      output.classList.toggle('hex-output', view === 'bytes' && state.bytesHtml && !state.viewErrors[view]);
       output.classList.toggle('error', state.viewErrors[view]);
       if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
         output.innerHTML = state.bytesHtml;
       } else {
+        output.classList.remove('hex-output');
         output.textContent = state.views[view] || '';
       }
+    }
+
+    function selectHexByte(index) {
+      if (!Number.isInteger(index)) return;
+      if (index < 0 || index >= state.byteTokens.length) return;
+      state.hexSelectedIndex = index;
+      const rowStart = Math.floor(index / 16) * 16;
+      output.querySelectorAll('.hex-byte, .hex-char').forEach((cell) => {
+        const cellIndex = Number(cell.dataset.index);
+        const sameByte = cellIndex === index;
+        const sameRow = cellIndex >= rowStart && cellIndex < rowStart + 16;
+        cell.classList.toggle('selected', sameByte);
+        cell.classList.toggle('related', !sameByte && sameRow);
+      });
+      const selected = output.querySelector(`.hex-byte[data-index="${index}"]`);
+      selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function moveHexSelection(delta) {
+      if (state.activeView !== 'bytes' || state.hexSelectedIndex === null || !state.byteTokens.length) {
+        return false;
+      }
+      const next = Math.max(0, Math.min(state.byteTokens.length - 1, state.hexSelectedIndex + delta));
+      selectHexByte(next);
+      return true;
     }
 
     function setActiveConfigView(view) {
@@ -1611,7 +2220,6 @@ export default def;`,
         tab.classList.toggle('active', tab.dataset.configView === view);
       });
       editorShell.classList.toggle('active', view === 'javascript');
-      externPanel.classList.toggle('active', view === 'externs');
       opcodePanel.classList.toggle('active', view === 'opcodes');
       cursorInfo.style.visibility = view === 'javascript' ? 'visible' : 'hidden';
       if (view === 'javascript') {
@@ -1622,19 +2230,43 @@ export default def;`,
     }
 
     function updateMetrics(bytes, externs) {
+      metricJavaScriptBytes.textContent = formatByteSize(byteLength(editor.value));
       metricIr.textContent = `${lineCount(state.views.ir)} lines`;
       metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
-      metricBytes.textContent = `${bytes.length} B`;
+      metricBytes.textContent = formatByteSize(bytes.length);
       metricExterns.textContent = `${externs.length}`;
     }
 
-    function updateExternPanel(externs) {
-      externStatus.textContent = externs.length
-        ? `自动解析到 ${externs.length} 个外部槽位`
-        : '未解析到外部槽位';
-      externList.textContent = externs.length
-        ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
-        : '(empty)';
+    function syncExternRows(externs) {
+      const previous = new Map(state.externRows.map((row) => [row.value, row.slot]));
+      const usedSlots = new Set();
+      const nextFreeSlot = () => {
+        for (let index = 0; index < externs.length; index += 1) {
+          if (!usedSlots.has(index)) return index;
+        }
+        return usedSlots.size;
+      };
+      state.externRows = externs.map((value, index) => {
+        const previousSlot = previous.get(value);
+        let slot = Number.isInteger(previousSlot)
+          && previousSlot >= 0
+          && previousSlot < externs.length
+          && !usedSlots.has(previousSlot)
+          ? previousSlot
+          : nextFreeSlot();
+        usedSlots.add(slot);
+        return { value, slot };
+      });
+      state.selectedExternRows = [];
+      renderOpcodeTable();
+    }
+
+    function externSlotsForBytecode() {
+      const slots = new Array(state.externRows.length);
+      for (const row of state.externRows) {
+        slots[row.slot] = row.value;
+      }
+      return slots;
     }
 
     function formatLogValue(value) {
@@ -1664,7 +2296,7 @@ export default def;`,
       consoleLog.textContent = state.logs.length
         ? state.logs.map((entry) => `[${entry.time}] ${entry.type.toUpperCase()} ${entry.message}`).join('\n')
         : 'Console output will appear here.';
-      logInfo.textContent = `${state.logs.length} logs`;
+      logInfo.textContent = `Compile ${Math.round(state.compileDuration)}ms · Run ${Math.round(state.runDuration)}ms · ${state.logs.length} logs`;
       consoleLog.scrollTop = consoleLog.scrollHeight;
     }
 
@@ -1787,6 +2419,8 @@ export default def;`,
 
       const compileStarted = performance.now();
       disposeCompiler();
+      state.compileDuration = 0;
+      state.runDuration = 0;
       resetLogs();
 
       try {
@@ -1794,25 +2428,28 @@ export default def;`,
         appendLog('compile', 'Compiling JavaScript to IR and bytecode');
         const compiler = new Compiler(editor.value);
         const encodingYaml = opcodeYaml();
-        const bytes = compiler.to_bytes_with_encoding(encodingYaml);
+        const externs = compiler.extern_slots();
+        syncExternRows(externs);
+        const externSlots = externSlotsForBytecode();
+        const bytes = compiler.to_bytes_with_encoding_and_extern_slots(encodingYaml, externSlots);
         const seed = js_encoding_seed_for_bytes(encodingYaml, bytes);
         const nextByteTokens = Array.from(bytes);
         const changedBytes = changedByteIndexes(state.byteTokens, nextByteTokens);
-        const externs = compiler.extern_slots();
         const compileDuration = performance.now() - compileStarted;
         state.compiler = compiler;
         state.views.ir = compiler.to_text();
-        state.views.bytecode = compiler.to_bytecode_text();
-        state.views.bytes = `${formatBytes(bytes)}\n\n# seed\n${seed}`;
-        state.bytesHtml = renderBytesHtml(nextByteTokens, changedBytes, seed);
+        state.views.bytecode = compiler.to_bytecode_text_with_extern_slots(externSlots);
+        state.views.bytes = formatBytes(bytes);
+        state.bytesHtml = renderHexView(nextByteTokens, changedBytes);
         state.byteTokens = nextByteTokens;
-        state.opcodeSeed = seed;
-        opcodeSeed.textContent = seed;
-        opcodeSeed.title = seed;
-        updateExternPanel(externs);
+        state.compiledBytes = bytes;
+        syncSeedInputs(seed);
 
-        const run = executeBytecode(bytes, seed);
-        timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms · Run ${Math.round(run.duration)}ms`;
+        const run = executeBytecode(bytes, bytesSeedInput.value.trim());
+        state.compileDuration = compileDuration;
+        state.runDuration = run.duration;
+        timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms`;
+        renderLogs();
         updateMetrics(bytes, externs);
         setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Auto built' : 'Runtime error');
         setActiveView(state.activeView);
@@ -1823,15 +2460,21 @@ export default def;`,
         state.views.bytes = message;
         state.bytesHtml = '';
         state.byteTokens = [];
+        state.compiledBytes = null;
+        state.compileDuration = performance.now() - compileStarted;
+        state.runDuration = 0;
         state.opcodeSeed = '';
-        opcodeSeed.textContent = '(build failed)';
-        opcodeSeed.title = '';
-        updateExternPanel([]);
+        opcodeSeedInput.value = '(build failed)';
+        opcodeSeedInput.title = '';
+        bytesSeedInput.value = '';
+        bytesSeedInput.title = '';
+        syncExternRows([]);
         appendLog('error', message);
         Object.keys(state.viewErrors).forEach((view) => {
           state.viewErrors[view] = true;
         });
-        timingInfo.textContent = 'Compile failed · Run 0ms';
+        timingInfo.textContent = 'Compile failed';
+        renderLogs();
         setStatus('error', 'Compile error');
         setActiveView(state.activeView);
       }
@@ -1921,37 +2564,70 @@ export default def;`,
       tab.addEventListener('click', () => setActiveConfigView(tab.dataset.configView));
     });
 
-    opcodeTableBody.addEventListener('click', (event) => {
-      const row = event.target.closest('.opcode-row');
-      if (!row) return;
-      const index = Number(row.dataset.index);
-      if (state.selectedOpcodeRows.includes(index)) {
-        state.selectedOpcodeRows = state.selectedOpcodeRows.filter((value) => value !== index);
+    function bindSwapTable(tbody, selectionKey, swap) {
+      tbody.addEventListener('click', (event) => {
+        const row = event.target.closest('.opcode-row');
+        if (!row) return;
+        const index = Number(row.dataset.index);
+        if (state[selectionKey].includes(index)) {
+          state[selectionKey] = state[selectionKey].filter((value) => value !== index);
+          renderOpcodeTable();
+          return;
+        }
+        state[selectionKey].push(index);
+        if (state[selectionKey].length === 2) {
+          swap(state[selectionKey][0], state[selectionKey][1]);
+          return;
+        }
         renderOpcodeTable();
-        return;
-      }
-      state.selectedOpcodeRows.push(index);
-      if (state.selectedOpcodeRows.length === 2) {
-        swapOpcodeNames(state.selectedOpcodeRows[0], state.selectedOpcodeRows[1]);
-        return;
-      }
-      renderOpcodeTable();
-    });
+      });
+    }
+
+    bindSwapTable(opcodeTableBody, 'selectedOpcodeRows', swapOpcodeNames);
+    bindSwapTable(operandTagTableBody, 'selectedOperandTagRows', swapOperandTagNames);
+    bindSwapTable(constantTagTableBody, 'selectedConstantTagRows', swapConstantTagNames);
+    bindSwapTable(externSlotTableBody, 'selectedExternRows', swapExternSlots);
 
     resetOpcodesBtn.addEventListener('click', resetOpcodeTable);
     shuffleOpcodesBtn.addEventListener('click', shuffleOpcodeNames);
-    applySeedBtn.addEventListener('click', applyOpcodeSeed);
-
-    copyBtn.addEventListener('click', async () => {
-      let text = output.textContent;
-      if (state.activeConfigView === 'opcodes') {
-        text = state.opcodeSeed || opcodeYaml();
-      } else if (state.activeConfigView === 'externs') {
-        text = externList.textContent;
+    syncSeedBtn.addEventListener('click', syncBytesSeedToObfuscation);
+    opcodeSeedInput.addEventListener('change', applyOpcodeSeed);
+    opcodeSeedInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyOpcodeSeed();
       }
-      await navigator.clipboard.writeText(text);
-      showToast('Copied');
     });
+    bytesSeedInput.addEventListener('change', rerunWithBytesSeed);
+    bytesSeedInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        rerunWithBytesSeed();
+      }
+    });
+
+    output.addEventListener('click', (event) => {
+      const cell = event.target.closest('.hex-byte[data-index], .hex-char[data-index]');
+      if (!cell) return;
+      selectHexByte(Number(cell.dataset.index));
+      output.focus();
+    });
+
+    output.addEventListener('keydown', (event) => {
+      const deltas = {
+        ArrowLeft: -1,
+        ArrowRight: 1,
+        ArrowUp: -16,
+        ArrowDown: 16,
+      };
+      const delta = deltas[event.key];
+      if (delta === undefined) return;
+      if (moveHexSelection(delta)) {
+        event.preventDefault();
+      }
+    });
+
+    downloadPkgBtn.addEventListener('click', downloadRuntimePackage);
 
     clearBtn.addEventListener('click', () => {
       resetLogs();
@@ -1975,7 +2651,7 @@ export default def;`,
     setStatus('', 'Initializing');
 
     try {
-      await init('./pkg/compiler/js_token_bin_bg.wasm?v=seed');
+      await init('./pkg/compiler/js_token_bin_bg.wasm?v=compact-seed');
       state.ready = true;
       wasmState.textContent = 'WASM ready';
       setStatus('ready', 'Ready');

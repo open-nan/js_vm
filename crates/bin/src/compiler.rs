@@ -1444,6 +1444,23 @@ impl Compiler {
         self.to_bytecode()
     }
 
+    pub fn to_bytecode_text_with_extern_slots(
+        &self,
+        extern_slots: Box<[JsValue]>,
+    ) -> Result<String, String> {
+        let extern_slots = js_values_to_strings(&extern_slots);
+        if extern_slots.len() != self.ir.extern_slots.len() {
+            return Err(format!(
+                "extern slot count mismatch: expected {}, got {}",
+                self.ir.extern_slots.len(),
+                extern_slots.len()
+            ));
+        }
+        let mut module = self.ir.to_bytecode();
+        module.extern_slots = extern_slots;
+        Ok(module.to_text())
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         self.ir.to_bytecode().to_bytes()
     }
@@ -1456,6 +1473,27 @@ impl Compiler {
         let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
         self.ir
             .to_bytecode()
+            .to_bytes_with_encoding(&encoding)
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn to_bytes_with_encoding_and_extern_slots(
+        &self,
+        yaml: &str,
+        extern_slots: Box<[JsValue]>,
+    ) -> Result<Vec<u8>, String> {
+        let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
+        let extern_slots = js_values_to_strings(&extern_slots);
+        if extern_slots.len() != self.ir.extern_slots.len() {
+            return Err(format!(
+                "extern slot count mismatch: expected {}, got {}",
+                self.ir.extern_slots.len(),
+                extern_slots.len()
+            ));
+        }
+        let mut module = self.ir.to_bytecode();
+        module.extern_slots = extern_slots;
+        module
             .to_bytes_with_encoding(&encoding)
             .map_err(|err| err.to_string())
     }
