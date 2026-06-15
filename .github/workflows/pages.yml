@@ -38,10 +38,21 @@ jobs:
       - name: Prepare site
         run: |
           rm -rf dist
-          mkdir -p dist/pkg
+          mkdir -p dist/pkg/compiler
           cp index.html dist/
-          cp -R pkg/compiler dist/pkg/compiler
+          cp pkg/compiler/js_token_bin.js dist/pkg/compiler/
+          cp pkg/compiler/js_token_bin_bg.wasm dist/pkg/compiler/
+          cp pkg/compiler/js_token_bin.d.ts dist/pkg/compiler/
+          cp pkg/compiler/js_token_bin_bg.wasm.d.ts dist/pkg/compiler/
+          cp pkg/compiler/package.json dist/pkg/compiler/
           touch dist/.nojekyll
+
+      - name: Verify site payload
+        run: |
+          test -f dist/index.html
+          test -f dist/pkg/compiler/js_token_bin.js
+          test -f dist/pkg/compiler/js_token_bin_bg.wasm
+          find dist -maxdepth 3 -type f | sort
 
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v3

@@ -49,4 +49,6 @@ https://open-nan.github.io/js_vm/
 
 # TODO
 - [ ] 为 Seeb 加盐，在构建时为compiler，executor 添加鸿，添加一个参数用来将盐加到编译器和执行器中，他们编译器会根据Seeb的盐进行编译，执行器会根据Seeb的盐进行执行，只有Seeb的盐才能执行
-- [ ] 优化js编辑、hex、 Bytecode添加大文本渲染，借鉴虚拟列表渲染机制
+- [ ] 优化js编辑、hex、 Bytecode大文本渲染，借鉴虚拟列表渲染机制
+- [ ] 优化UI 去除offset行，滚动只在字节码区域
+- [ ] 修复 gh-pages 中缺少 pkg 包
