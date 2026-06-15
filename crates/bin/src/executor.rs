@@ -119,7 +119,7 @@ impl Executor {
                     let dst = register(instruction, 0)?;
                     let object = self.read_value(module, operand(instruction, 1)?)?;
                     let property = self.read_constant_string(module, operand(instruction, 2)?)?;
-                    let value = get_member(&object, &property);
+                    let value = get_member(&object, &property)?;
                     self.write_register(dst, value.clone());
                     self.last_value = value;
                 }
@@ -316,6 +316,9 @@ impl Executor {
         args: Vec<Value>,
     ) -> Result<Value, ExecuteError> {
         match callee {
+            Value::Null | Value::Undefined => {
+                Err(ExecuteError::TypeError(format!("cannot call {callee}")))
+            }
             Value::Function(function) => {
                 self.call_function(module, &function, Value::Undefined, args)
             }
@@ -335,6 +338,9 @@ impl Executor {
         args: Vec<Value>,
     ) -> Result<Value, ExecuteError> {
         match callee {
+            Value::Null | Value::Undefined => Err(ExecuteError::TypeError(format!(
+                "cannot construct {callee}"
+            ))),
             Value::Class(class) => Ok(Value::Object(class.static_props)),
             Value::Function(function) => {
                 let this_value = Value::Object(BTreeMap::new());
@@ -662,6 +668,7 @@ pub enum ExecuteError {
     UnknownLabel(String),
     Unsupported(&'static str),
     Thrown(Value),
+    TypeError(String),
     Runtime(String),
 }
 
@@ -676,6 +683,7 @@ impl fmt::Display for ExecuteError {
             ExecuteError::UnknownLabel(label) => write!(f, "unknown label {label}"),
             ExecuteError::Unsupported(op) => write!(f, "unsupported opcode {op}"),
             ExecuteError::Thrown(value) => write!(f, "uncaught exception {value}"),
+            ExecuteError::TypeError(message) => write!(f, "TypeError: {message}"),
             ExecuteError::Runtime(message) => write!(f, "{message}"),
         }
     }
@@ -824,29 +832,37 @@ fn constant_string(module: &BytecodeModule, index: u32) -> Result<String, Execut
     }
 }
 
-fn get_member(object: &Value, property: &str) -> Value {
+fn get_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
     match object {
         Value::Object(props) => match props.get(property).cloned() {
             Some(Value::Function(function)) => {
-                Value::BoundFunction(function, Box::new(object.clone()))
+                Ok(Value::BoundFunction(function, Box::new(object.clone())))
             }
-            Some(value) => value,
-            None => Value::Undefined,
+            Some(value) => Ok(value),
+            None => Ok(Value::Undefined),
         },
-        Value::ExternalObject(name) => Value::NativeFunction(format!("{name}.{property}")),
-        Value::Array(items) if property == "length" => Value::Number(items.len() as f64),
-        Value::Array(items) => property
+        Value::ExternalObject(name) => Ok(Value::NativeFunction(format!("{name}.{property}"))),
+        Value::Array(items) if property == "length" => Ok(Value::Number(items.len() as f64)),
+        Value::Array(items) => Ok(property
             .parse::<usize>()
             .ok()
             .and_then(|index| items.get(index).cloned())
-            .unwrap_or(Value::Undefined),
-        Value::String(value) if property == "length" => Value::Number(value.chars().count() as f64),
-        _ => Value::Undefined,
+            .unwrap_or(Value::Undefined)),
+        Value::String(value) if property == "length" => {
+            Ok(Value::Number(value.chars().count() as f64))
+        }
+        Value::Null | Value::Undefined => Err(ExecuteError::TypeError(format!(
+            "cannot read property {property:?} of {object}"
+        ))),
+        _ => Ok(Value::Undefined),
     }
 }
 
 fn set_member(object: &mut Value, property: &str, value: Value) -> Result<(), ExecuteError> {
     match object {
+        Value::Null | Value::Undefined => Err(ExecuteError::TypeError(format!(
+            "cannot set property {property:?} of {object}"
+        ))),
         Value::Object(props) => {
             props.insert(property.to_string(), value);
             Ok(())
@@ -949,7 +965,7 @@ fn unary(op: &str, arg: Value) -> Result<Value, ExecuteError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Executor, Value};
+    use super::{ExecuteError, Executor, Value};
     use crate::compiler::compile_to_bytecode;
 
     #[test]
@@ -1011,5 +1027,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
+    }
+
+    #[test]
+    fn reports_type_errors_for_nullish_runtime_operations() {
+        for source in [
+            "const value = null; value.missing;",
+            "const value = undefined; value.missing;",
+            "const value = null; value.missing = 1;",
+            "const value = null; value();",
+        ] {
+            let module = compile_to_bytecode(source).unwrap();
+            let err = Executor::run(&module).unwrap_err();
+            assert!(
+                matches!(err, ExecuteError::TypeError(_)),
+                "expected TypeError for {source}, got {err:?}"
+            );
+        }
     }
 }

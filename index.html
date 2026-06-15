@@ -463,8 +463,6 @@
           <option value="module">模块语法</option>
           <option value="exception">异常</option>
         </select>
-        <button id="compileBtn" class="primary" type="button" title="编译">▶</button>
-        <button id="executeBtn" type="button" title="执行">↵</button>
         <button id="copyBtn" class="icon" type="button" title="复制当前输出">⧉</button>
         <button id="clearBtn" class="icon" type="button" title="清空控制台">×</button>
       </div>
@@ -494,7 +492,7 @@
             <button class="tab" type="button" data-view="run">Run</button>
             <button class="tab" type="button" data-view="externs">Externs</button>
           </div>
-          <div class="pane-title" id="compileTime">0ms</div>
+          <div class="pane-title" id="timingInfo">Compile 0ms · Run 0ms</div>
         </div>
         <div class="output-wrap">
           <div class="meta-grid">
@@ -581,6 +579,13 @@ export default def;`,
         run: '',
         externs: '',
       },
+      viewErrors: {
+        ir: false,
+        bytecode: false,
+        bytes: false,
+        run: false,
+        externs: false,
+      },
       ready: false,
       timer: 0,
     };
@@ -589,8 +594,6 @@ export default def;`,
     const highlightLayer = document.getElementById('highlightLayer');
     const lineNumbers = document.getElementById('lineNumbers');
     const output = document.getElementById('output');
-    const compileBtn = document.getElementById('compileBtn');
-    const executeBtn = document.getElementById('executeBtn');
     const copyBtn = document.getElementById('copyBtn');
     const clearBtn = document.getElementById('clearBtn');
     const exampleSelect = document.getElementById('exampleSelect');
@@ -600,7 +603,7 @@ export default def;`,
     const cursorInfo = document.getElementById('cursorInfo');
     const sizeInfo = document.getElementById('sizeInfo');
     const lineInfo = document.getElementById('lineInfo');
-    const compileTime = document.getElementById('compileTime');
+    const timingInfo = document.getElementById('timingInfo');
     const metricIr = document.getElementById('metricIr');
     const metricBytecode = document.getElementById('metricBytecode');
     const metricBytes = document.getElementById('metricBytes');
@@ -836,7 +839,7 @@ export default def;`,
       document.querySelectorAll('.tab').forEach((tab) => {
         tab.classList.toggle('active', tab.dataset.view === view);
       });
-      output.classList.remove('error');
+      output.classList.toggle('error', state.viewErrors[view]);
       output.textContent = state.views[view] || '';
     }
 
@@ -854,40 +857,18 @@ export default def;`,
       }
     }
 
-    function compile() {
-      if (!state.ready) return;
-
-      const started = performance.now();
-      disposeCompiler();
-
-      try {
-        const compiler = new Compiler(editor.value);
-        const bytes = compiler.to_bytes();
-        const externs = compiler.extern_slots();
-        state.compiler = compiler;
-        state.views.ir = compiler.to_text();
-        state.views.bytecode = compiler.to_bytecode_text();
-        state.views.bytes = formatBytes(bytes);
-        state.views.externs = externs.length
-          ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
-          : '(empty)';
-        state.views.run = '';
-        compileTime.textContent = `${Math.round(performance.now() - started)}ms`;
-        updateMetrics(bytes, externs);
-        setStatus('ready', 'Compiled');
-        setActiveView(state.activeView);
-      } catch (err) {
-        state.views[state.activeView] = String(err);
-        output.classList.add('error');
-        output.textContent = String(err);
-        setStatus('error', 'Compile error');
-      }
+    function resetViewErrors() {
+      Object.keys(state.viewErrors).forEach((view) => {
+        state.viewErrors[view] = false;
+      });
     }
 
-    function execute() {
-      if (!state.compiler) compile();
-      if (!state.compiler) return;
+    function executeCurrentCompiler() {
+      if (!state.compiler) {
+        return { ok: false, text: '(no compiled module)', duration: 0 };
+      }
 
+      const started = performance.now();
       const logs = [];
       const originalLog = console.log;
       console.log = (...args) => {
@@ -897,26 +878,74 @@ export default def;`,
 
       try {
         const result = state.compiler.execute();
-        state.views.run = [...logs, `=> ${result}`].join('\n');
-        setStatus('ready', 'Executed');
+        return {
+          ok: true,
+          text: [...logs, `=> ${result}`].join('\n'),
+          duration: performance.now() - started,
+        };
       } catch (err) {
-        state.views.run = [...logs, String(err)].join('\n');
-        setStatus('error', 'Runtime error');
+        return {
+          ok: false,
+          text: [...logs, `Runtime Error\n${String(err)}`].join('\n'),
+          duration: performance.now() - started,
+        };
       } finally {
         console.log = originalLog;
       }
-
-      setActiveView('run');
     }
 
-    function scheduleCompile() {
+    function build() {
+      if (!state.ready) return;
+
+      const compileStarted = performance.now();
+      disposeCompiler();
+
+      try {
+        resetViewErrors();
+        const compiler = new Compiler(editor.value);
+        const bytes = compiler.to_bytes();
+        const externs = compiler.extern_slots();
+        const compileDuration = performance.now() - compileStarted;
+        state.compiler = compiler;
+        state.views.ir = compiler.to_text();
+        state.views.bytecode = compiler.to_bytecode_text();
+        state.views.bytes = formatBytes(bytes);
+        state.views.externs = externs.length
+          ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
+          : '(empty)';
+
+        const run = executeCurrentCompiler();
+        state.views.run = run.text;
+        state.viewErrors.run = !run.ok;
+        timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms · Run ${Math.round(run.duration)}ms`;
+        updateMetrics(bytes, externs);
+        setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Auto built' : 'Runtime error');
+        setActiveView(state.activeView);
+      } catch (err) {
+        const message = `Compile Error\n${String(err)}`;
+        state.views.ir = message;
+        state.views.bytecode = message;
+        state.views.bytes = message;
+        state.views.externs = message;
+        state.views.run = message;
+        Object.keys(state.viewErrors).forEach((view) => {
+          state.viewErrors[view] = true;
+        });
+        timingInfo.textContent = 'Compile failed · Run 0ms';
+        setStatus('error', 'Compile error');
+        setActiveView(state.activeView);
+      }
+    }
+
+    function scheduleBuild() {
       window.clearTimeout(state.timer);
-      state.timer = window.setTimeout(compile, 220);
+      setStatus('', 'Waiting for input');
+      state.timer = window.setTimeout(build, 360);
     }
 
     editor.addEventListener('input', () => {
       updateEditorStats();
-      scheduleCompile();
+      scheduleBuild();
     });
 
     editor.addEventListener('scroll', syncScroll);
@@ -930,21 +959,18 @@ export default def;`,
         const end = editor.selectionEnd;
         editor.setRangeText('  ', start, end, 'end');
         updateEditorStats();
-        scheduleCompile();
+        scheduleBuild();
       }
 
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
-        execute();
+        build();
       }
     });
 
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => setActiveView(tab.dataset.view));
     });
-
-    compileBtn.addEventListener('click', compile);
-    executeBtn.addEventListener('click', execute);
 
     copyBtn.addEventListener('click', async () => {
       await navigator.clipboard.writeText(output.textContent);
@@ -960,7 +986,7 @@ export default def;`,
     exampleSelect.addEventListener('change', () => {
       editor.value = examples[exampleSelect.value];
       updateEditorStats();
-      compile();
+      build();
       editor.focus();
     });
 
@@ -974,7 +1000,7 @@ export default def;`,
       state.ready = true;
       wasmState.textContent = 'WASM ready';
       setStatus('ready', 'Ready');
-      compile();
+      build();
       editor.focus();
     } catch (err) {
       wasmState.textContent = 'WASM failed';
