@@ -1389,6 +1389,25 @@ pub fn execute_bytecode_bytes_with_encoding_yaml(
         .map_err(|err| err.to_string())
 }
 
+pub fn encoding_seed_for_bytes(yaml: &str, bytes: &[u8]) -> Result<String, String> {
+    let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
+    encoding.to_seed(bytes).map_err(|err| err.to_string())
+}
+
+pub fn encoding_yaml_from_seed(seed: &str) -> Result<String, String> {
+    EncodingConfig::from_seed(seed)
+        .map(|encoding| encoding.to_yaml())
+        .map_err(|err| err.to_string())
+}
+
+pub fn execute_bytecode_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
+    let bytecode =
+        BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
+    Executor::run(&bytecode)
+        .map(|value| value.to_string())
+        .map_err(|err| err.to_string())
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct Compiler {
     ir: IrModule,
@@ -1441,6 +1460,18 @@ impl Compiler {
             .map_err(|err| err.to_string())
     }
 
+    pub fn to_bytes_with_seed(&self, seed: &str) -> Result<Vec<u8>, String> {
+        let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
+        self.ir
+            .to_bytecode()
+            .to_bytes_with_encoding(&encoding)
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn encoding_seed(&self, yaml: &str, bytes: &[u8]) -> Result<String, String> {
+        encoding_seed_for_bytes(yaml, bytes)
+    }
+
     pub fn execute(&self) -> Result<String, String> {
         Executor::run(&self.ir.to_bytecode())
             .map(|value| value.to_string())
@@ -1477,6 +1508,21 @@ pub fn js_execute_bytes(bytes: &[u8]) -> Result<String, String> {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn js_execute_bytes_with_encoding(bytes: &[u8], yaml: &str) -> Result<String, String> {
     execute_bytecode_bytes_with_encoding_yaml(bytes, yaml)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn js_encoding_yaml_from_seed(seed: &str) -> Result<String, String> {
+    encoding_yaml_from_seed(seed)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn js_encoding_seed_for_bytes(yaml: &str, bytes: &[u8]) -> Result<String, String> {
+    encoding_seed_for_bytes(yaml, bytes)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn js_execute_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
+    execute_bytecode_bytes_with_seed(bytes, seed)
 }
 
 fn js_values_to_strings(values: &[JsValue]) -> Vec<String> {

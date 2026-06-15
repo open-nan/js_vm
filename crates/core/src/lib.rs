@@ -603,6 +603,8 @@ pub struct EncodingConfig {
     pub constant_tags: BTreeMap<String, u8>,
 }
 
+const ENCODING_SEED_PREFIX: &str = "JSTKSEED1";
+
 impl Default for EncodingConfig {
     fn default() -> Self {
         let opcodes = [
@@ -783,6 +785,59 @@ impl EncodingConfig {
         out
     }
 
+    pub fn to_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
+        self.validate()?;
+        let perm = self.seed_permutation()?;
+        let fingerprint = seed_fingerprint(&perm, bytes);
+        Ok(format!("{ENCODING_SEED_PREFIX}-{fingerprint:016x}-{perm}"))
+    }
+
+    pub fn from_seed(seed: &str) -> Result<Self, EncodingError> {
+        let parsed = parse_encoding_seed(seed)?;
+        encoding_from_seed_permutation(&parsed.permutation)
+    }
+
+    pub fn from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
+        let parsed = parse_encoding_seed(seed)?;
+        let actual = seed_fingerprint(&parsed.permutation, bytes);
+        if actual != parsed.fingerprint {
+            return Err(EncodingError::Seed(
+                "seed does not match bytecode bytes".to_string(),
+            ));
+        }
+        encoding_from_seed_permutation(&parsed.permutation)
+    }
+
+    fn seed_permutation(&self) -> Result<String, EncodingError> {
+        let opcodes = default_opcode_mnemonics();
+        let mut by_code = vec![String::new(); opcodes.len()];
+        for (mnemonic, code) in &self.opcodes {
+            let code = *code as usize;
+            if code >= by_code.len() {
+                return Err(EncodingError::Seed(format!(
+                    "opcode code {code} is outside seed range"
+                )));
+            }
+            if !by_code[code].is_empty() {
+                return Err(EncodingError::Seed(format!(
+                    "duplicate opcode code {code} in seed source"
+                )));
+            }
+            by_code[code] = normalize_opcode_key(mnemonic);
+        }
+
+        let mut perm = String::with_capacity(opcodes.len() * 2);
+        for mnemonic in by_code {
+            let Some(index) = opcodes.iter().position(|candidate| *candidate == mnemonic) else {
+                return Err(EncodingError::Seed(format!(
+                    "unknown opcode mnemonic {mnemonic}"
+                )));
+            };
+            perm.push_str(&encode_base36_pair(index as u8));
+        }
+        Ok(perm)
+    }
+
     fn validate(&self) -> Result<(), EncodingError> {
         if self.magic.is_empty() {
             return Err(EncodingError::MissingKey("magic".to_string()));
@@ -845,6 +900,7 @@ pub enum EncodingError {
     UnexpectedEof,
     InvalidMagic { expected: String },
     Yaml(String),
+    Seed(String),
 }
 
 impl fmt::Display for EncodingError {
@@ -857,6 +913,7 @@ impl fmt::Display for EncodingError {
                 write!(f, "invalid bytecode magic, expected {expected:?}")
             }
             EncodingError::Yaml(message) => write!(f, "invalid encoding yaml: {message}"),
+            EncodingError::Seed(message) => write!(f, "invalid encoding seed: {message}"),
         }
     }
 }
@@ -1053,6 +1110,11 @@ impl BytecodeModule {
             constants,
             instructions,
         })
+    }
+
+    pub fn from_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<Self, EncodingError> {
+        let encoding = EncodingConfig::from_seed_for_bytes(seed, bytes)?;
+        Self::from_bytes_with_encoding(bytes, &encoding)
     }
 
     fn format_operand(&self, operand: &BytecodeOperand) -> String {
@@ -1460,6 +1522,127 @@ fn normalize_tag_key(key: &str) -> String {
     key.trim().replace('-', "_").to_ascii_lowercase()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedEncodingSeed {
+    fingerprint: u64,
+    permutation: String,
+}
+
+fn parse_encoding_seed(seed: &str) -> Result<ParsedEncodingSeed, EncodingError> {
+    let mut parts = seed.trim().split('-');
+    let prefix = parts.next().unwrap_or_default();
+    let fingerprint = parts.next().unwrap_or_default();
+    let permutation = parts.next().unwrap_or_default();
+    if parts.next().is_some() || prefix != ENCODING_SEED_PREFIX {
+        return Err(EncodingError::Seed(format!(
+            "expected {ENCODING_SEED_PREFIX}-<hash>-<perm>"
+        )));
+    }
+    let fingerprint = u64::from_str_radix(fingerprint, 16)
+        .map_err(|err| EncodingError::Seed(format!("invalid fingerprint: {err}")))?;
+    let expected_len = BytecodeOp::all().len() * 2;
+    if permutation.len() != expected_len {
+        return Err(EncodingError::Seed(format!(
+            "expected permutation length {expected_len}, got {}",
+            permutation.len()
+        )));
+    }
+    Ok(ParsedEncodingSeed {
+        fingerprint,
+        permutation: permutation.to_ascii_uppercase(),
+    })
+}
+
+fn encoding_from_seed_permutation(permutation: &str) -> Result<EncodingConfig, EncodingError> {
+    let opcodes = default_opcode_mnemonics();
+    let mut seen = vec![false; opcodes.len()];
+    let mut config = EncodingConfig::default();
+    config.opcodes.clear();
+
+    for (code, chunk) in permutation.as_bytes().chunks_exact(2).enumerate() {
+        let index = decode_base36_pair(chunk)? as usize;
+        let Some(mnemonic) = opcodes.get(index) else {
+            return Err(EncodingError::Seed(format!(
+                "opcode index {index} is outside seed range"
+            )));
+        };
+        if seen[index] {
+            return Err(EncodingError::Seed(format!(
+                "duplicate opcode mnemonic {mnemonic} in seed"
+            )));
+        }
+        seen[index] = true;
+        config.opcodes.insert(mnemonic.clone(), code as u8);
+    }
+
+    if let Some((index, _)) = seen.iter().enumerate().find(|(_, value)| !**value) {
+        return Err(EncodingError::Seed(format!(
+            "missing opcode mnemonic {} in seed",
+            opcodes[index]
+        )));
+    }
+
+    config.validate()?;
+    Ok(config)
+}
+
+fn default_opcode_mnemonics() -> Vec<String> {
+    BytecodeOp::all()
+        .iter()
+        .map(|op| op.mnemonic().to_string())
+        .collect()
+}
+
+fn encode_base36_pair(value: u8) -> String {
+    let high = value / 36;
+    let low = value % 36;
+    format!("{}{}", encode_base36_digit(high), encode_base36_digit(low))
+}
+
+fn decode_base36_pair(chunk: &[u8]) -> Result<u8, EncodingError> {
+    if chunk.len() != 2 {
+        return Err(EncodingError::Seed("invalid base36 pair".to_string()));
+    }
+    let high = decode_base36_digit(chunk[0])?;
+    let low = decode_base36_digit(chunk[1])?;
+    Ok(high * 36 + low)
+}
+
+fn encode_base36_digit(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=35 => char::from(b'A' + value - 10),
+        _ => '?',
+    }
+}
+
+fn decode_base36_digit(value: u8) -> Result<u8, EncodingError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'z' => Ok(value - b'a' + 10),
+        b'A'..=b'Z' => Ok(value - b'A' + 10),
+        _ => Err(EncodingError::Seed(format!(
+            "invalid base36 digit {:?}",
+            char::from(value)
+        ))),
+    }
+}
+
+fn seed_fingerprint(permutation: &str, bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in permutation
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain([0xff])
+        .chain(bytes.iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 struct ByteReader<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -1625,5 +1808,39 @@ mod tests {
         assert_eq!(bytes[29], 99);
         assert_eq!(bytes[34], 11);
         assert_eq!(bytes[39], 12);
+    }
+
+    #[test]
+    fn encoding_seed_restores_config_and_rejects_mismatched_bytes() {
+        let module = IrModule {
+            extern_slots: Vec::new(),
+            instructions: vec![IrInstruction::LoadConst {
+                dst: "t0".to_string(),
+                value: IrValue::Number(1.0),
+            }],
+        };
+        let bytecode = module.to_bytecode();
+        let encoding = EncodingConfig::from_yaml(
+            r#"
+            opcodes:
+              LOAD_CONST: 8
+              BINARY: 3
+            "#,
+        )
+        .unwrap();
+
+        let bytes = bytecode.to_bytes_with_encoding(&encoding).unwrap();
+        let seed = encoding.to_seed(&bytes).unwrap();
+        let restored = EncodingConfig::from_seed_for_bytes(&seed, &bytes).unwrap();
+        assert_eq!(restored.opcodes.get("LOAD_CONST"), Some(&8));
+        assert_eq!(restored.opcodes.get("BINARY"), Some(&3));
+        assert_eq!(
+            bytecode,
+            super::BytecodeModule::from_bytes_with_seed(&bytes, &seed).unwrap()
+        );
+
+        let mut tampered = bytes.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(EncodingConfig::from_seed_for_bytes(&seed, &tampered).is_err());
     }
 }

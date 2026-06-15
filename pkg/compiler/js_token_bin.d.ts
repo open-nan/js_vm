@@ -4,6 +4,7 @@
 export class Compiler {
     free(): void;
     [Symbol.dispose](): void;
+    encoding_seed(yaml: string, bytes: Uint8Array): string;
     execute(): string;
     execute_with_externals(externals: any[]): string;
     extern_slots(): string[];
@@ -13,15 +14,22 @@ export class Compiler {
     to_bytecode_text(): string;
     to_bytes(): Uint8Array;
     to_bytes_with_encoding(yaml: string): Uint8Array;
+    to_bytes_with_seed(seed: string): Uint8Array;
     to_text(): string;
     static with_externals(source: string, externals: any[]): Compiler;
 }
+
+export function js_encoding_seed_for_bytes(yaml: string, bytes: Uint8Array): string;
+
+export function js_encoding_yaml_from_seed(seed: string): string;
 
 export function js_execute(source: string): string;
 
 export function js_execute_bytes(bytes: Uint8Array): string;
 
 export function js_execute_bytes_with_encoding(bytes: Uint8Array, yaml: string): string;
+
+export function js_execute_bytes_with_seed(bytes: Uint8Array, seed: string): string;
 
 export function js_execute_with_externals(source: string, externals: any[]): string;
 
@@ -30,6 +38,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_compiler_free: (a: number, b: number) => void;
+    readonly compiler_encoding_seed: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly compiler_execute: (a: number, b: number) => void;
     readonly compiler_execute_with_externals: (a: number, b: number, c: number, d: number) => void;
     readonly compiler_extern_slots: (a: number, b: number) => void;
@@ -37,11 +46,15 @@ export interface InitOutput {
     readonly compiler_to_bytecode: (a: number, b: number) => void;
     readonly compiler_to_bytecode_bytes: (a: number, b: number) => void;
     readonly compiler_to_bytes_with_encoding: (a: number, b: number, c: number, d: number) => void;
+    readonly compiler_to_bytes_with_seed: (a: number, b: number, c: number, d: number) => void;
     readonly compiler_to_text: (a: number, b: number) => void;
     readonly compiler_with_externals: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly js_encoding_seed_for_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly js_encoding_yaml_from_seed: (a: number, b: number, c: number) => void;
     readonly js_execute: (a: number, b: number, c: number) => void;
     readonly js_execute_bytes: (a: number, b: number, c: number) => void;
     readonly js_execute_bytes_with_encoding: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly js_execute_bytes_with_seed: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly js_execute_with_externals: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly compiler_to_bytecode_text: (a: number, b: number) => void;
     readonly compiler_to_bytes: (a: number, b: number) => void;

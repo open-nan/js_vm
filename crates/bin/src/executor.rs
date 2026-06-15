@@ -9,6 +9,14 @@ use js_token_core::{
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = log)]
     fn wasm_console_log(value: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = info)]
+    fn wasm_console_info(value: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = warn)]
+    fn wasm_console_warn(value: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
+    fn wasm_console_error(value: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = debug)]
+    fn wasm_console_debug(value: &str);
 }
 
 #[derive(Debug, Default)]
@@ -49,7 +57,7 @@ impl Executor {
         for name in externals {
             self.globals
                 .entry(name.clone())
-                .or_insert(Value::ExternalObject(name));
+                .or_insert(Value::ExternalRef(name));
         }
     }
 
@@ -325,7 +333,7 @@ impl Executor {
             Value::BoundFunction(function, this_value) => {
                 self.call_function(module, &function, *this_value, args)
             }
-            Value::NativeFunction(name) => call_native(&name, args),
+            Value::ExternalRef(path) => HostBridge::call(&path, args),
             Value::Class(class) => Ok(Value::Object(class.static_props)),
             _ => Err(ExecuteError::Runtime(format!("{callee} is not callable"))),
         }
@@ -553,8 +561,7 @@ pub enum Value {
     Object(BTreeMap<String, Value>),
     Function(FunctionValue),
     BoundFunction(FunctionValue, Box<Value>),
-    ExternalObject(String),
-    NativeFunction(String),
+    ExternalRef(String),
     Class(ClassValue),
     Module(ModuleValue),
     Null,
@@ -594,8 +601,7 @@ impl Value {
             | Value::Object(_)
             | Value::Function(_)
             | Value::BoundFunction(_, _)
-            | Value::ExternalObject(_)
-            | Value::NativeFunction(_)
+            | Value::ExternalRef(_)
             | Value::Class(_)
             | Value::Module(_) => true,
             Value::Null | Value::Undefined => false,
@@ -612,8 +618,7 @@ impl Value {
             | Value::Object(_)
             | Value::Function(_)
             | Value::BoundFunction(_, _)
-            | Value::ExternalObject(_)
-            | Value::NativeFunction(_)
+            | Value::ExternalRef(_)
             | Value::Class(_)
             | Value::Module(_)
             | Value::Undefined => f64::NAN,
@@ -646,8 +651,7 @@ impl fmt::Display for Value {
                 "function {}",
                 function.name.as_deref().unwrap_or("<anonymous>")
             ),
-            Value::ExternalObject(name) => write!(f, "[external {name}]"),
-            Value::NativeFunction(name) => write!(f, "function {name}"),
+            Value::ExternalRef(name) => write!(f, "[external {name}]"),
             Value::Class(class) => write!(
                 f,
                 "class {}",
@@ -841,7 +845,7 @@ fn get_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
             Some(value) => Ok(value),
             None => Ok(Value::Undefined),
         },
-        Value::ExternalObject(name) => Ok(Value::NativeFunction(format!("{name}.{property}"))),
+        Value::ExternalRef(path) => Ok(HostBridge::get(path, property)),
         Value::Array(items) if property == "length" => Ok(Value::Number(items.len() as f64)),
         Value::Array(items) => Ok(property
             .parse::<usize>()
@@ -883,29 +887,82 @@ fn set_member(object: &mut Value, property: &str, value: Value) -> Result<(), Ex
     }
 }
 
-fn call_native(name: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
-    match name {
-        "console.log" | "window.console.log" => {
-            let message = args
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            host_log(&message);
-            Ok(Value::Undefined)
+struct HostBridge;
+
+impl HostBridge {
+    fn get(path: &str, property: &str) -> Value {
+        Value::ExternalRef(format!("{path}.{property}"))
+    }
+
+    fn call(path: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
+        let normalized = Self::normalize_path(path);
+        match normalized.as_str() {
+            "console.log" => {
+                host_console("log", &Self::message(&args));
+                Ok(Value::Undefined)
+            }
+            "console.info" => {
+                host_console("info", &Self::message(&args));
+                Ok(Value::Undefined)
+            }
+            "console.warn" => {
+                host_console("warn", &Self::message(&args));
+                Ok(Value::Undefined)
+            }
+            "console.error" => {
+                host_console("error", &Self::message(&args));
+                Ok(Value::Undefined)
+            }
+            "console.debug" => {
+                host_console("debug", &Self::message(&args));
+                Ok(Value::Undefined)
+            }
+            "fetch" | "window.fetch" | "globalThis.fetch" => {
+                let target = args
+                    .first()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "undefined".to_string());
+                host_console("log", &format!("NETWORK fetch {target}"));
+                Ok(Value::Undefined)
+            }
+            _ => Err(ExecuteError::Runtime(format!(
+                "external function {path} is not registered"
+            ))),
         }
-        _ => Ok(Value::Undefined),
+    }
+
+    fn normalize_path(path: &str) -> String {
+        path.strip_prefix("window.")
+            .or_else(|| path.strip_prefix("globalThis."))
+            .unwrap_or(path)
+            .to_string()
+    }
+
+    fn message(args: &[Value]) -> String {
+        args.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn host_log(message: &str) {
-    wasm_console_log(message);
+fn host_console(level: &str, message: &str) {
+    match level {
+        "info" => wasm_console_info(message),
+        "warn" => wasm_console_warn(message),
+        "error" => wasm_console_error(message),
+        "debug" => wasm_console_debug(message),
+        _ => wasm_console_log(message),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn host_log(message: &str) {
-    println!("{message}");
+fn host_console(level: &str, message: &str) {
+    match level {
+        "warn" | "error" => eprintln!("{message}"),
+        _ => println!("{message}"),
+    }
 }
 
 fn binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteError> {
@@ -946,15 +1003,13 @@ fn unary(op: &str, arg: Value) -> Result<Value, ExecuteError> {
                 Value::Number(_) => "number",
                 Value::String(_) => "string",
                 Value::Bool(_) => "boolean",
-                Value::Function(_) | Value::BoundFunction(_, _) | Value::NativeFunction(_) => {
-                    "function"
-                }
+                Value::Function(_) | Value::BoundFunction(_, _) => "function",
                 Value::Null => "object",
                 Value::Array(_)
                 | Value::Object(_)
                 | Value::Class(_)
                 | Value::Module(_)
-                | Value::ExternalObject(_) => "object",
+                | Value::ExternalRef(_) => "object",
                 Value::Undefined => "undefined",
             }
             .to_string(),
@@ -1027,6 +1082,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
+    }
+
+    #[test]
+    fn host_bridge_resolves_nested_external_paths() {
+        for source in [
+            "console.log(1); 2;",
+            "console.warn(1); 2;",
+            "console.error(1); 2;",
+            "window.console.log(1); 2;",
+            "globalThis.console.debug(1); 2;",
+        ] {
+            let module = compile_to_bytecode(source).unwrap();
+            assert_eq!(
+                Executor::run(&module).unwrap(),
+                Value::Number(2.0),
+                "expected host call to succeed for {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_bridge_reports_unregistered_external_calls() {
+        let module = compile_to_bytecode("console.trace(1);").unwrap();
+        let err = Executor::run(&module).unwrap_err();
+        assert!(
+            matches!(err, ExecuteError::Runtime(ref message) if message.contains("external function console.trace is not registered")),
+            "expected unregistered external call error, got {err:?}"
+        );
     }
 
     #[test]

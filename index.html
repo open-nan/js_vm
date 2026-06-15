@@ -164,14 +164,26 @@
       color: #cfd8e3;
     }
 
+    .editor-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      overflow: auto;
+    }
+
     .editor-shell {
       min-height: 0;
-      display: grid;
+      display: none;
       grid-template-columns: 52px minmax(0, 1fr);
       background: #111417;
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       font-size: 13px;
       line-height: 1.58;
+    }
+
+    .editor-shell.active {
+      display: grid;
     }
 
     .line-numbers {
@@ -360,7 +372,7 @@
     .output-wrap {
       min-height: 0;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) minmax(150px, 32%);
       background: #111417;
     }
 
@@ -398,6 +410,7 @@
     }
 
     .output {
+      grid-row: 2;
       margin: 0;
       padding: 14px 16px;
       overflow: auto;
@@ -409,6 +422,234 @@
     .output.error {
       color: #ffd8db;
       background: #211416;
+    }
+
+    .output.hidden {
+      display: none;
+    }
+
+    .byte-changed {
+      display: inline-block;
+      border-radius: 3px;
+      animation: byteChangeFade 2s ease-out forwards;
+    }
+
+    @keyframes byteChangeFade {
+      0% {
+        color: #08120f;
+        background: #7af0b4;
+        box-shadow: 0 0 0 2px rgba(122, 240, 180, 0.28);
+      }
+
+      55% {
+        color: #08120f;
+        background: #7af0b4;
+      }
+
+      100% {
+        color: inherit;
+        background: transparent;
+        box-shadow: none;
+      }
+    }
+
+    .console-panel {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      border-top: 1px solid var(--line);
+      background: #0f1215;
+    }
+
+    .console-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .console-head strong {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .console-log {
+      margin: 0;
+      padding: 10px 12px;
+      overflow: auto;
+      color: #cfd8e3;
+      font: 12px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .config-tab {
+      height: 27px;
+      border-radius: 5px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border-color: transparent;
+      white-space: nowrap;
+    }
+
+    .config-tab.active {
+      color: #ffffff;
+      background: #263039;
+      border-color: #38434f;
+    }
+
+    .config-view {
+      display: none;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .config-view.active {
+      display: block;
+    }
+
+    .extern-panel.active {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .extern-toolbar {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .extern-list {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      color: var(--code);
+      font: 12px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .opcode-panel {
+      display: none;
+      min-height: 0;
+      overflow: hidden;
+      background: #111417;
+    }
+
+    .opcode-panel.active {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .opcode-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .opcode-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .opcode-seed {
+      display: grid;
+      gap: 5px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .opcode-seed code {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--code);
+      font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .opcode-table-wrap {
+      overflow: auto;
+    }
+
+    .opcode-table {
+      width: 100%;
+      border-collapse: collapse;
+      font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      table-layout: fixed;
+    }
+
+    .opcode-table th,
+    .opcode-table td {
+      border-bottom: 1px solid #222830;
+      padding: 7px 10px;
+      text-align: left;
+    }
+
+    .opcode-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #171c22;
+      color: #9fb0c0;
+      font-weight: 650;
+    }
+
+    .opcode-row {
+      cursor: pointer;
+    }
+
+    .opcode-row:hover {
+      background: #182129;
+    }
+
+    .opcode-row.selected {
+      background: #263f3d;
+    }
+
+    .opcode-code {
+      width: 86px;
+      color: #f0c674;
+    }
+
+    .opcode-name {
+      color: #d7e0ea;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .opcode-code {
+      width: 58px;
+    }
+
+    .opcode-split {
+      width: 1px;
+      padding: 0;
+      background: #222830;
+    }
+
+    .opcode-empty {
+      cursor: default;
+      background: #111417;
+    }
+
+    .opcode-empty:hover {
+      background: #111417;
     }
 
     .statusbar {
@@ -525,15 +766,53 @@
     <main class="main">
       <section class="editor-pane">
         <div class="pane-head">
-          <div class="pane-title">JavaScript</div>
+          <div class="editor-tabs" role="tablist" aria-label="编辑区">
+            <button class="config-tab active" type="button" data-config-view="javascript">JavaScript</button>
+            <button class="config-tab" type="button" data-config-view="externs">Externs</button>
+            <button class="config-tab" type="button" data-config-view="opcodes">Opcodes</button>
+          </div>
           <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
         </div>
-        <div class="editor-shell">
+        <div id="editorShell" class="editor-shell active">
           <pre id="lineNumbers" class="line-numbers">1</pre>
           <div class="editor-stack">
             <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
             <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
             <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
+          </div>
+        </div>
+        <div id="externPanel" class="config-view extern-panel">
+          <div class="extern-toolbar">
+            <span id="externStatus">编译后显示自动解析的外部槽位</span>
+          </div>
+          <pre id="externList" class="extern-list">(empty)</pre>
+        </div>
+        <div id="opcodePanel" class="config-view opcode-panel">
+          <div class="opcode-toolbar">
+            <span id="opcodeStatus">选择两行交换指令名称</span>
+            <div class="opcode-actions">
+              <button id="shuffleOpcodesBtn" type="button">随机打乱</button>
+              <button id="applySeedBtn" type="button">应用种子</button>
+              <button id="resetOpcodesBtn" type="button">重置</button>
+            </div>
+          </div>
+          <div class="opcode-seed">
+            <span>Seed</span>
+            <code id="opcodeSeed">(build pending)</code>
+          </div>
+          <div class="opcode-table-wrap">
+            <table class="opcode-table">
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>指令名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>指令名称</th>
+                </tr>
+              </thead>
+              <tbody id="opcodeTableBody"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -544,8 +823,6 @@
             <button class="tab active" type="button" data-view="ir">IR</button>
             <button class="tab" type="button" data-view="bytecode">Bytecode</button>
             <button class="tab" type="button" data-view="bytes">Bytes</button>
-            <button class="tab" type="button" data-view="run">Run</button>
-            <button class="tab" type="button" data-view="externs">Externs</button>
           </div>
           <div class="pane-title" id="timingInfo">Compile 0ms · Run 0ms</div>
         </div>
@@ -557,6 +834,13 @@
             <div class="metric"><span>EXTERNS</span><strong id="metricExterns">0</strong></div>
           </div>
           <pre id="output" class="output"></pre>
+          <div class="console-panel" aria-label="运行日志">
+            <div class="console-head">
+              <strong>Console</strong>
+              <span id="logInfo">0 logs</span>
+            </div>
+            <pre id="consoleLog" class="console-log"></pre>
+          </div>
         </div>
       </section>
     </main>
@@ -575,7 +859,14 @@
   <div id="toast" class="toast"></div>
 
   <script type="module">
-    import init, { Compiler } from './pkg/compiler/js_token_bin.js';
+    import init, * as wasmPkg from './pkg/compiler/js_token_bin.js?v=seed';
+
+    const {
+      Compiler,
+      js_encoding_seed_for_bytes,
+      js_encoding_yaml_from_seed,
+      js_execute_bytes_with_seed,
+    } = wasmPkg;
 
     const examples = {
       basic: `function fib(n) {
@@ -631,15 +922,11 @@ export default def;`,
         ir: '',
         bytecode: '',
         bytes: '',
-        run: '',
-        externs: '',
       },
       viewErrors: {
         ir: false,
         bytecode: false,
         bytes: false,
-        run: false,
-        externs: false,
       },
       completion: {
         open: false,
@@ -650,13 +937,23 @@ export default def;`,
       },
       ready: false,
       timer: 0,
+      opcodeRows: [],
+      selectedOpcodeRows: [],
+      activeConfigView: 'javascript',
+      logs: [],
+      byteTokens: [],
+      bytesHtml: '',
+      opcodeSeed: '',
     };
 
     const editor = document.getElementById('editor');
+    const editorShell = document.getElementById('editorShell');
     const highlightLayer = document.getElementById('highlightLayer');
     const completionMenu = document.getElementById('completionMenu');
     const lineNumbers = document.getElementById('lineNumbers');
     const output = document.getElementById('output');
+    const consoleLog = document.getElementById('consoleLog');
+    const logInfo = document.getElementById('logInfo');
     const copyBtn = document.getElementById('copyBtn');
     const clearBtn = document.getElementById('clearBtn');
     const exampleSelect = document.getElementById('exampleSelect');
@@ -671,9 +968,57 @@ export default def;`,
     const metricBytecode = document.getElementById('metricBytecode');
     const metricBytes = document.getElementById('metricBytes');
     const metricExterns = document.getElementById('metricExterns');
+    const externPanel = document.getElementById('externPanel');
+    const externList = document.getElementById('externList');
+    const externStatus = document.getElementById('externStatus');
+    const opcodePanel = document.getElementById('opcodePanel');
+    const opcodeTableBody = document.getElementById('opcodeTableBody');
+    const opcodeStatus = document.getElementById('opcodeStatus');
+    const opcodeSeed = document.getElementById('opcodeSeed');
+    const applySeedBtn = document.getElementById('applySeedBtn');
+    const resetOpcodesBtn = document.getElementById('resetOpcodesBtn');
+    const shuffleOpcodesBtn = document.getElementById('shuffleOpcodesBtn');
     const toast = document.getElementById('toast');
 
     editor.value = examples.basic;
+
+    const defaultOpcodeRows = [
+      ['MARKER', 0],
+      ['LABEL', 1],
+      ['DECLARE', 2],
+      ['LOAD_CONST', 3],
+      ['LOAD_NAME', 4],
+      ['STORE_NAME', 5],
+      ['STORE_MEMBER', 6],
+      ['MOVE', 7],
+      ['BINARY', 8],
+      ['UNARY', 9],
+      ['MEMBER', 10],
+      ['ARRAY', 11],
+      ['OBJECT', 12],
+      ['CALL', 13],
+      ['NEW', 14],
+      ['TEMPLATE', 15],
+      ['FUNCTION_START', 16],
+      ['FUNCTION_END', 17],
+      ['FUNCTION_EXPR_START', 18],
+      ['FUNCTION_EXPR_END', 19],
+      ['CLASS', 20],
+      ['IMPORT', 21],
+      ['EXPORT', 22],
+      ['THROW', 23],
+      ['TRY_START', 24],
+      ['CATCH_START', 25],
+      ['FINALLY_START', 26],
+      ['TRY_END', 27],
+      ['RETURN', 28],
+      ['POP', 29],
+      ['JUMP', 30],
+      ['JUMP_IF_FALSE', 31],
+      ['UNSUPPORTED', 32],
+    ].map(([name, code]) => ({ name, code }));
+
+    state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
 
     const keywordSet = new Set([
       'as', 'async', 'await', 'class', 'const', 'debugger', 'default', 'delete',
@@ -1106,13 +1451,174 @@ export default def;`,
       }).join('').trimEnd();
     }
 
+    function changedByteIndexes(previous, next) {
+      if (!previous.length) return new Set();
+      const changed = new Set();
+      const count = Math.max(previous.length, next.length);
+      for (let index = 0; index < count; index += 1) {
+        if (previous[index] !== next[index]) {
+          changed.add(index);
+        }
+      }
+      return changed;
+    }
+
+    function renderBytesHtml(bytes, changed, seed) {
+      const body = bytes.map((byte, index) => {
+        const hex = byte.toString(16).padStart(2, '0');
+        const prefix = index % 16 === 0 ? `${index.toString(16).padStart(6, '0')}: ` : '';
+        const suffix = index % 16 === 15 ? '\n' : ' ';
+        const content = changed.has(index)
+          ? `<span class="byte-changed">${hex}</span>`
+          : hex;
+        return `${prefix}${content}${suffix}`;
+      }).join('').trimEnd();
+      return `${body}\n\n# seed\n${escapeHtml(seed)}`;
+    }
+
+    function opcodeYaml() {
+      const lines = ['magic: "JSTKBC01"', 'opcodes:'];
+      for (const row of state.opcodeRows) {
+        lines.push(`  ${row.name}: ${row.code}`);
+      }
+      return lines.join('\n');
+    }
+
+    function opcodeRowsFromYaml(yaml) {
+      const byCode = new Map();
+      let inOpcodes = false;
+      for (const rawLine of yaml.split('\n')) {
+        const line = rawLine.split('#')[0];
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (!line.startsWith(' ') && trimmed.endsWith(':')) {
+          inOpcodes = trimmed === 'opcodes:';
+          continue;
+        }
+        if (!inOpcodes) continue;
+        const parts = trimmed.split(':');
+        if (parts.length < 2) continue;
+        const name = parts[0].trim();
+        const code = Number(parts.slice(1).join(':').trim());
+        if (Number.isInteger(code)) {
+          byCode.set(code, name);
+        }
+      }
+      if (byCode.size !== defaultOpcodeRows.length) {
+        throw new Error(`Seed restored ${byCode.size} opcodes, expected ${defaultOpcodeRows.length}`);
+      }
+      return defaultOpcodeRows.map((row) => ({
+        code: row.code,
+        name: byCode.get(row.code),
+      }));
+    }
+
+    function applyOpcodeSeed() {
+      const seed = window.prompt('输入 Opcodes seed', state.opcodeSeed || '');
+      if (!seed) return;
+      try {
+        const yaml = js_encoding_yaml_from_seed(seed);
+        state.opcodeRows = opcodeRowsFromYaml(yaml);
+        state.selectedOpcodeRows = [];
+        renderOpcodeTable();
+        syncOpcodesToBytes();
+        showToast('Seed applied');
+      } catch (err) {
+        showToast('Invalid seed');
+        appendLog('error', `Seed Error\n${formatLogValue(err)}`);
+      }
+    }
+
+    function renderOpcodeTable() {
+      const selected = new Set(state.selectedOpcodeRows);
+      const half = Math.ceil(state.opcodeRows.length / 2);
+      const rows = [];
+      for (let index = 0; index < half; index += 1) {
+        const left = state.opcodeRows[index];
+        const rightIndex = index + half;
+        const right = state.opcodeRows[rightIndex];
+        rows.push(`
+          <tr>
+            <td class="opcode-code opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}">${left.code}</td>
+            <td class="opcode-name opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}" title="${escapeHtml(left.name)}">${escapeHtml(left.name)}</td>
+            <td class="opcode-split"></td>
+            ${right ? `
+              <td class="opcode-code opcode-row ${selected.has(rightIndex) ? 'selected' : ''}" data-index="${rightIndex}">${right.code}</td>
+              <td class="opcode-name opcode-row ${selected.has(rightIndex) ? 'selected' : ''}" data-index="${rightIndex}" title="${escapeHtml(right.name)}">${escapeHtml(right.name)}</td>
+            ` : `
+              <td class="opcode-empty"></td>
+              <td class="opcode-empty"></td>
+            `}
+          </tr>
+        `);
+      }
+      opcodeTableBody.innerHTML = rows.join('');
+      const changed = state.opcodeRows.filter((row, index) => row.name !== defaultOpcodeRows[index].name).length;
+      opcodeStatus.textContent = changed
+        ? `已混淆 ${changed} 项；code 顺序固定，选择两行交换指令名称`
+        : 'code 顺序固定，选择两行交换指令名称';
+    }
+
+    function swapOpcodeNames(first, second) {
+      if (first === second) return;
+      const temp = state.opcodeRows[first].name;
+      state.opcodeRows[first].name = state.opcodeRows[second].name;
+      state.opcodeRows[second].name = temp;
+      state.selectedOpcodeRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function resetOpcodeTable() {
+      state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
+      state.selectedOpcodeRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function shuffleOpcodeNames() {
+      const names = state.opcodeRows.map((row) => row.name);
+      for (let index = names.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [names[index], names[swapIndex]] = [names[swapIndex], names[index]];
+      }
+      state.opcodeRows = state.opcodeRows.map((row, index) => ({
+        ...row,
+        name: names[index],
+      }));
+      state.selectedOpcodeRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
     function setActiveView(view) {
       state.activeView = view;
       document.querySelectorAll('.tab').forEach((tab) => {
         tab.classList.toggle('active', tab.dataset.view === view);
       });
+      output.classList.remove('hidden');
       output.classList.toggle('error', state.viewErrors[view]);
-      output.textContent = state.views[view] || '';
+      if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
+        output.innerHTML = state.bytesHtml;
+      } else {
+        output.textContent = state.views[view] || '';
+      }
+    }
+
+    function setActiveConfigView(view) {
+      state.activeConfigView = view;
+      document.querySelectorAll('.config-tab').forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.configView === view);
+      });
+      editorShell.classList.toggle('active', view === 'javascript');
+      externPanel.classList.toggle('active', view === 'externs');
+      opcodePanel.classList.toggle('active', view === 'opcodes');
+      cursorInfo.style.visibility = view === 'javascript' ? 'visible' : 'hidden';
+      if (view === 'javascript') {
+        editor.focus();
+      } else {
+        hideCompletions();
+      }
     }
 
     function updateMetrics(bytes, externs) {
@@ -1120,6 +1626,72 @@ export default def;`,
       metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
       metricBytes.textContent = `${bytes.length} B`;
       metricExterns.textContent = `${externs.length}`;
+    }
+
+    function updateExternPanel(externs) {
+      externStatus.textContent = externs.length
+        ? `自动解析到 ${externs.length} 个外部槽位`
+        : '未解析到外部槽位';
+      externList.textContent = externs.length
+        ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
+        : '(empty)';
+    }
+
+    function formatLogValue(value) {
+      if (value instanceof Error) {
+        return value.stack || `${value.name}: ${value.message}`;
+      }
+      if (typeof value === 'string') return value;
+      if (value === undefined) return 'undefined';
+      if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (_err) {
+        return String(value);
+      }
+    }
+
+    function appendLog(type, values) {
+      const time = new Date().toLocaleTimeString();
+      const message = Array.isArray(values)
+        ? values.map(formatLogValue).join(' ')
+        : formatLogValue(values);
+      state.logs.push({ type, time, message });
+      renderLogs();
+    }
+
+    function renderLogs() {
+      consoleLog.textContent = state.logs.length
+        ? state.logs.map((entry) => `[${entry.time}] ${entry.type.toUpperCase()} ${entry.message}`).join('\n')
+        : 'Console output will appear here.';
+      logInfo.textContent = `${state.logs.length} logs`;
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    function resetLogs() {
+      state.logs = [];
+      renderLogs();
+    }
+
+    function requestInfo(input, init) {
+      if (input instanceof Request) {
+        return {
+          method: init?.method || input.method || 'GET',
+          url: input.url,
+        };
+      }
+      return {
+        method: init?.method || 'GET',
+        url: String(input),
+      };
+    }
+
+    function syncOpcodesToBytes() {
+      state.activeView = 'bytes';
+      build();
+      if (!state.ready) {
+        setActiveView('bytes');
+      }
     }
 
     function disposeCompiler() {
@@ -1135,34 +1707,78 @@ export default def;`,
       });
     }
 
-    function executeCurrentCompiler() {
-      if (!state.compiler) {
-        return { ok: false, text: '(no compiled module)', duration: 0 };
+    function executeBytecode(bytes, seed) {
+      if (!bytes || !seed) {
+        appendLog('error', '(missing bytecode seed)');
+        return { ok: false, duration: 0 };
       }
 
       const started = performance.now();
-      const logs = [];
-      const originalLog = console.log;
-      console.log = (...args) => {
-        logs.push(args.map(String).join(' '));
-        originalLog(...args);
-      };
+      const originalConsole = {};
+      for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+        originalConsole[level] = console[level];
+        console[level] = (...args) => {
+          appendLog(level, args);
+          originalConsole[level].apply(console, args);
+        };
+      }
+      const originalFetch = window.fetch;
+      const originalXhrOpen = window.XMLHttpRequest?.prototype.open;
+      const originalXhrSend = window.XMLHttpRequest?.prototype.send;
+      if (typeof originalFetch === 'function') {
+        window.fetch = (...args) => {
+          const info = requestInfo(args[0], args[1]);
+          appendLog('network', `${info.method} ${info.url}`);
+          return originalFetch.apply(window, args)
+            .then((response) => {
+              appendLog('network', `${response.status} ${response.statusText} ${info.url}`);
+              return response;
+            })
+            .catch((err) => {
+              appendLog('network', `FAILED ${info.url}\n${formatLogValue(err)}`);
+              throw err;
+            });
+        };
+      }
+      if (originalXhrOpen && originalXhrSend) {
+        window.XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
+          this.__jsVmRequest = { method, url };
+          return originalXhrOpen.call(this, method, url, ...rest);
+        };
+        window.XMLHttpRequest.prototype.send = function send(...args) {
+          const info = this.__jsVmRequest || { method: 'GET', url: '(unknown)' };
+          appendLog('network', `${info.method} ${info.url}`);
+          this.addEventListener('loadend', () => {
+            appendLog('network', `${this.status} ${this.statusText || ''} ${info.url}`.trim());
+          }, { once: true });
+          return originalXhrSend.apply(this, args);
+        };
+      }
 
       try {
-        const result = state.compiler.execute();
+        const result = js_execute_bytes_with_seed(bytes, seed);
+        appendLog('return', `=> ${result}`);
         return {
           ok: true,
-          text: [...logs, `=> ${result}`].join('\n'),
           duration: performance.now() - started,
         };
       } catch (err) {
+        appendLog('error', `Runtime Error\n${formatLogValue(err)}`);
         return {
           ok: false,
-          text: [...logs, `Runtime Error\n${String(err)}`].join('\n'),
           duration: performance.now() - started,
         };
       } finally {
-        console.log = originalLog;
+        for (const level of Object.keys(originalConsole)) {
+          console[level] = originalConsole[level];
+        }
+        if (typeof originalFetch === 'function') {
+          window.fetch = originalFetch;
+        }
+        if (originalXhrOpen && originalXhrSend) {
+          window.XMLHttpRequest.prototype.open = originalXhrOpen;
+          window.XMLHttpRequest.prototype.send = originalXhrSend;
+        }
       }
     }
 
@@ -1171,24 +1787,31 @@ export default def;`,
 
       const compileStarted = performance.now();
       disposeCompiler();
+      resetLogs();
 
       try {
         resetViewErrors();
+        appendLog('compile', 'Compiling JavaScript to IR and bytecode');
         const compiler = new Compiler(editor.value);
-        const bytes = compiler.to_bytes();
+        const encodingYaml = opcodeYaml();
+        const bytes = compiler.to_bytes_with_encoding(encodingYaml);
+        const seed = js_encoding_seed_for_bytes(encodingYaml, bytes);
+        const nextByteTokens = Array.from(bytes);
+        const changedBytes = changedByteIndexes(state.byteTokens, nextByteTokens);
         const externs = compiler.extern_slots();
         const compileDuration = performance.now() - compileStarted;
         state.compiler = compiler;
         state.views.ir = compiler.to_text();
         state.views.bytecode = compiler.to_bytecode_text();
-        state.views.bytes = formatBytes(bytes);
-        state.views.externs = externs.length
-          ? externs.map((name, index) => `e${index} = ${name}`).join('\n')
-          : '(empty)';
+        state.views.bytes = `${formatBytes(bytes)}\n\n# seed\n${seed}`;
+        state.bytesHtml = renderBytesHtml(nextByteTokens, changedBytes, seed);
+        state.byteTokens = nextByteTokens;
+        state.opcodeSeed = seed;
+        opcodeSeed.textContent = seed;
+        opcodeSeed.title = seed;
+        updateExternPanel(externs);
 
-        const run = executeCurrentCompiler();
-        state.views.run = run.text;
-        state.viewErrors.run = !run.ok;
+        const run = executeBytecode(bytes, seed);
         timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms · Run ${Math.round(run.duration)}ms`;
         updateMetrics(bytes, externs);
         setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Auto built' : 'Runtime error');
@@ -1198,8 +1821,13 @@ export default def;`,
         state.views.ir = message;
         state.views.bytecode = message;
         state.views.bytes = message;
-        state.views.externs = message;
-        state.views.run = message;
+        state.bytesHtml = '';
+        state.byteTokens = [];
+        state.opcodeSeed = '';
+        opcodeSeed.textContent = '(build failed)';
+        opcodeSeed.title = '';
+        updateExternPanel([]);
+        appendLog('error', message);
         Object.keys(state.viewErrors).forEach((view) => {
           state.viewErrors[view] = true;
         });
@@ -1289,14 +1917,44 @@ export default def;`,
       tab.addEventListener('click', () => setActiveView(tab.dataset.view));
     });
 
+    document.querySelectorAll('.config-tab').forEach((tab) => {
+      tab.addEventListener('click', () => setActiveConfigView(tab.dataset.configView));
+    });
+
+    opcodeTableBody.addEventListener('click', (event) => {
+      const row = event.target.closest('.opcode-row');
+      if (!row) return;
+      const index = Number(row.dataset.index);
+      if (state.selectedOpcodeRows.includes(index)) {
+        state.selectedOpcodeRows = state.selectedOpcodeRows.filter((value) => value !== index);
+        renderOpcodeTable();
+        return;
+      }
+      state.selectedOpcodeRows.push(index);
+      if (state.selectedOpcodeRows.length === 2) {
+        swapOpcodeNames(state.selectedOpcodeRows[0], state.selectedOpcodeRows[1]);
+        return;
+      }
+      renderOpcodeTable();
+    });
+
+    resetOpcodesBtn.addEventListener('click', resetOpcodeTable);
+    shuffleOpcodesBtn.addEventListener('click', shuffleOpcodeNames);
+    applySeedBtn.addEventListener('click', applyOpcodeSeed);
+
     copyBtn.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(output.textContent);
+      let text = output.textContent;
+      if (state.activeConfigView === 'opcodes') {
+        text = state.opcodeSeed || opcodeYaml();
+      } else if (state.activeConfigView === 'externs') {
+        text = externList.textContent;
+      }
+      await navigator.clipboard.writeText(text);
       showToast('Copied');
     });
 
     clearBtn.addEventListener('click', () => {
-      state.views.run = '';
-      if (state.activeView === 'run') output.textContent = '';
+      resetLogs();
       showToast('Cleared');
     });
 
@@ -1311,10 +1969,13 @@ export default def;`,
     window.addEventListener('beforeunload', disposeCompiler);
 
     updateEditorStats();
+    renderLogs();
+    renderOpcodeTable();
+    setActiveConfigView('javascript');
     setStatus('', 'Initializing');
 
     try {
-      await init();
+      await init('./pkg/compiler/js_token_bin_bg.wasm?v=seed');
       state.ready = true;
       wasmState.textContent = 'WASM ready';
       setStatus('ready', 'Ready');
