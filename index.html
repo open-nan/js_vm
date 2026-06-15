@@ -254,6 +254,60 @@
       color: #8d99a6;
     }
 
+    .completion-menu {
+      position: absolute;
+      z-index: 3;
+      min-width: 220px;
+      max-width: min(360px, calc(100% - 24px));
+      max-height: 242px;
+      overflow: auto;
+      display: none;
+      padding: 5px;
+      border: 1px solid #3a4652;
+      border-radius: 6px;
+      background: #161b21;
+      box-shadow: 0 16px 38px rgba(0, 0, 0, 0.45);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .completion-menu.open {
+      display: block;
+    }
+
+    .completion-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 7px;
+      border-radius: 4px;
+      color: #d7e0ea;
+      cursor: pointer;
+    }
+
+    .completion-item.active {
+      background: #26423f;
+      color: #ffffff;
+    }
+
+    .completion-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .completion-kind {
+      color: #8fa0b1;
+      font-size: 11px;
+    }
+
+    .completion-item.active .completion-kind {
+      color: #bdd8d3;
+    }
+
     #editor {
       position: relative;
       z-index: 1;
@@ -479,6 +533,7 @@
           <div class="editor-stack">
             <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
             <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+            <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
           </div>
         </div>
       </section>
@@ -586,12 +641,20 @@ export default def;`,
         run: false,
         externs: false,
       },
+      completion: {
+        open: false,
+        items: [],
+        active: 0,
+        from: 0,
+        to: 0,
+      },
       ready: false,
       timer: 0,
     };
 
     const editor = document.getElementById('editor');
     const highlightLayer = document.getElementById('highlightLayer');
+    const completionMenu = document.getElementById('completionMenu');
     const lineNumbers = document.getElementById('lineNumbers');
     const output = document.getElementById('output');
     const copyBtn = document.getElementById('copyBtn');
@@ -632,6 +695,54 @@ export default def;`,
       'Symbol', 'WeakMap', 'WeakSet', 'WebAssembly', 'window', 'document',
       'globalThis',
     ]);
+
+    const snippetCompletions = [
+      { label: 'console.log', kind: 'snippet', insert: 'console.log($0);', cursor: -2 },
+      { label: 'function', kind: 'snippet', insert: 'function name() {\n  $0\n}', cursor: -2 },
+      { label: 'if', kind: 'snippet', insert: 'if ($0) {\n  \n}', cursor: -7 },
+      { label: 'for', kind: 'snippet', insert: 'for (let i = 0; i < length; i++) {\n  $0\n}', cursor: -2 },
+      { label: 'try/catch', kind: 'snippet', insert: 'try {\n  $0\n} catch (err) {\n  console.log(err);\n}', cursor: -35 },
+      { label: 'class', kind: 'snippet', insert: 'class Name {\n  constructor() {\n    $0\n  }\n}', cursor: -8 },
+      { label: 'import', kind: 'snippet', insert: 'import name from "module";' },
+      { label: 'export default', kind: 'snippet', insert: 'export default $0;', cursor: -1 },
+    ];
+
+    const propertyCompletions = [
+      { label: 'length', kind: 'property' },
+      { label: 'log', kind: 'method', insert: 'log($0)', cursor: -1 },
+      { label: 'warn', kind: 'method', insert: 'warn($0)', cursor: -1 },
+      { label: 'error', kind: 'method', insert: 'error($0)', cursor: -1 },
+      { label: 'push', kind: 'method', insert: 'push($0)', cursor: -1 },
+      { label: 'pop', kind: 'method', insert: 'pop()' },
+      { label: 'map', kind: 'method', insert: 'map((item) => item)' },
+      { label: 'filter', kind: 'method', insert: 'filter((item) => item)' },
+      { label: 'reduce', kind: 'method', insert: 'reduce((acc, item) => acc, initial)' },
+      { label: 'forEach', kind: 'method', insert: 'forEach((item) => {\n  $0\n})', cursor: -3 },
+      { label: 'slice', kind: 'method', insert: 'slice($0)', cursor: -1 },
+      { label: 'includes', kind: 'method', insert: 'includes($0)', cursor: -1 },
+      { label: 'toString', kind: 'method', insert: 'toString()' },
+      { label: 'valueOf', kind: 'method', insert: 'valueOf()' },
+      { label: 'then', kind: 'method', insert: 'then((value) => value)' },
+      { label: 'catch', kind: 'method', insert: 'catch((err) => err)' },
+    ];
+
+    function baseCompletions() {
+      const declared = Array.from(new Set(
+        editor.value.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g) || [],
+      ))
+        .filter((word) => !keywordSet.has(word) && !controlSet.has(word) && !literalSet.has(word))
+        .slice(0, 80)
+        .map((label) => ({ label, kind: builtinSet.has(label) ? 'builtin' : 'local' }));
+
+      return [
+        ...Array.from(controlSet, (label) => ({ label, kind: 'control' })),
+        ...Array.from(keywordSet, (label) => ({ label, kind: 'keyword' })),
+        ...Array.from(literalSet, (label) => ({ label, kind: 'literal' })),
+        ...Array.from(builtinSet, (label) => ({ label, kind: 'builtin' })),
+        ...snippetCompletions,
+        ...declared,
+      ];
+    }
 
     function setStatus(kind, text) {
       statusDot.className = `dot ${kind}`;
@@ -815,10 +926,171 @@ export default def;`,
       updateHighlight();
     }
 
+    function completionContext() {
+      const text = editor.value;
+      const cursor = editor.selectionStart;
+      const beforeCursor = text.slice(0, cursor);
+      const match = beforeCursor.match(/[A-Za-z_$][A-Za-z0-9_$]*$/);
+      const prefix = match ? match[0] : '';
+      const from = cursor - prefix.length;
+      const isProperty = text[from - 1] === '.';
+      const objectMatch = isProperty
+        ? text.slice(0, from - 1).match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*$/)
+        : null;
+      return {
+        prefix,
+        from,
+        to: cursor,
+        isProperty,
+        objectName: objectMatch ? objectMatch[1] : '',
+      };
+    }
+
+    function completionsForContext(context, explicit = false) {
+      const source = context.isProperty ? propertyCompletions : baseCompletions();
+      const propertyBoosts = {
+        console: ['log', 'warn', 'error'],
+        Math: ['abs', 'floor', 'ceil', 'round', 'max', 'min', 'random', 'sqrt'],
+        JSON: ['parse', 'stringify'],
+        Object: ['keys', 'values', 'entries', 'assign'],
+        Array: ['isArray', 'from'],
+      };
+      const boosted = context.objectName && propertyBoosts[context.objectName]
+        ? propertyBoosts[context.objectName].map((label) => ({
+          label,
+          kind: 'method',
+          insert: `${label}($0)`,
+          boost: true,
+        }))
+        : [];
+      const pool = [...boosted, ...source];
+      const seen = new Set();
+      const prefix = context.prefix.toLowerCase();
+      return pool
+        .filter((item) => explicit || prefix || context.isProperty)
+        .filter((item) => item.label.toLowerCase().startsWith(prefix))
+        .filter((item) => !(item.kind === 'local' && item.label === context.prefix))
+        .filter((item) => {
+          if (seen.has(item.label)) return false;
+          seen.add(item.label);
+          return true;
+        })
+        .sort((left, right) => {
+          if (left.boost !== right.boost) return left.boost ? -1 : 1;
+          const common = ['console', 'console.log', 'log', 'function', 'const', 'let', 'return'];
+          const leftRank = common.indexOf(left.label);
+          const rightRank = common.indexOf(right.label);
+          if (leftRank !== -1 || rightRank !== -1) {
+            return (leftRank === -1 ? 99 : leftRank) - (rightRank === -1 ? 99 : rightRank);
+          }
+          return left.label.localeCompare(right.label);
+        })
+        .slice(0, 12);
+    }
+
+    function editorMetrics() {
+      const style = getComputedStyle(editor);
+      const canvas = editorMetrics.canvas || (editorMetrics.canvas = document.createElement('canvas'));
+      const context = canvas.getContext('2d');
+      context.font = `${style.fontSize} ${style.fontFamily}`;
+      return {
+        charWidth: context.measureText('M').width,
+        lineHeight: parseFloat(style.lineHeight) || 20,
+        paddingLeft: parseFloat(style.paddingLeft) || 16,
+        paddingTop: parseFloat(style.paddingTop) || 14,
+      };
+    }
+
+    function positionCompletionMenu(from) {
+      const before = editor.value.slice(0, from);
+      const line = before.split('\n').length;
+      const col = before.length - before.lastIndexOf('\n') - 1;
+      const metrics = editorMetrics();
+      const left = metrics.paddingLeft + col * metrics.charWidth - editor.scrollLeft;
+      const top = metrics.paddingTop + line * metrics.lineHeight - editor.scrollTop + 2;
+      const maxLeft = Math.max(8, editor.clientWidth - 240);
+      completionMenu.style.left = `${Math.min(Math.max(8, left), maxLeft)}px`;
+      completionMenu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function renderCompletions() {
+      completionMenu.innerHTML = state.completion.items
+        .map((item, index) => `
+          <div class="completion-item ${index === state.completion.active ? 'active' : ''}" data-index="${index}" role="option">
+            <span class="completion-label">${escapeHtml(item.label)}</span>
+            <span class="completion-kind">${escapeHtml(item.kind)}</span>
+          </div>
+        `)
+        .join('');
+      completionMenu.classList.toggle('open', state.completion.open);
+    }
+
+    function showCompletions(explicit = false) {
+      const context = completionContext();
+      const items = completionsForContext(context, explicit);
+      if (!items.length) {
+        hideCompletions();
+        return;
+      }
+
+      state.completion = {
+        open: true,
+        items,
+        active: 0,
+        from: context.from,
+        to: context.to,
+      };
+      positionCompletionMenu(context.from);
+      renderCompletions();
+    }
+
+    function hideCompletions() {
+      state.completion.open = false;
+      state.completion.items = [];
+      completionMenu.classList.remove('open');
+    }
+
+    function moveCompletion(delta) {
+      if (!state.completion.open) return;
+      const count = state.completion.items.length;
+      state.completion.active = (state.completion.active + delta + count) % count;
+      renderCompletions();
+      completionMenu
+        .querySelector(`[data-index="${state.completion.active}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function acceptCompletion(index = state.completion.active) {
+      if (!state.completion.open) return false;
+      const item = state.completion.items[index];
+      if (!item) return false;
+
+      let insert = item.insert || item.label;
+      let cursorOffset = insert.length;
+      const marker = insert.indexOf('$0');
+      if (marker !== -1) {
+        insert = insert.replace('$0', '');
+        cursorOffset = marker;
+      }
+
+      editor.setRangeText(insert, state.completion.from, state.completion.to, 'end');
+      const cursor = state.completion.from + cursorOffset;
+      editor.selectionStart = cursor;
+      editor.selectionEnd = cursor;
+      hideCompletions();
+      updateEditorStats();
+      scheduleBuild();
+      editor.focus();
+      return true;
+    }
+
     function syncScroll() {
       lineNumbers.scrollTop = editor.scrollTop;
       highlightLayer.scrollTop = editor.scrollTop;
       highlightLayer.scrollLeft = editor.scrollLeft;
+      if (state.completion.open) {
+        positionCompletionMenu(state.completion.from);
+      }
     }
 
     function lineCount(text) {
@@ -945,14 +1217,52 @@ export default def;`,
 
     editor.addEventListener('input', () => {
       updateEditorStats();
+      showCompletions(false);
       scheduleBuild();
     });
 
     editor.addEventListener('scroll', syncScroll);
-    editor.addEventListener('click', updateEditorStats);
-    editor.addEventListener('keyup', updateEditorStats);
+    editor.addEventListener('click', () => {
+      updateEditorStats();
+      showCompletions(false);
+    });
+    editor.addEventListener('keyup', (event) => {
+      updateEditorStats();
+      if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+        showCompletions(false);
+      }
+    });
 
     editor.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ' ') {
+        event.preventDefault();
+        showCompletions(true);
+        return;
+      }
+
+      if (state.completion.open) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          moveCompletion(1);
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          moveCompletion(-1);
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          acceptCompletion();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          hideCompletions();
+          return;
+        }
+      }
+
       if (event.key === 'Tab') {
         event.preventDefault();
         const start = editor.selectionStart;
@@ -966,6 +1276,13 @@ export default def;`,
         event.preventDefault();
         build();
       }
+    });
+
+    completionMenu.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      const item = event.target.closest('.completion-item');
+      if (!item) return;
+      acceptCompletion(Number(item.dataset.index));
     });
 
     document.querySelectorAll('.tab').forEach((tab) => {
@@ -985,6 +1302,7 @@ export default def;`,
 
     exampleSelect.addEventListener('change', () => {
       editor.value = examples[exampleSelect.value];
+      hideCompletions();
       updateEditorStats();
       build();
       editor.focus();
