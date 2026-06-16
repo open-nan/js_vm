@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt::{self, Write},
 };
@@ -603,6 +603,36 @@ pub struct EncodingConfig {
     pub constant_tags: BTreeMap<String, u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodingNames {
+    pub opcodes: Vec<String>,
+    pub operand_tags: Vec<String>,
+    pub constant_tags: Vec<String>,
+}
+
+impl EncodingNames {
+    pub fn flatten(&self) -> Vec<String> {
+        self.opcodes
+            .iter()
+            .chain(&self.operand_tags)
+            .chain(&self.constant_tags)
+            .cloned()
+            .collect()
+    }
+}
+
+impl Default for EncodingNames {
+    fn default() -> Self {
+        Self {
+            opcodes: default_opcode_mnemonics(),
+            operand_tags: default_operand_tag_keys(),
+            constant_tags: default_constant_tag_keys(),
+        }
+    }
+}
+
+pub const DEFAULT_BYTECODE_MAGIC: &str = "JSTKBC01";
+
 const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
 
 impl Default for EncodingConfig {
@@ -670,7 +700,7 @@ impl Default for EncodingConfig {
         .collect();
 
         Self {
-            magic: "JSTKBC01".to_string(),
+            magic: DEFAULT_BYTECODE_MAGIC.to_string(),
             opcodes,
             operand_tags,
             constant_tags,
@@ -679,6 +709,40 @@ impl Default for EncodingConfig {
 }
 
 impl EncodingConfig {
+    pub fn from_names(names: &EncodingNames) -> Result<Self, EncodingError> {
+        let mut config = Self::default();
+        config.opcodes =
+            names_to_encoding_map(&names.opcodes, &default_opcode_mnemonics(), "opcode")?;
+        config.operand_tags = names_to_encoding_map(
+            &names.operand_tags,
+            &default_operand_tag_keys(),
+            "operand tag",
+        )?;
+        config.constant_tags = names_to_encoding_map(
+            &names.constant_tags,
+            &default_constant_tag_keys(),
+            "constant tag",
+        )?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn names(&self) -> EncodingNames {
+        EncodingNames {
+            opcodes: names_by_code(&self.opcodes),
+            operand_tags: names_by_code(&self.operand_tags),
+            constant_tags: names_by_code(&self.constant_tags),
+        }
+    }
+
+    pub fn config_seed(&self) -> Result<String, EncodingError> {
+        self.to_seed(&[])
+    }
+
+    pub fn paired_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
+        self.to_seed(bytes)
+    }
+
     pub fn from_yaml(source: &str) -> Result<Self, EncodingError> {
         let mut config = Self::default();
         let mut section: Option<YamlSection> = None;
@@ -825,10 +889,13 @@ impl EncodingConfig {
         ))
     }
 
-    fn validate(&self) -> Result<(), EncodingError> {
+    pub fn validate(&self) -> Result<(), EncodingError> {
         if self.magic.is_empty() {
             return Err(EncodingError::MissingKey("magic".to_string()));
         }
+        validate_unique_codes(&self.opcodes, "opcode")?;
+        validate_unique_codes(&self.operand_tags, "operand tag")?;
+        validate_unique_codes(&self.constant_tags, "constant tag")?;
         for op in BytecodeOp::all() {
             self.opcode(*op)?;
         }
@@ -1576,6 +1643,55 @@ fn default_constant_tag_keys() -> Vec<String> {
         .collect()
 }
 
+fn validate_unique_codes(values: &BTreeMap<String, u8>, kind: &str) -> Result<(), EncodingError> {
+    let mut seen = BTreeSet::new();
+    for (key, code) in values {
+        if !seen.insert(*code) {
+            return Err(EncodingError::Seed(format!(
+                "duplicate {kind} code {code} at {key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn names_to_encoding_map(
+    names: &[String],
+    allowed: &[String],
+    kind: &str,
+) -> Result<BTreeMap<String, u8>, EncodingError> {
+    if names.len() != allowed.len() {
+        return Err(EncodingError::Seed(format!(
+            "{kind} count mismatch: expected {}, got {}",
+            allowed.len(),
+            names.len()
+        )));
+    }
+
+    let mut seen = vec![false; allowed.len()];
+    let mut values = BTreeMap::new();
+    for (code, name) in names.iter().enumerate() {
+        let Some(index) = allowed.iter().position(|candidate| candidate == name) else {
+            return Err(EncodingError::Seed(format!("unknown {kind} {name}")));
+        };
+        if seen[index] {
+            return Err(EncodingError::Seed(format!("duplicate {kind} {name}")));
+        }
+        seen[index] = true;
+        values.insert(name.clone(), code as u8);
+    }
+    Ok(values)
+}
+
+fn names_by_code(map: &BTreeMap<String, u8>) -> Vec<String> {
+    let mut rows = map
+        .iter()
+        .map(|(name, code)| (*code, name.clone()))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(code, _)| *code);
+    rows.into_iter().map(|(_, name)| name).collect()
+}
+
 fn map_to_seed_permutation(
     values: &BTreeMap<String, u8>,
     keys: &[String],
@@ -1852,7 +1968,7 @@ fn write_string(bytes: &mut Vec<u8>, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EncodingConfig, IrInstruction, IrModule, IrValue};
+    use super::{EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue};
 
     #[test]
     fn renders_ir_text_from_core() {
@@ -1967,5 +2083,30 @@ mod tests {
         let mut tampered = bytes.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert!(EncodingConfig::from_seed_for_bytes(&seed, &tampered).is_err());
+    }
+
+    #[test]
+    fn encoding_names_roundtrip_through_seed() {
+        let mut names = EncodingNames::default();
+        names.opcodes.swap(3, 8);
+        names.operand_tags.swap(0, 2);
+        names.constant_tags.swap(0, 2);
+
+        let encoding = EncodingConfig::from_names(&names).unwrap();
+        let seed = encoding.config_seed().unwrap();
+        let restored = EncodingConfig::from_seed(&seed).unwrap();
+
+        assert_eq!(restored.names(), names);
+        assert_eq!(restored.opcodes.get("LOAD_CONST"), Some(&8));
+        assert_eq!(restored.operand_tags.get("register"), Some(&2));
+        assert_eq!(restored.constant_tags.get("number"), Some(&2));
+    }
+
+    #[test]
+    fn encoding_rejects_duplicate_codes() {
+        let mut encoding = EncodingConfig::default();
+        encoding.opcodes.insert("LOAD_CONST".to_string(), 8);
+
+        assert!(encoding.validate().is_err());
     }
 }

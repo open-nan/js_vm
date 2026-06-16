@@ -1021,39 +1021,43 @@ fn unary(op: &str, arg: Value) -> Result<Value, ExecuteError> {
 #[cfg(test)]
 mod tests {
     use super::{ExecuteError, Executor, Value};
-    use crate::compiler::compile_to_bytecode;
+    use crate::compile_source;
+    use js_token_core::BytecodeModule;
+
+    fn compile_to_bytecode(source: &str) -> BytecodeModule {
+        compile_source(source).unwrap().bytecode
+    }
 
     #[test]
     fn executes_arithmetic_and_globals() {
-        let module = compile_to_bytecode("const a = 1 + 2; a;").unwrap();
+        let module = compile_to_bytecode("const a = 1 + 2; a;");
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(3.0));
     }
 
     #[test]
     fn executes_branch_and_loop_bytecode() {
-        let branch = compile_to_bytecode("let a = 1; if (a < 2) { a = a + 5; } a;").unwrap();
+        let branch = compile_to_bytecode("let a = 1; if (a < 2) { a = a + 5; } a;");
         assert_eq!(Executor::run(&branch).unwrap(), Value::Number(6.0));
 
-        let loop_module =
-            compile_to_bytecode("let a = 0; while (a < 3) { a = a + 1; } a;").unwrap();
+        let loop_module = compile_to_bytecode("let a = 0; while (a < 3) { a = a + 1; } a;");
         assert_eq!(Executor::run(&loop_module).unwrap(), Value::Number(3.0));
     }
 
     #[test]
     fn executes_objects_arrays_and_functions() {
-        let object = compile_to_bytecode("const obj = {a: 1}; obj.a;").unwrap();
+        let object = compile_to_bytecode("const obj = {a: 1}; obj.a;");
         assert_eq!(Executor::run(&object).unwrap(), Value::Number(1.0));
 
-        let array = compile_to_bytecode("const arr = [1, 2]; arr[0];").unwrap();
+        let array = compile_to_bytecode("const arr = [1, 2]; arr[0];");
         assert_eq!(Executor::run(&array).unwrap(), Value::Number(1.0));
 
-        let function = compile_to_bytecode("function f(x) { return x + 1; } f(2);").unwrap();
+        let function = compile_to_bytecode("function f(x) { return x + 1; } f(2);");
         assert_eq!(Executor::run(&function).unwrap(), Value::Number(3.0));
     }
 
     #[test]
     fn executes_try_catch() {
-        let module = compile_to_bytecode("try { throw 4; } catch (e) { e + 1; }").unwrap();
+        let module = compile_to_bytecode("try { throw 4; } catch (e) { e + 1; }");
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
     }
 
@@ -1064,8 +1068,7 @@ mod tests {
             const obj = { a: 2, inc(x) { return this.a + x; } };
             obj.inc(3);
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
     }
 
@@ -1079,8 +1082,7 @@ mod tests {
             const add2 = make(2);
             add2(3);
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(Executor::run(&module).unwrap(), Value::Number(5.0));
     }
 
@@ -1093,7 +1095,7 @@ mod tests {
             "window.console.log(1); 2;",
             "globalThis.console.debug(1); 2;",
         ] {
-            let module = compile_to_bytecode(source).unwrap();
+            let module = compile_to_bytecode(source);
             assert_eq!(
                 Executor::run(&module).unwrap(),
                 Value::Number(2.0),
@@ -1104,7 +1106,7 @@ mod tests {
 
     #[test]
     fn host_bridge_reports_unregistered_external_calls() {
-        let module = compile_to_bytecode("console.trace(1);").unwrap();
+        let module = compile_to_bytecode("console.trace(1);");
         let err = Executor::run(&module).unwrap_err();
         assert!(
             matches!(err, ExecuteError::Runtime(ref message) if message.contains("external function console.trace is not registered")),
@@ -1120,7 +1122,7 @@ mod tests {
             "const value = null; value.missing = 1;",
             "const value = null; value();",
         ] {
-            let module = compile_to_bytecode(source).unwrap();
+            let module = compile_to_bytecode(source);
             let err = Executor::run(&module).unwrap_err();
             assert!(
                 matches!(err, ExecuteError::TypeError(_)),

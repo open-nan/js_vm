@@ -4,11 +4,10 @@ use std::{
 };
 
 use js_token_bin::Executor;
-use js_token_core::{BytecodeModule, EncodingConfig};
+use js_token_core::BytecodeModule;
 
 fn main() {
     let mut input_path = None;
-    let mut encoding_path = None;
     let mut seed = None;
     let mut externals = Vec::new();
     let mut args = env::args().skip(1);
@@ -20,13 +19,6 @@ fn main() {
                     std::process::exit(1);
                 };
                 seed = Some(value);
-            }
-            "--encoding" => {
-                let Some(path) = args.next() else {
-                    eprintln!("missing value for --encoding; expected encoding yaml path");
-                    std::process::exit(1);
-                };
-                encoding_path = Some(path);
             }
             "--extern" => {
                 let Some(name) = args.next() else {
@@ -58,30 +50,14 @@ fn main() {
         }
     };
 
-    let module = if let Some(seed) = seed {
-        BytecodeModule::from_bytes_with_seed(&bytes, &seed).unwrap_or_else(|err| {
-            eprintln!("failed to decode bytecode with seed: {err}");
-            std::process::exit(1);
-        })
-    } else {
-        let encoding = encoding_path
-            .map(|path| {
-                let yaml = fs::read_to_string(&path).unwrap_or_else(|err| {
-                    eprintln!("failed to read encoding yaml {path}: {err}");
-                    std::process::exit(1);
-                });
-                EncodingConfig::from_yaml(&yaml).unwrap_or_else(|err| {
-                    eprintln!("failed to parse encoding yaml {path}: {err}");
-                    std::process::exit(1);
-                })
-            })
-            .unwrap_or_default();
-
-        BytecodeModule::from_bytes_with_encoding(&bytes, &encoding).unwrap_or_else(|err| {
-            eprintln!("failed to decode bytecode: {err}");
-            std::process::exit(1);
-        })
+    let Some(seed) = seed else {
+        eprintln!("missing --seed; bytecode execution requires a paired seed");
+        std::process::exit(1);
     };
+    let module = BytecodeModule::from_bytes_with_seed(&bytes, &seed).unwrap_or_else(|err| {
+        eprintln!("failed to decode bytecode with seed: {err}");
+        std::process::exit(1);
+    });
 
     let value = Executor::run_with_external_names(&module, &externals).unwrap_or_else(|err| {
         eprintln!("execution failed: {err}");
@@ -91,7 +67,5 @@ fn main() {
 }
 
 fn print_usage() {
-    eprintln!(
-        "usage: js-executor [--seed seed | --encoding encoding.yaml] [--extern name] [input.bytecode]"
-    );
+    eprintln!("usage: js-executor --seed seed [--extern name] [input.bytecode]");
 }

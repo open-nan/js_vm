@@ -179,7 +179,7 @@
       background: #111417;
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       font-size: 13px;
-      line-height: 1.58;
+      line-height: 20px;
     }
 
     .editor-shell.active {
@@ -189,6 +189,7 @@
     .line-numbers {
       margin: 0;
       padding: 14px 10px 14px 0;
+      box-sizing: border-box;
       overflow: hidden;
       text-align: right;
       color: #64707d;
@@ -209,8 +210,11 @@
       inset: 0;
       margin: 0;
       padding: 14px 16px;
+      box-sizing: border-box;
       overflow: auto;
       color: var(--code);
+      font: inherit;
+      letter-spacing: 0;
       pointer-events: none;
       tab-size: 2;
       white-space: pre;
@@ -219,6 +223,10 @@
 
     .highlight-layer::-webkit-scrollbar {
       display: none;
+    }
+
+    .editor-stack.has-selection .highlight-layer {
+      visibility: hidden;
     }
 
     .tok-keyword {
@@ -327,22 +335,31 @@
       height: 100%;
       margin: 0;
       padding: 14px 16px;
+      box-sizing: border-box;
       resize: none;
       border: 0;
       outline: 0;
       background: transparent;
-      color: transparent;
+      color: rgba(238, 244, 251, 0.01);
       caret-color: var(--accent);
+      font: inherit;
+      letter-spacing: 0;
       tab-size: 2;
       white-space: pre;
       overflow: auto;
       line-height: inherit;
-      -webkit-text-fill-color: transparent;
+      -webkit-text-fill-color: rgba(238, 244, 251, 0.01);
     }
 
     #editor::selection {
       background: rgba(41, 182, 168, 0.28);
-      -webkit-text-fill-color: transparent;
+      color: #eef4fb;
+      -webkit-text-fill-color: #eef4fb;
+    }
+
+    #editor.has-selection {
+      color: var(--code);
+      -webkit-text-fill-color: var(--code);
     }
 
     .tabs {
@@ -414,6 +431,7 @@
     }
 
     .output {
+      position: relative;
       margin: 0;
       padding: 14px 16px;
       overflow: auto;
@@ -437,8 +455,30 @@
     }
 
     .output.hex-output {
+      display: grid;
+      min-height: 0;
+      overflow: hidden;
       padding: 0;
       white-space: normal;
+    }
+
+    .output.virtual-output {
+      padding: 0;
+      white-space: normal;
+    }
+
+    .virtual-spacer {
+      position: relative;
+      min-width: max-content;
+    }
+
+    .virtual-lines {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      padding: 14px 16px;
+      white-space: pre;
     }
 
     .hex-section {
@@ -482,6 +522,7 @@
     }
 
     .hex-dump {
+      position: relative;
       min-width: max-content;
       overflow: auto;
       padding: 10px 12px 14px;
@@ -489,21 +530,23 @@
       font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
     }
 
-    .hex-header,
+    .hex-spacer {
+      position: relative;
+      min-width: max-content;
+    }
+
+    .hex-rows {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+    }
+
     .hex-row {
       display: grid;
       grid-template-columns: 76px repeat(16, 28px) 18px 156px;
       align-items: center;
       column-gap: 0;
-    }
-
-    .hex-header {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      padding-bottom: 5px;
-      color: #718191;
-      background: #111417;
     }
 
     .hex-row {
@@ -512,11 +555,6 @@
 
     .hex-offset {
       color: #778898;
-      user-select: none;
-    }
-
-    .hex-column {
-      text-align: center;
       user-select: none;
     }
 
@@ -572,6 +610,12 @@
     .byte-changed {
       display: inline-block;
       border-radius: 3px;
+      color: #08120f;
+      background: #7af0b4;
+      box-shadow: 0 0 0 2px rgba(122, 240, 180, 0.2);
+    }
+
+    .byte-change-animate {
       animation: byteChangeFade 2s ease-out forwards;
     }
 
@@ -996,7 +1040,6 @@
           <div class="opcode-seed">
             <span>Seed</span>
             <div class="seed-row">
-              <button id="syncSeedBtn" class="icon" type="button" title="从 Bytes seed 同步并还原 Obfuscation">↺</button>
               <input id="opcodeSeedInput" class="seed-input" type="text" value="(build pending)" spellcheck="false">
               <span class="seed-placeholder"></span>
             </div>
@@ -1110,8 +1153,9 @@
 
     const {
       Compiler,
-      js_encoding_seed_for_bytes,
-      js_encoding_yaml_from_seed,
+      js_encoding_rows_from_seed,
+      js_encoding_seed_for_seed_and_bytes,
+      js_encoding_seed_from_rows,
       js_execute_bytes_with_seed,
     } = wasmPkg;
 
@@ -1197,6 +1241,13 @@ export default def;`,
       byteTokens: [],
       bytesHtml: '',
       hexSelectedIndex: null,
+      hexChangedIndexes: new Set(),
+      hexChangedUntil: 0,
+      hexChangeAnimationPending: false,
+      virtualText: {
+        view: '',
+        lines: [],
+      },
       compileDuration: 0,
       runDuration: 0,
       opcodeSeed: '',
@@ -1236,7 +1287,6 @@ export default def;`,
     const opcodeSeedInput = document.getElementById('opcodeSeedInput');
     const bytesSeedPanel = document.getElementById('bytesSeedPanel');
     const bytesSeedInput = document.getElementById('bytesSeedInput');
-    const syncSeedBtn = document.getElementById('syncSeedBtn');
     const resetOpcodesBtn = document.getElementById('resetOpcodesBtn');
     const shuffleOpcodesBtn = document.getElementById('shuffleOpcodesBtn');
     const toast = document.getElementById('toast');
@@ -1244,6 +1294,7 @@ export default def;`,
     editor.value = examples.basic;
 
     const textEncoder = new TextEncoder();
+    const VIRTUAL_BUFFER = 24;
 
     function byteLength(text) {
       return textEncoder.encode(text).length;
@@ -1253,6 +1304,11 @@ export default def;`,
       if (bytes < 1024) return `${bytes} B`;
       if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
       return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+    }
+
+    function lineHeightOf(element) {
+      const value = Number.parseFloat(getComputedStyle(element).lineHeight);
+      return Number.isFinite(value) && value > 0 ? value : 20;
     }
 
     const defaultOpcodeRows = [
@@ -1551,6 +1607,11 @@ export default def;`,
       highlightLayer.scrollLeft = editor.scrollLeft;
     }
 
+    function updateLineNumbers(lines) {
+      lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
+      lineNumbers.scrollTop = editor.scrollTop;
+    }
+
     function updateEditorStats() {
       const text = editor.value;
       const beforeCursor = text.slice(0, editor.selectionStart);
@@ -1558,7 +1619,7 @@ export default def;`,
       const line = beforeCursor.split('\n').length;
       const col = beforeCursor.length - beforeCursor.lastIndexOf('\n');
       const jsBytes = byteLength(text);
-      lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
+      updateLineNumbers(lines);
       cursorInfo.textContent = `Ln ${line}, Col ${col}`;
       sizeInfo.textContent = `${text.length} chars · ${formatByteSize(jsBytes)}`;
       lineInfo.textContent = `${lines} lines`;
@@ -1725,12 +1786,18 @@ export default def;`,
     }
 
     function syncScroll() {
-      lineNumbers.scrollTop = editor.scrollTop;
-      highlightLayer.scrollTop = editor.scrollTop;
-      highlightLayer.scrollLeft = editor.scrollLeft;
+      updateLineNumbers(editor.value.split('\n').length);
+      updateHighlight();
       if (state.completion.open) {
         positionCompletionMenu(state.completion.from);
       }
+    }
+
+    function updateEditorSelectionState() {
+      const hasSelection =
+        document.activeElement === editor && editor.selectionStart !== editor.selectionEnd;
+      editor.classList.toggle('has-selection', hasSelection);
+      editorShell.querySelector('.editor-stack')?.classList.toggle('has-selection', hasSelection);
     }
 
     function lineCount(text) {
@@ -1763,12 +1830,35 @@ export default def;`,
     }
 
     function renderHexView(bytes, changed) {
-      const columns = Array.from({ length: 16 }, (_, index) => (
-        `<span class="hex-column">${index.toString(16).padStart(2, '0')}</span>`
-      )).join('');
+      state.hexChangedIndexes = changed;
+      state.hexChangedUntil = changed.size ? performance.now() + 2000 : 0;
+      state.hexChangeAnimationPending = changed.size > 0;
+      const rows = Math.ceil(bytes.length / 16);
+      return `
+        <section class="hex-section">
+          <div class="hex-section-title">
+            <strong>Hex</strong>
+            <span>${bytes.length} bytes</span>
+          </div>
+          <div class="hex-dump" data-row-count="${rows}"></div>
+        </section>
+      `;
+    }
+
+    function renderHexRows() {
+      const dump = output.querySelector('.hex-dump');
+      if (!dump) return;
+      const rowHeight = 23;
+      const totalRows = Math.ceil(state.byteTokens.length / 16);
+      const firstRow = Math.max(0, Math.floor(dump.scrollTop / rowHeight) - VIRTUAL_BUFFER);
+      const visibleRows = Math.ceil(dump.clientHeight / rowHeight) + VIRTUAL_BUFFER * 2;
+      const lastRow = Math.min(totalRows, firstRow + visibleRows);
       const rows = [];
-      for (let offset = 0; offset < bytes.length; offset += 16) {
-        const slice = bytes.slice(offset, offset + 16);
+      const changedActive = state.hexChangedIndexes.size > 0 && performance.now() < state.hexChangedUntil;
+      const animateChanged = state.hexChangeAnimationPending;
+      for (let row = firstRow; row < lastRow; row += 1) {
+        const offset = row * 16;
+        const slice = state.byteTokens.slice(offset, offset + 16);
         const hexCells = [];
         const asciiCells = [];
         for (let column = 0; column < 16; column += 1) {
@@ -1779,15 +1869,16 @@ export default def;`,
             asciiCells.push('<span class="hex-char"> </span>');
             continue;
           }
-          const isChanged = changed.has(index);
+          const isChanged = changedActive && state.hexChangedIndexes.has(index);
           const changedClass = isChanged ? ' byte-changed' : '';
+          const animateClass = isChanged && animateChanged ? ' byte-change-animate' : '';
           const selectedClass = state.hexSelectedIndex === index ? ' selected' : '';
           const hex = byte.toString(16).padStart(2, '0');
           const printable = printableByte(byte);
           const char = escapeHtml(printable);
           const title = `offset 0x${index.toString(16).padStart(8, '0')} · byte 0x${hex} · ascii ${printable}`;
-          hexCells.push(`<span class="hex-byte${changedClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${hex}</span>`);
-          asciiCells.push(`<span class="hex-char${changedClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${char}</span>`);
+          hexCells.push(`<span class="hex-byte${changedClass}${animateClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${hex}</span>`);
+          asciiCells.push(`<span class="hex-char${changedClass}${animateClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${char}</span>`);
         }
         rows.push(`
           <div class="hex-row">
@@ -1798,72 +1889,61 @@ export default def;`,
           </div>
         `);
       }
-      return `
-        <section class="hex-section">
-          <div class="hex-section-title">
-            <strong>Hex</strong>
-            <span>${bytes.length} bytes</span>
-          </div>
-          <div class="hex-dump">
+      dump.innerHTML = `
+        <div class="hex-spacer" style="height:${totalRows * rowHeight}px">
+          <div class="hex-rows" style="transform:translateY(${firstRow * rowHeight}px)">
             ${rows.join('')}
           </div>
-        </section>
+        </div>
       `;
+      state.hexChangeAnimationPending = false;
     }
 
-    function opcodeYaml() {
-      const lines = ['magic: "JSTKBC01"', 'opcodes:'];
-      for (const row of state.opcodeRows) {
-        lines.push(`  ${row.name}: ${row.code}`);
-      }
-      lines.push('operand_tags:');
-      for (const row of state.operandTagRows) {
-        lines.push(`  ${row.name}: ${row.code}`);
-      }
-      lines.push('constant_tags:');
-      for (const row of state.constantTagRows) {
-        lines.push(`  ${row.name}: ${row.code}`);
-      }
-      return lines.join('\n');
+    function encodingRowNames() {
+      return {
+        opcodes: state.opcodeRows.map((row) => row.name),
+        operandTags: state.operandTagRows.map((row) => row.name),
+        constantTags: state.constantTagRows.map((row) => row.name),
+      };
     }
 
-    function rowsFromYamlSection(yaml, sectionName, defaults) {
-      const byCode = new Map();
-      let active = false;
-      for (const rawLine of yaml.split('\n')) {
-        const line = rawLine.split('#')[0];
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (!line.startsWith(' ') && trimmed.endsWith(':')) {
-          active = trimmed === `${sectionName}:`;
-          continue;
-        }
-        if (!active) continue;
-        const parts = trimmed.split(':');
-        if (parts.length < 2) continue;
-        const name = parts[0].trim();
-        const code = Number(parts.slice(1).join(':').trim());
-        if (Number.isInteger(code)) {
-          byCode.set(code, name);
-        }
+    function seedFromCurrentRows(bytes = new Uint8Array()) {
+      const rows = encodingRowNames();
+      return js_encoding_seed_from_rows(
+        rows.opcodes,
+        rows.operandTags,
+        rows.constantTags,
+        bytes,
+      );
+    }
+
+    function rowsFromSeed(seed) {
+      const names = Array.from(js_encoding_rows_from_seed(seed));
+      const opcodeCount = defaultOpcodeRows.length;
+      const operandCount = defaultOperandTagRows.length;
+      const constantCount = defaultConstantTagRows.length;
+      const expected = opcodeCount + operandCount + constantCount;
+      if (names.length !== expected) {
+        throw new Error(`Seed restored ${names.length} rows, expected ${expected}`);
       }
-      if (byCode.size !== defaults.length) {
-        throw new Error(`Seed restored ${byCode.size} ${sectionName}, expected ${defaults.length}`);
-      }
-      return defaults.map((row) => ({
-        code: row.code,
-        name: byCode.get(row.code),
-      }));
+      const opcodes = names.slice(0, opcodeCount);
+      const operandTags = names.slice(opcodeCount, opcodeCount + operandCount);
+      const constantTags = names.slice(opcodeCount + operandCount);
+      return {
+        opcodes: defaultOpcodeRows.map((row, index) => ({ code: row.code, name: opcodes[index] })),
+        operandTags: defaultOperandTagRows.map((row, index) => ({ code: row.code, name: operandTags[index] })),
+        constantTags: defaultConstantTagRows.map((row, index) => ({ code: row.code, name: constantTags[index] })),
+      };
     }
 
     function applyOpcodeSeed() {
       const seed = opcodeSeedInput.value.trim();
       if (!seed) return;
       try {
-        const yaml = js_encoding_yaml_from_seed(seed);
-        state.opcodeRows = rowsFromYamlSection(yaml, 'opcodes', defaultOpcodeRows);
-        state.operandTagRows = rowsFromYamlSection(yaml, 'operand_tags', defaultOperandTagRows);
-        state.constantTagRows = rowsFromYamlSection(yaml, 'constant_tags', defaultConstantTagRows);
+        const rows = rowsFromSeed(seed);
+        state.opcodeRows = rows.opcodes;
+        state.operandTagRows = rows.operandTags;
+        state.constantTagRows = rows.constantTags;
         state.opcodeSeed = seed;
         opcodeSeedInput.value = seed;
         state.selectedOpcodeRows = [];
@@ -1908,11 +1988,6 @@ export default def;`,
       timingInfo.textContent = 'Compile 0ms';
       renderLogs();
       setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Seed accepted' : 'Seed rejected');
-    }
-
-    function syncBytesSeedToObfuscation() {
-      opcodeSeedInput.value = bytesSeedInput.value.trim();
-      applyOpcodeSeed();
     }
 
     function byteArrayLiteral(bytes) {
@@ -2176,17 +2251,60 @@ console.log('[js-vm]', result);`;
       output.classList.toggle('hex-output', view === 'bytes' && state.bytesHtml && !state.viewErrors[view]);
       output.classList.toggle('error', state.viewErrors[view]);
       if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
+        output.classList.remove('virtual-output');
         output.innerHTML = state.bytesHtml;
+        renderHexRows();
       } else {
         output.classList.remove('hex-output');
-        output.textContent = state.views[view] || '';
+        if (!state.viewErrors[view]) {
+          setVirtualTextView(view, state.views[view] || '');
+        } else {
+          output.classList.remove('virtual-output');
+          output.textContent = state.views[view] || '';
+        }
       }
+    }
+
+    function setVirtualTextView(view, text) {
+      state.virtualText.view = view;
+      state.virtualText.lines = text ? text.split('\n') : [''];
+      output.classList.add('virtual-output');
+      renderVirtualText();
+    }
+
+    function renderVirtualText() {
+      if (!output.classList.contains('virtual-output')) return;
+      const lines = state.virtualText.lines;
+      const lineHeight = lineHeightOf(output);
+      const first = Math.max(0, Math.floor(output.scrollTop / lineHeight) - VIRTUAL_BUFFER);
+      const visible = Math.ceil(output.clientHeight / lineHeight) + VIRTUAL_BUFFER * 2;
+      const last = Math.min(lines.length, first + visible);
+      const html = lines.slice(first, last).map(escapeHtml).join('\n') || ' ';
+      output.innerHTML = `
+        <div class="virtual-spacer" style="height:${lines.length * lineHeight + 28}px">
+          <div class="virtual-lines" style="transform:translateY(${first * lineHeight}px)">${html}</div>
+        </div>
+      `;
     }
 
     function selectHexByte(index) {
       if (!Number.isInteger(index)) return;
       if (index < 0 || index >= state.byteTokens.length) return;
       state.hexSelectedIndex = index;
+      const dump = output.querySelector('.hex-dump');
+      if (dump) {
+        const rowHeight = 23;
+        const row = Math.floor(index / 16);
+        const rowTop = row * rowHeight;
+        const rowBottom = rowTop + rowHeight;
+        if (rowTop < dump.scrollTop) {
+          dump.scrollTop = rowTop;
+          renderHexRows();
+        } else if (rowBottom > dump.scrollTop + dump.clientHeight) {
+          dump.scrollTop = rowBottom - dump.clientHeight;
+          renderHexRows();
+        }
+      }
       const rowStart = Math.floor(index / 16) * 16;
       output.querySelectorAll('.hex-byte, .hex-char').forEach((cell) => {
         const cellIndex = Number(cell.dataset.index);
@@ -2421,22 +2539,24 @@ console.log('[js-vm]', result);`;
         resetViewErrors();
         appendLog('compile', 'Compiling JavaScript to IR and bytecode');
         const compiler = new Compiler(editor.value);
-        const encodingYaml = opcodeYaml();
         const externs = compiler.extern_slots();
         syncExternRows(externs);
         const externSlots = externSlotsForBytecode();
-        const bytes = compiler.to_bytes_with_encoding_and_extern_slots(encodingYaml, externSlots);
-        const seed = js_encoding_seed_for_bytes(encodingYaml, bytes);
+        const configSeed = seedFromCurrentRows();
+        const artifact = compiler.to_bytecode_artifact(configSeed, externSlots);
+        const bytes = artifact.bytes();
+        const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
         const nextByteTokens = Array.from(bytes);
         const changedBytes = changedByteIndexes(state.byteTokens, nextByteTokens);
         const compileDuration = performance.now() - compileStarted;
         state.compiler = compiler;
         state.views.ir = compiler.to_text();
-        state.views.bytecode = compiler.to_bytecode_text_with_extern_slots(externSlots);
+        state.views.bytecode = artifact.bytecode_text();
         state.views.bytes = formatBytes(bytes);
         state.bytesHtml = renderHexView(nextByteTokens, changedBytes);
         state.byteTokens = nextByteTokens;
         state.compiledBytes = bytes;
+        artifact.free();
         syncSeedInputs(seed);
 
         const run = executeBytecode(bytes, bytesSeedInput.value.trim());
@@ -2481,6 +2601,7 @@ console.log('[js-vm]', result);`;
     }
 
     editor.addEventListener('input', () => {
+      updateEditorSelectionState();
       updateEditorStats();
       showCompletions(false);
       scheduleBuild();
@@ -2488,15 +2609,18 @@ console.log('[js-vm]', result);`;
 
     editor.addEventListener('scroll', syncScroll);
     editor.addEventListener('click', () => {
+      updateEditorSelectionState();
       updateEditorStats();
       showCompletions(false);
     });
     editor.addEventListener('keyup', (event) => {
+      updateEditorSelectionState();
       updateEditorStats();
       if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
         showCompletions(false);
       }
     });
+    document.addEventListener('selectionchange', updateEditorSelectionState);
 
     editor.addEventListener('keydown', (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ' ') {
@@ -2584,7 +2708,6 @@ console.log('[js-vm]', result);`;
 
     resetOpcodesBtn.addEventListener('click', resetOpcodeTable);
     shuffleOpcodesBtn.addEventListener('click', shuffleOpcodeNames);
-    syncSeedBtn.addEventListener('click', syncBytesSeedToObfuscation);
     opcodeSeedInput.addEventListener('change', applyOpcodeSeed);
     opcodeSeedInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
@@ -2620,6 +2743,18 @@ console.log('[js-vm]', result);`;
         event.preventDefault();
       }
     });
+
+    output.addEventListener('scroll', () => {
+      if (output.classList.contains('virtual-output')) {
+        renderVirtualText();
+      }
+    });
+
+    output.addEventListener('scroll', (event) => {
+      if (event.target?.classList?.contains('hex-dump')) {
+        renderHexRows();
+      }
+    }, true);
 
     downloadPkgBtn.addEventListener('click', downloadRuntimePackage);
 

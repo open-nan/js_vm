@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use js_token_core::{BytecodeModule, EncodingConfig, IrInstruction, IrModule, IrValue};
+use js_token_core::{
+    BytecodeModule, EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue,
+};
 use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::*;
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
@@ -1290,14 +1292,81 @@ impl LoweringContext {
     }
 }
 
-pub fn compile_to_ir(source: &str) -> Result<IrModule, String> {
+#[derive(Debug, Default, Clone)]
+pub struct CompileOptions {
+    pub externals: Vec<String>,
+    pub encoding_seed: Option<String>,
+    pub extern_slots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompileOutput {
+    pub ir: IrModule,
+    pub bytecode: BytecodeModule,
+    pub bytes: Vec<u8>,
+    pub seed: Option<String>,
+}
+
+impl CompileOutput {
+    pub fn ir_text(&self) -> String {
+        self.ir.to_text()
+    }
+
+    pub fn bytecode_text(&self) -> String {
+        self.bytecode.to_text()
+    }
+}
+
+pub fn compile_source(source: &str) -> Result<CompileOutput, String> {
+    compile_source_with_options(source, &CompileOptions::default())
+}
+
+pub fn compile_source_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<CompileOutput, String> {
+    let ir = compile_to_ir_with_externals(source, &options.externals)?;
+    let mut bytecode = ir.to_bytecode();
+
+    if let Some(extern_slots) = &options.extern_slots {
+        if extern_slots.len() != ir.extern_slots.len() {
+            return Err(format!(
+                "extern slot count mismatch: expected {}, got {}",
+                ir.extern_slots.len(),
+                extern_slots.len()
+            ));
+        }
+        bytecode.extern_slots = extern_slots.clone();
+    }
+
+    let bytes = match &options.encoding_seed {
+        Some(seed) => {
+            let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
+            bytecode
+                .to_bytes_with_encoding(&encoding)
+                .map_err(|err| err.to_string())?
+        }
+        None => bytecode.to_bytes(),
+    };
+    let seed = options
+        .encoding_seed
+        .as_deref()
+        .map(|seed| encoding_seed_for_seed_and_bytes(seed, &bytes))
+        .transpose()?;
+
+    Ok(CompileOutput {
+        ir,
+        bytecode,
+        bytes,
+        seed,
+    })
+}
+
+fn compile_to_ir(source: &str) -> Result<IrModule, String> {
     compile_to_ir_with_externals(source, &[])
 }
 
-pub fn compile_to_ir_with_externals(
-    source: &str,
-    externals: &[String],
-) -> Result<IrModule, String> {
+fn compile_to_ir_with_externals(source: &str, externals: &[String]) -> Result<IrModule, String> {
     let program = parse_source(source)?;
 
     let mut ctx = LoweringContext::with_externals(externals);
@@ -1316,44 +1385,8 @@ pub fn compile_to_ir_with_externals(
     Ok(ctx.into_module())
 }
 
-pub fn compile_to_ir_text(source: &str) -> Result<String, String> {
-    compile_to_ir(source).map(|module| module.to_text())
-}
-
-pub fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, String> {
+fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, String> {
     compile_to_ir(source).map(|module| module.to_bytecode())
-}
-
-pub fn compile_to_bytecode_with_externals(
-    source: &str,
-    externals: &[String],
-) -> Result<BytecodeModule, String> {
-    compile_to_ir_with_externals(source, externals).map(|module| module.to_bytecode())
-}
-
-pub fn compile_to_bytecode_text(source: &str) -> Result<String, String> {
-    compile_to_bytecode(source).map(|module| module.to_text())
-}
-
-pub fn compile_to_bytecode_bytes(source: &str) -> Result<Vec<u8>, String> {
-    compile_to_bytecode(source).map(|module| module.to_bytes())
-}
-
-pub fn compile_to_bytecode_bytes_with_encoding(
-    source: &str,
-    encoding: &EncodingConfig,
-) -> Result<Vec<u8>, String> {
-    compile_to_bytecode(source)?
-        .to_bytes_with_encoding(encoding)
-        .map_err(|err| err.to_string())
-}
-
-pub fn compile_to_bytecode_bytes_with_encoding_yaml(
-    source: &str,
-    yaml: &str,
-) -> Result<Vec<u8>, String> {
-    let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
-    compile_to_bytecode_bytes_with_encoding(source, &encoding)
 }
 
 pub fn execute_source(source: &str) -> Result<String, String> {
@@ -1363,49 +1396,41 @@ pub fn execute_source(source: &str) -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
-pub fn execute_source_with_externals(source: &str, externals: &[String]) -> Result<String, String> {
-    let bytecode = compile_to_bytecode_with_externals(source, externals)?;
-    Executor::run_with_external_names(&bytecode, externals)
-        .map(|value| value.to_string())
-        .map_err(|err| err.to_string())
-}
-
-pub fn execute_bytecode_bytes(bytes: &[u8]) -> Result<String, String> {
-    let bytecode = BytecodeModule::from_bytes(bytes).map_err(|err| err.to_string())?;
-    Executor::run(&bytecode)
-        .map(|value| value.to_string())
-        .map_err(|err| err.to_string())
-}
-
-pub fn execute_bytecode_bytes_with_encoding_yaml(
+pub fn encoding_seed_from_names(
+    opcode_names: &[String],
+    operand_tag_names: &[String],
+    constant_tag_names: &[String],
     bytes: &[u8],
-    yaml: &str,
 ) -> Result<String, String> {
-    let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
-    let bytecode = BytecodeModule::from_bytes_with_encoding(bytes, &encoding)
-        .map_err(|err| err.to_string())?;
-    Executor::run(&bytecode)
-        .map(|value| value.to_string())
-        .map_err(|err| err.to_string())
+    let names = EncodingNames {
+        opcodes: opcode_names.to_vec(),
+        operand_tags: operand_tag_names.to_vec(),
+        constant_tags: constant_tag_names.to_vec(),
+    };
+    let encoding = EncodingConfig::from_names(&names).map_err(|err| err.to_string())?;
+    encoding.paired_seed(bytes).map_err(|err| err.to_string())
 }
 
-pub fn encoding_seed_for_bytes(yaml: &str, bytes: &[u8]) -> Result<String, String> {
-    let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
-    encoding.to_seed(bytes).map_err(|err| err.to_string())
+pub fn encoding_seed_for_seed_and_bytes(seed: &str, bytes: &[u8]) -> Result<String, String> {
+    let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
+    encoding.paired_seed(bytes).map_err(|err| err.to_string())
 }
 
-pub fn encoding_yaml_from_seed(seed: &str) -> Result<String, String> {
-    EncodingConfig::from_seed(seed)
-        .map(|encoding| encoding.to_yaml())
-        .map_err(|err| err.to_string())
+pub fn encoding_names_from_seed(seed: &str) -> Result<Vec<String>, String> {
+    let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
+    Ok(encoding.names().flatten())
 }
 
-pub fn execute_bytecode_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
+fn execute_bytecode_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
     let bytecode =
         BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
     Executor::run(&bytecode)
         .map(|value| value.to_string())
         .map_err(|err| err.to_string())
+}
+
+pub fn execute_bytes(bytes: &[u8], seed: &str) -> Result<String, String> {
+    execute_bytecode_bytes_with_seed(bytes, seed)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -1414,17 +1439,27 @@ pub struct Compiler {
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub struct CompilerArtifact {
+    bytecode_text: String,
+    bytes: Vec<u8>,
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+impl CompilerArtifact {
+    pub fn bytecode_text(&self) -> String {
+        self.bytecode_text.clone()
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 impl Compiler {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
     pub fn new(source: &str) -> Result<Compiler, JsValue> {
         let ir = compile_to_ir(source).map_err(|err| JsValue::from_str(&err))?;
-        Ok(Compiler { ir })
-    }
-
-    pub fn with_externals(source: &str, externals: Box<[JsValue]>) -> Result<Compiler, JsValue> {
-        let externals = js_values_to_strings(&externals);
-        let ir = compile_to_ir_with_externals(source, &externals)
-            .map_err(|err| JsValue::from_str(&err))?;
         Ok(Compiler { ir })
     }
 
@@ -1436,19 +1471,36 @@ impl Compiler {
         self.ir.to_text()
     }
 
-    pub fn to_bytecode(&self) -> String {
-        self.ir.to_bytecode().to_text()
+    pub fn to_bytecode_artifact(
+        &self,
+        seed: Option<String>,
+        extern_slots: Box<[JsValue]>,
+    ) -> Result<CompilerArtifact, String> {
+        let module = self.bytecode_module_with_extern_slots(extern_slots)?;
+        let bytes = match seed.as_deref() {
+            Some(seed) if !seed.is_empty() => {
+                let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
+                module
+                    .to_bytes_with_encoding(&encoding)
+                    .map_err(|err| err.to_string())?
+            }
+            _ => module.to_bytes(),
+        };
+        Ok(CompilerArtifact {
+            bytecode_text: module.to_text(),
+            bytes,
+        })
     }
 
-    pub fn to_bytecode_text(&self) -> String {
-        self.to_bytecode()
-    }
-
-    pub fn to_bytecode_text_with_extern_slots(
+    fn bytecode_module_with_extern_slots(
         &self,
         extern_slots: Box<[JsValue]>,
-    ) -> Result<String, String> {
+    ) -> Result<BytecodeModule, String> {
         let extern_slots = js_values_to_strings(&extern_slots);
+        let mut module = self.ir.to_bytecode();
+        if extern_slots.is_empty() {
+            return Ok(module);
+        }
         if extern_slots.len() != self.ir.extern_slots.len() {
             return Err(format!(
                 "extern slot count mismatch: expected {}, got {}",
@@ -1456,106 +1508,34 @@ impl Compiler {
                 extern_slots.len()
             ));
         }
-        let mut module = self.ir.to_bytecode();
         module.extern_slots = extern_slots;
-        Ok(module.to_text())
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.ir.to_bytecode().to_bytes()
-    }
-
-    pub fn to_bytecode_bytes(&self) -> Vec<u8> {
-        self.to_bytes()
-    }
-
-    pub fn to_bytes_with_encoding(&self, yaml: &str) -> Result<Vec<u8>, String> {
-        let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
-        self.ir
-            .to_bytecode()
-            .to_bytes_with_encoding(&encoding)
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn to_bytes_with_encoding_and_extern_slots(
-        &self,
-        yaml: &str,
-        extern_slots: Box<[JsValue]>,
-    ) -> Result<Vec<u8>, String> {
-        let encoding = EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string())?;
-        let extern_slots = js_values_to_strings(&extern_slots);
-        if extern_slots.len() != self.ir.extern_slots.len() {
-            return Err(format!(
-                "extern slot count mismatch: expected {}, got {}",
-                self.ir.extern_slots.len(),
-                extern_slots.len()
-            ));
-        }
-        let mut module = self.ir.to_bytecode();
-        module.extern_slots = extern_slots;
-        module
-            .to_bytes_with_encoding(&encoding)
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn to_bytes_with_seed(&self, seed: &str) -> Result<Vec<u8>, String> {
-        let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-        self.ir
-            .to_bytecode()
-            .to_bytes_with_encoding(&encoding)
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn encoding_seed(&self, yaml: &str, bytes: &[u8]) -> Result<String, String> {
-        encoding_seed_for_bytes(yaml, bytes)
-    }
-
-    pub fn execute(&self) -> Result<String, String> {
-        Executor::run(&self.ir.to_bytecode())
-            .map(|value| value.to_string())
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn execute_with_externals(&self, externals: Box<[JsValue]>) -> Result<String, String> {
-        let externals = js_values_to_strings(&externals);
-        Executor::run_with_external_names(&self.ir.to_bytecode(), &externals)
-            .map(|value| value.to_string())
-            .map_err(|err| err.to_string())
+        Ok(module)
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_execute(source: &str) -> Result<String, String> {
-    execute_source(source)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_execute_with_externals(
-    source: &str,
-    externals: Box<[JsValue]>,
+pub fn js_encoding_seed_from_rows(
+    opcode_names: Box<[JsValue]>,
+    operand_tag_names: Box<[JsValue]>,
+    constant_tag_names: Box<[JsValue]>,
+    bytes: &[u8],
 ) -> Result<String, String> {
-    let externals = js_values_to_strings(&externals);
-    execute_source_with_externals(source, &externals)
+    encoding_seed_from_names(
+        &js_values_to_strings(&opcode_names),
+        &js_values_to_strings(&operand_tag_names),
+        &js_values_to_strings(&constant_tag_names),
+        bytes,
+    )
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_execute_bytes(bytes: &[u8]) -> Result<String, String> {
-    execute_bytecode_bytes(bytes)
+pub fn js_encoding_seed_for_seed_and_bytes(seed: &str, bytes: &[u8]) -> Result<String, String> {
+    encoding_seed_for_seed_and_bytes(seed, bytes)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_execute_bytes_with_encoding(bytes: &[u8], yaml: &str) -> Result<String, String> {
-    execute_bytecode_bytes_with_encoding_yaml(bytes, yaml)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_encoding_yaml_from_seed(seed: &str) -> Result<String, String> {
-    encoding_yaml_from_seed(seed)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_encoding_seed_for_bytes(yaml: &str, bytes: &[u8]) -> Result<String, String> {
-    encoding_seed_for_bytes(yaml, bytes)
+pub fn js_encoding_rows_from_seed(seed: &str) -> Result<Vec<String>, String> {
+    encoding_names_from_seed(seed)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -1616,38 +1596,52 @@ fn parse_source_with_syntax(source: &str, syntax: Syntax) -> Result<Program, Str
 #[cfg(test)]
 mod active_tests {
     use js_token_core::BytecodeModule;
+    use js_token_core::EncodingNames;
 
     use super::{
-        Compiler, compile_to_bytecode_bytes_with_encoding_yaml, compile_to_ir, execute_source,
+        CompileOptions, Compiler, compile_source_with_options, compile_to_ir,
+        encoding_seed_from_names, execute_bytes, execute_source,
     };
 
     #[test]
     fn wasm_compiler_facade_exposes_all_outputs() {
         let compiler = Compiler::new("const a = 1;").unwrap();
-        assert!(compiler.to_bytes().starts_with(b"JSTKBC01"));
+        let artifact = compiler.to_bytecode_artifact(None, Box::new([])).unwrap();
+        assert!(artifact.bytecode_text().contains("LOAD_CONST"));
+        assert!(artifact.bytes().starts_with(b"JSTKBC01"));
     }
 
     #[test]
-    fn compiles_with_yaml_encoding() {
-        let bytes = compile_to_bytecode_bytes_with_encoding_yaml(
-            "const a = 1;",
-            r#"
-            magic: "YAMLBC01"
-            opcodes:
-              LOAD_CONST: 77
-            "#,
+    fn compile_source_facade_returns_bytes_and_seed() {
+        let output = compile_source_with_options(
+            "console.log(1);",
+            &CompileOptions {
+                externals: vec!["console".to_string()],
+                encoding_seed: Some(
+                    {
+                        let names = EncodingNames::default();
+                        encoding_seed_from_names(
+                            &names.opcodes,
+                            &names.operand_tags,
+                            &names.constant_tags,
+                            &[],
+                        )
+                    }
+                    .unwrap(),
+                ),
+                extern_slots: Some(vec!["console".to_string()]),
+            },
         )
         .unwrap();
 
-        assert!(bytes.starts_with(b"YAMLBC01"));
-        assert!(bytes.contains(&77));
+        let seed = output.seed.as_deref().unwrap();
+        assert!(output.bytes.starts_with(b"JSTKBC01"));
+        assert_eq!(execute_bytes(&output.bytes, seed).unwrap(), "undefined");
     }
 
     #[test]
     fn wasm_facade_executes_source() {
         assert_eq!(execute_source("const a = 1 + 2; a;").unwrap(), "3");
-        let compiler = Compiler::new("const obj = {a: 2}; obj.a;").unwrap();
-        assert_eq!(compiler.execute().unwrap(), "2");
     }
 
     #[test]

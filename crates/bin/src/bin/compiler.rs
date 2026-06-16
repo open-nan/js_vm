@@ -3,11 +3,7 @@ use std::{
     io::{self, Read},
 };
 
-use js_token_bin::{
-    compile_to_bytecode_bytes, compile_to_bytecode_bytes_with_encoding_yaml,
-    compile_to_bytecode_text, compile_to_bytecode_with_externals, compile_to_ir_text,
-    compile_to_ir_with_externals,
-};
+use js_token_bin::{CompileOptions, compile_source_with_options};
 
 enum EmitKind {
     Ir,
@@ -18,7 +14,7 @@ enum EmitKind {
 fn main() {
     let mut emit = EmitKind::Bytecode;
     let mut input_path = None;
-    let mut encoding_path = None;
+    let mut encoding_seed = None;
     let mut externals = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -38,12 +34,12 @@ fn main() {
                     }
                 };
             }
-            "--encoding" => {
-                let Some(path) = args.next() else {
-                    eprintln!("missing value for --encoding; expected encoding yaml path");
+            "--seed" => {
+                let Some(seed) = args.next() else {
+                    eprintln!("missing value for --seed; expected encoding seed");
                     std::process::exit(1);
                 };
-                encoding_path = Some(path);
+                encoding_seed = Some(seed);
             }
             "--extern" => {
                 let Some(name) = args.next() else {
@@ -77,44 +73,19 @@ fn main() {
         }
     };
 
-    let encoding_yaml = encoding_path.map(|path| {
-        fs::read_to_string(&path).unwrap_or_else(|err| {
-            eprintln!("failed to read encoding yaml {path}: {err}");
-            std::process::exit(1);
-        })
-    });
-
-    let result = match emit {
-        EmitKind::Ir if externals.is_empty() => {
-            compile_to_ir_text(&source).map(|text| text.into_bytes())
-        }
-        EmitKind::Ir => compile_to_ir_with_externals(&source, &externals)
-            .map(|module| module.to_text().into_bytes()),
-        EmitKind::Bytecode if externals.is_empty() => {
-            compile_to_bytecode_text(&source).map(|text| text.into_bytes())
-        }
-        EmitKind::Bytecode => compile_to_bytecode_with_externals(&source, &externals)
-            .map(|module| module.to_text().into_bytes()),
-        EmitKind::Bytes => match encoding_yaml.as_deref() {
-            Some(yaml) if externals.is_empty() => {
-                compile_to_bytecode_bytes_with_encoding_yaml(&source, yaml)
-            }
-            Some(yaml) => {
-                let encoding =
-                    js_token_core::EncodingConfig::from_yaml(yaml).map_err(|err| err.to_string());
-                encoding.and_then(|encoding| {
-                    compile_to_bytecode_with_externals(&source, &externals).and_then(|module| {
-                        module
-                            .to_bytes_with_encoding(&encoding)
-                            .map_err(|err| err.to_string())
-                    })
-                })
-            }
-            None if externals.is_empty() => compile_to_bytecode_bytes(&source),
-            None => compile_to_bytecode_with_externals(&source, &externals)
-                .map(|module| module.to_bytes()),
+    let result = compile_source_with_options(
+        &source,
+        &CompileOptions {
+            externals,
+            encoding_seed,
+            extern_slots: None,
         },
-    };
+    )
+    .map(|output| match emit {
+        EmitKind::Ir => output.ir_text().into_bytes(),
+        EmitKind::Bytecode => output.bytecode_text().into_bytes(),
+        EmitKind::Bytes => output.bytes,
+    });
 
     match result {
         Ok(output) => {
@@ -133,6 +104,6 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: js-compiler [--emit ir|bytecode|bytes] [--encoding encoding.yaml] [--extern name] [input.js]"
+        "usage: js-compiler [--emit ir|bytecode|bytes] [--seed encoding-seed] [--extern name] [input.js]"
     );
 }
