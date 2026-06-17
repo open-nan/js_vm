@@ -1,16 +1,10 @@
+use swc_ecma_ast::*;
+use swc_common::{FileName, SourceMap, sync::Lrc};
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
+use js_token_core::{IrInstruction, IrModule, IrValue};
 use std::collections::{BTreeMap, BTreeSet};
 
-use js_token_core::{
-    BytecodeModule, EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue,
-};
-use swc_common::{FileName, SourceMap, sync::Lrc};
-use swc_ecma_ast::*;
-use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
-use wasm_bindgen::prelude::*;
-
-use crate::executor::Executor;
-
-struct LoweringContext {
+pub struct LoweringContext {
     instructions: Vec<IrInstruction>,
     temp_id: usize,
     label_id: usize,
@@ -21,7 +15,7 @@ struct LoweringContext {
 }
 
 impl LoweringContext {
-    fn with_externals(externs: &[String]) -> Self {
+    pub fn with_externals(externs: &[String]) -> Self {
         Self {
             instructions: Vec::new(),
             temp_id: 0,
@@ -37,7 +31,7 @@ impl LoweringContext {
         }
     }
 
-    fn into_module(self) -> IrModule {
+    pub fn into_module(self) -> IrModule {
         let mut extern_slots = vec![String::new(); self.extern_slots.len()];
         for (name, slot) in self.extern_slots {
             extern_slots[slot] = name;
@@ -93,7 +87,7 @@ impl LoweringContext {
         self.instructions.push(instruction);
     }
 
-    fn lower_module(&mut self, module: &Module) {
+    pub fn lower_module(&mut self, module: &Module) {
         self.predeclare_module(module);
         for item in &module.body {
             self.lower_module_item(item);
@@ -117,7 +111,7 @@ impl LoweringContext {
         }
     }
 
-    fn predeclare_stmt(&mut self, stmt: &Stmt) {
+    pub fn predeclare_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Decl(decl) => self.predeclare_decl(decl),
             Stmt::Block(block) => self.predeclare_block(block),
@@ -237,7 +231,7 @@ impl LoweringContext {
         }
     }
 
-    fn lower_stmt(&mut self, stmt: &Stmt) {
+    pub fn lower_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(block) => self.lower_block(block),
             Stmt::Return(stmt) => self.lower_return(stmt),
@@ -1292,272 +1286,7 @@ impl LoweringContext {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct CompileOptions {
-    pub externals: Vec<String>,
-    pub encoding_seed: Option<String>,
-    pub extern_slots: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CompileOutput {
-    pub ir: IrModule,
-    pub bytecode: BytecodeModule,
-    pub bytes: Vec<u8>,
-    pub seed: Option<String>,
-}
-
-impl CompileOutput {
-    pub fn ir_text(&self) -> String {
-        self.ir.to_text()
-    }
-
-    pub fn bytecode_text(&self) -> String {
-        self.bytecode.to_text()
-    }
-}
-
-pub fn compile_source(source: &str) -> Result<CompileOutput, String> {
-    compile_source_with_options(source, &CompileOptions::default())
-}
-
-pub fn compile_source_with_options(
-    source: &str,
-    options: &CompileOptions,
-) -> Result<CompileOutput, String> {
-    let ir = compile_to_ir_with_externals(source, &options.externals)?;
-    let mut bytecode = ir.to_bytecode();
-
-    if let Some(extern_slots) = &options.extern_slots {
-        if extern_slots.len() != ir.extern_slots.len() {
-            return Err(format!(
-                "extern slot count mismatch: expected {}, got {}",
-                ir.extern_slots.len(),
-                extern_slots.len()
-            ));
-        }
-        bytecode.extern_slots = extern_slots.clone();
-    }
-
-    let bytes = match &options.encoding_seed {
-        Some(seed) => {
-            let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-            bytecode
-                .to_bytes_with_encoding(&encoding)
-                .map_err(|err| err.to_string())?
-        }
-        None => bytecode.to_bytes(),
-    };
-    let seed = options
-        .encoding_seed
-        .as_deref()
-        .map(|seed| encoding_seed_for_seed_and_bytes(seed, &bytes))
-        .transpose()?;
-
-    Ok(CompileOutput {
-        ir,
-        bytecode,
-        bytes,
-        seed,
-    })
-}
-
-fn compile_to_ir(source: &str) -> Result<IrModule, String> {
-    compile_to_ir_with_externals(source, &[])
-}
-
-fn compile_to_ir_with_externals(source: &str, externals: &[String]) -> Result<IrModule, String> {
-    let program = parse_source(source)?;
-
-    let mut ctx = LoweringContext::with_externals(externals);
-    match program {
-        Program::Module(module) => ctx.lower_module(&module),
-        Program::Script(script) => {
-            for stmt in &script.body {
-                ctx.predeclare_stmt(stmt);
-            }
-            for stmt in &script.body {
-                ctx.lower_stmt(stmt);
-            }
-        }
-    }
-
-    Ok(ctx.into_module())
-}
-
-fn compile_to_bytecode(source: &str) -> Result<BytecodeModule, String> {
-    compile_to_ir(source).map(|module| module.to_bytecode())
-}
-
-pub fn execute_source(source: &str) -> Result<String, String> {
-    let bytecode = compile_to_bytecode(source)?;
-    Executor::run(&bytecode)
-        .map(|value| value.to_string())
-        .map_err(|err| err.to_string())
-}
-
-pub fn encoding_seed_from_names(
-    opcode_names: &[String],
-    operand_tag_names: &[String],
-    constant_tag_names: &[String],
-    bytes: &[u8],
-) -> Result<String, String> {
-    let names = EncodingNames {
-        opcodes: opcode_names.to_vec(),
-        operand_tags: operand_tag_names.to_vec(),
-        constant_tags: constant_tag_names.to_vec(),
-    };
-    let encoding = EncodingConfig::from_names(&names).map_err(|err| err.to_string())?;
-    encoding.paired_seed(bytes).map_err(|err| err.to_string())
-}
-
-pub fn encoding_seed_for_seed_and_bytes(seed: &str, bytes: &[u8]) -> Result<String, String> {
-    let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-    encoding.paired_seed(bytes).map_err(|err| err.to_string())
-}
-
-pub fn encoding_names_from_seed(seed: &str) -> Result<Vec<String>, String> {
-    let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-    Ok(encoding.names().flatten())
-}
-
-fn execute_bytecode_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
-    let bytecode =
-        BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
-    Executor::run(&bytecode)
-        .map(|value| value.to_string())
-        .map_err(|err| err.to_string())
-}
-
-pub fn execute_bytes(bytes: &[u8], seed: &str) -> Result<String, String> {
-    execute_bytecode_bytes_with_seed(bytes, seed)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub struct Compiler {
-    ir: IrModule,
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub struct CompilerArtifact {
-    bytecode_text: String,
-    bytes: Vec<u8>,
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-impl CompilerArtifact {
-    pub fn bytecode_text(&self) -> String {
-        self.bytecode_text.clone()
-    }
-
-    pub fn bytes(&self) -> Vec<u8> {
-        self.bytes.clone()
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-impl Compiler {
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
-    pub fn new(source: &str) -> Result<Compiler, JsValue> {
-        let ir = compile_to_ir(source).map_err(|err| JsValue::from_str(&err))?;
-        Ok(Compiler { ir })
-    }
-
-    pub fn extern_slots(&self) -> Vec<String> {
-        self.ir.extern_slots.clone()
-    }
-
-    pub fn to_text(&self) -> String {
-        self.ir.to_text()
-    }
-
-    pub fn to_bytecode_artifact(
-        &self,
-        seed: Option<String>,
-        extern_slots: Box<[JsValue]>,
-    ) -> Result<CompilerArtifact, String> {
-        let module = self.bytecode_module_with_extern_slots(extern_slots)?;
-        let bytes = match seed.as_deref() {
-            Some(seed) if !seed.is_empty() => {
-                let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-                module
-                    .to_bytes_with_encoding(&encoding)
-                    .map_err(|err| err.to_string())?
-            }
-            _ => module.to_bytes(),
-        };
-        Ok(CompilerArtifact {
-            bytecode_text: module.to_text(),
-            bytes,
-        })
-    }
-
-    fn bytecode_module_with_extern_slots(
-        &self,
-        extern_slots: Box<[JsValue]>,
-    ) -> Result<BytecodeModule, String> {
-        let extern_slots = js_values_to_strings(&extern_slots);
-        let mut module = self.ir.to_bytecode();
-        if extern_slots.is_empty() {
-            return Ok(module);
-        }
-        if extern_slots.len() != self.ir.extern_slots.len() {
-            return Err(format!(
-                "extern slot count mismatch: expected {}, got {}",
-                self.ir.extern_slots.len(),
-                extern_slots.len()
-            ));
-        }
-        module.extern_slots = extern_slots;
-        Ok(module)
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_encoding_seed_from_rows(
-    opcode_names: Box<[JsValue]>,
-    operand_tag_names: Box<[JsValue]>,
-    constant_tag_names: Box<[JsValue]>,
-    bytes: &[u8],
-) -> Result<String, String> {
-    encoding_seed_from_names(
-        &js_values_to_strings(&opcode_names),
-        &js_values_to_strings(&operand_tag_names),
-        &js_values_to_strings(&constant_tag_names),
-        bytes,
-    )
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_encoding_seed_for_seed_and_bytes(seed: &str, bytes: &[u8]) -> Result<String, String> {
-    encoding_seed_for_seed_and_bytes(seed, bytes)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_encoding_rows_from_seed(seed: &str) -> Result<Vec<String>, String> {
-    encoding_names_from_seed(seed)
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn js_execute_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
-    execute_bytecode_bytes_with_seed(bytes, seed)
-}
-
-fn js_values_to_strings(values: &[JsValue]) -> Vec<String> {
-    values
-        .iter()
-        .filter_map(|value| value.as_string())
-        .collect()
-}
-
-fn is_implicit_global(name: &str) -> bool {
-    matches!(
-        name,
-        "undefined" | "NaN" | "Infinity" | "this" | "super" | "import"
-    )
-}
-
-fn parse_source(source: &str) -> Result<Program, String> {
+pub fn parse_source(source: &str) -> Result<Program, String> {
     parse_source_with_syntax(
         source,
         Syntax::Typescript(TsSyntax {
@@ -1593,436 +1322,19 @@ fn parse_source_with_syntax(source: &str, syntax: Syntax) -> Result<Program, Str
     Ok(program)
 }
 
-#[cfg(test)]
-mod active_tests {
-    use js_token_core::BytecodeModule;
-    use js_token_core::EncodingNames;
-
-    use super::{
-        CompileOptions, Compiler, compile_source_with_options, compile_to_ir,
-        encoding_seed_from_names, execute_bytes, execute_source,
-    };
-
-    #[test]
-    fn wasm_compiler_facade_exposes_all_outputs() {
-        let compiler = Compiler::new("const a = 1;").unwrap();
-        let artifact = compiler.to_bytecode_artifact(None, Box::new([])).unwrap();
-        assert!(artifact.bytecode_text().contains("LOAD_CONST"));
-        assert!(artifact.bytes().starts_with(b"JSTKBC01"));
-    }
-
-    #[test]
-    fn compile_source_facade_returns_bytes_and_seed() {
-        let output = compile_source_with_options(
-            "console.log(1);",
-            &CompileOptions {
-                externals: vec!["console".to_string()],
-                encoding_seed: Some(
-                    {
-                        let names = EncodingNames::default();
-                        encoding_seed_from_names(
-                            &names.opcodes,
-                            &names.operand_tags,
-                            &names.constant_tags,
-                            &[],
-                        )
-                    }
-                    .unwrap(),
-                ),
-                extern_slots: Some(vec!["console".to_string()]),
-            },
-        )
-        .unwrap();
-
-        let seed = output.seed.as_deref().unwrap();
-        assert!(output.bytes.starts_with(b"JSTKBC01"));
-        assert_eq!(execute_bytes(&output.bytes, seed).unwrap(), "undefined");
-    }
-
-    #[test]
-    fn wasm_facade_executes_source() {
-        assert_eq!(execute_source("const a = 1 + 2; a;").unwrap(), "3");
-    }
-
-    #[test]
-    fn builds_external_slot_table() {
-        let ir = compile_to_ir("console.log(window.title);").unwrap();
-        assert_eq!(
-            ir.extern_slots,
-            vec!["console".to_string(), "window".to_string()]
-        );
-        assert!(ir.to_bytecode().to_bytes().starts_with(b"JSTKBC01"));
-    }
-
-    #[test]
-    fn executes_with_external_names() {
-        let result = execute_source("console.log(1); 2;").unwrap();
-        assert_eq!(result, "2");
-    }
-
-    #[test]
-    fn syntax_corpus_compiles_to_roundtrippable_bytecode() {
-        for source in syntax_corpus() {
-            assert_roundtrips(source);
-        }
-    }
-
-    #[test]
-    fn generated_valid_js_syntax_fuzz_roundtrips() {
-        let mut fuzzer = JsFuzzer::new(0x9e37_79b9_7f4a_7c15);
-        for index in 0..256 {
-            let source = fuzzer.program(index);
-            assert_roundtrips(&source);
-        }
-    }
-
-    #[test]
-    fn generated_executable_js_fuzz_does_not_crash_executor() {
-        let mut fuzzer = JsFuzzer::new(0x5eed_cafe_f00d_beef);
-        for index in 0..128 {
-            let source = fuzzer.executable_program(index);
-            execute_source(&source).unwrap_or_else(|err| {
-                panic!("executor rejected generated JS at case {index}\nsource:\n{source}\nerror: {err}")
-            });
-        }
-    }
-
-    fn assert_roundtrips(source: &str) {
-        let module = super::compile_to_bytecode(source)
-            .unwrap_or_else(|err| panic!("compiler rejected JS\nsource:\n{source}\nerror: {err}"));
-        let bytes = module.to_bytes();
-        let decoded = BytecodeModule::from_bytes(&bytes).unwrap_or_else(|err| {
-            panic!("bytecode roundtrip failed\nsource:\n{source}\nerror: {err}")
-        });
-        assert_eq!(
-            decoded, module,
-            "bytecode changed after roundtrip\nsource:\n{source}"
-        );
-    }
-
-    fn syntax_corpus() -> &'static [&'static str] {
-        &[
-            "let a = 1; const b = 2; var c = a + b; c;",
-            "let a = 1; a += 2; a++; --a;",
-            "const arr = [1, , 3, ...xs]; arr[0];",
-            "const obj = {a: 1, b, m(x) { return x + this.a; }, ...rest}; obj.m(2);",
-            "const {a, b: c, ...rest} = source; const [x, , y = 3, ...tail] = list;",
-            "if (flag) { call(1); } else { call(2); }",
-            "while (i < 10) { i++; if (i === 4) continue; if (i === 8) break; }",
-            "do { i = i + 1; } while (i < 3);",
-            "for (let i = 0; i < 4; i++) { total += i; }",
-            "for (const key in object) { keys.push(key); }",
-            "for (const item of items) { sum += item; }",
-            "switch (kind) { case 'a': out = 1; break; case 'b': out = 2; default: out = 3; }",
-            "try { throw value; } catch (err) { console.log(err); } finally { cleanup(); }",
-            "function add(a, b) { return a + b; } add(1, 2);",
-            "const fn = function named(x) { return x ? named(x - 1) : 0; }; fn(3);",
-            "const inc = (x) => x + 1; const block = (x) => { return x * 2; };",
-            "class Box { constructor(value) { this.value = value; } get() { return this.value; } } new Box(1);",
-            "class Child extends Parent { static make() { return new Child(); } field = 1; #secret = 2; }",
-            "const msg = `hello ${name}!`; tag`x${value}y`; ",
-            "const result = a ? b : c ? d : e;",
-            "const maybe = root?.child?.call?.(arg);",
-            "async function load() { const value = await fetch(url); return value; }",
-            "function* ids() { yield 1; yield* more; }",
-            "import def, {a as localA, b} from 'pkg'; export {localA as a}; export default b;",
-            "export class Exported { method() { return 1; } } export * from 'other';",
-            "interface Shape { x: number } type Name = string; enum Kind { A, B }",
-            "const x = value as number; const y = value satisfies unknown; const z = value!;",
-            "with (scope) { value = name; } debugger;",
-            "label: for (let i = 0; i < 2; i++) { break label; }",
-        ]
-    }
-
-    struct JsFuzzer {
-        state: u64,
-        next_var: usize,
-    }
-
-    impl JsFuzzer {
-        fn new(seed: u64) -> Self {
-            Self {
-                state: seed,
-                next_var: 0,
-            }
-        }
-
-        fn program(&mut self, index: usize) -> String {
-            self.next_var = 0;
-            let mut locals = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-            let mut source = format!(
-                "let a = {}; let b = {}; let c = {};",
-                index % 7,
-                (index + 1) % 11,
-                (index + 2) % 13
-            );
-            for _ in 0..self.range(3, 7) {
-                source.push_str(&self.stmt(3, &mut locals, false));
-            }
-            source
-        }
-
-        fn executable_program(&mut self, index: usize) -> String {
-            self.next_var = 0;
-            let mut locals = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-            let mut source = format!(
-                "let a = {}; let b = {}; let c = {};",
-                index % 5,
-                (index + 2) % 7,
-                (index + 4) % 9
-            );
-            for _ in 0..self.range(2, 5) {
-                source.push_str(&self.safe_stmt(3, &mut locals));
-            }
-            source.push_str("a + b + c;");
-            source
-        }
-
-        fn stmt(&mut self, depth: usize, locals: &mut Vec<String>, in_loop: bool) -> String {
-            match self.pick(12) {
-                0 | 1 => {
-                    let name = self.new_local();
-                    let expr = self.expr(depth, locals);
-                    locals.push(name.clone());
-                    format!("let {name} = {expr};")
-                }
-                2 => format!("{} = {};", self.local(locals), self.expr(depth, locals)),
-                3 => format!("({});", self.expr(depth, locals)),
-                4 if depth > 0 => format!(
-                    "if ({}) {{{}}} else {{{}}}",
-                    self.expr(1, locals),
-                    self.stmt(depth - 1, locals, in_loop),
-                    self.stmt(depth - 1, locals, in_loop)
-                ),
-                5 if depth > 0 => {
-                    let name = self.new_local();
-                    locals.push(name.clone());
-                    format!(
-                        "for (let {name} = 0; {name} < {}; {name}++) {{{}}}",
-                        self.range(1, 4),
-                        self.stmt(depth - 1, locals, true)
-                    )
-                }
-                6 if depth > 0 => format!(
-                    "while ({} < {}) {{{} break;}}",
-                    self.local(locals),
-                    self.range(1, 9),
-                    self.stmt(depth - 1, locals, true)
-                ),
-                7 if in_loop => "continue;".to_string(),
-                8 if in_loop => "break;".to_string(),
-                9 if depth > 0 => format!(
-                    "try {{{}}} catch (err) {{{}}} finally {{{}}}",
-                    self.stmt(depth - 1, locals, in_loop),
-                    self.stmt(depth - 1, locals, in_loop),
-                    self.stmt(depth - 1, locals, in_loop)
-                ),
-                10 => format!("console.log({});", self.expr(1, locals)),
-                _ => format!("({});", self.expr(depth, locals)),
-            }
-        }
-
-        fn safe_stmt(&mut self, depth: usize, locals: &mut Vec<String>) -> String {
-            match self.pick(6) {
-                0 | 1 => {
-                    let name = self.new_local();
-                    let expr = self.safe_expr(depth, locals);
-                    locals.push(name.clone());
-                    format!("let {name} = {expr};")
-                }
-                2 => format!(
-                    "{} = {};",
-                    self.local(locals),
-                    self.safe_expr(depth, locals)
-                ),
-                3 if depth > 0 => format!(
-                    "if ({}) {{{}}} else {{{}}}",
-                    self.safe_expr(1, locals),
-                    self.safe_stmt(depth - 1, locals),
-                    self.safe_stmt(depth - 1, locals)
-                ),
-                4 if depth > 0 => {
-                    let value = self.safe_expr(depth - 1, locals);
-                    format!("{{ let inner = {value}; inner; }}")
-                }
-                _ => format!("({});", self.safe_expr(depth, locals)),
-            }
-        }
-
-        fn expr(&mut self, depth: usize, locals: &[String]) -> String {
-            if depth == 0 {
-                return self.atom(locals);
-            }
-
-            match self.pick(14) {
-                0 => self.atom(locals),
-                1 => format!(
-                    "({} + {})",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                2 => format!(
-                    "({} * {})",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                3 => format!(
-                    "({} === {})",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                4 => format!(
-                    "({} ? {} : {})",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                5 => format!(
-                    "[{}, {}, ...xs]",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                6 => format!(
-                    "{{p: {}, q: {}, m(x) {{ return x + 1; }}}}",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-                7 => format!("({}).p", self.expr(depth - 1, locals)),
-                8 => format!("({})?.p", self.expr(depth - 1, locals)),
-                9 => format!("((x) => x + 1)({})", self.expr(depth - 1, locals)),
-                10 => format!(
-                    "(function(x) {{ return x; }})({})",
-                    self.expr(depth - 1, locals)
-                ),
-                11 => format!("new Ctor({})", self.expr(depth - 1, locals)),
-                12 => format!("`v=${{{}}}`", self.expr(depth - 1, locals)),
-                _ => format!(
-                    "({} ?? {})",
-                    self.expr(depth - 1, locals),
-                    self.expr(depth - 1, locals)
-                ),
-            }
-        }
-
-        fn safe_expr(&mut self, depth: usize, locals: &[String]) -> String {
-            if depth == 0 {
-                return self.safe_atom(locals);
-            }
-
-            match self.pick(8) {
-                0 => self.safe_atom(locals),
-                1 => format!(
-                    "({} + {})",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-                2 => format!(
-                    "({} - {})",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-                3 => format!(
-                    "({} * {})",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-                4 => format!(
-                    "({} < {})",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-                5 => format!(
-                    "({} ? {} : {})",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-                6 => format!("((x) => x + 1)({})", self.safe_expr(depth - 1, locals)),
-                _ => format!(
-                    "[{}, {}].length",
-                    self.safe_expr(depth - 1, locals),
-                    self.safe_expr(depth - 1, locals)
-                ),
-            }
-        }
-
-        fn atom(&mut self, locals: &[String]) -> String {
-            match self.pick(8) {
-                0 => self.range(0, 17).to_string(),
-                1 => format!("{:?}", format!("s{}", self.range(0, 9))),
-                2 => ["true", "false", "null", "undefined"][self.pick(4)].to_string(),
-                3 | 4 => self.local(locals),
-                5 => {
-                    ["externalValue", "window", "document", "globalThis"][self.pick(4)].to_string()
-                }
-                6 => format!("!{}", self.local(locals)),
-                _ => format!("({})", self.local(locals)),
-            }
-        }
-
-        fn safe_atom(&mut self, locals: &[String]) -> String {
-            match self.pick(5) {
-                0 => self.range(0, 17).to_string(),
-                1 => ["true", "false"][self.pick(2)].to_string(),
-                _ => self.local(locals),
-            }
-        }
-
-        fn new_local(&mut self) -> String {
-            let name = format!("v{}", self.next_var);
-            self.next_var += 1;
-            name
-        }
-
-        fn local(&mut self, locals: &[String]) -> String {
-            locals[self.pick(locals.len())].clone()
-        }
-
-        fn range(&mut self, start: usize, end: usize) -> usize {
-            start + self.pick(end - start)
-        }
-
-        fn pick(&mut self, count: usize) -> usize {
-            (self.next() as usize) % count
-        }
-
-        fn next(&mut self) -> u64 {
-            self.state = self
-                .state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            self.state
-        }
-    }
+fn is_implicit_global(name: &str) -> bool {
+    matches!(
+        name,
+        "undefined" | "NaN" | "Infinity" | "this" | "super" | "import"
+    )
 }
 
-fn pat_name(pat: &Pat) -> Option<String> {
-    match pat {
-        Pat::Ident(ident) => Some(ident_name(&ident.id)),
-        Pat::Expr(expr) => match &**expr {
-            Expr::Ident(ident) => Some(ident_name(ident)),
-            _ => None,
-        },
-        _ => None,
+fn import_local_name(specifier: &ImportSpecifier) -> Option<String> {
+    match specifier {
+        ImportSpecifier::Named(named) => Some(ident_name(&named.local)),
+        ImportSpecifier::Default(default) => Some(ident_name(&default.local)),
+        ImportSpecifier::Namespace(namespace) => Some(ident_name(&namespace.local)),
     }
-}
-
-fn ident_name(ident: &Ident) -> String {
-    ident.sym.to_string()
-}
-
-fn prop_name(prop: &PropName) -> String {
-    match prop {
-        PropName::Ident(ident) => ident.sym.to_string(),
-        PropName::Str(value) => value.value.to_string(),
-        PropName::Num(value) => value.value.to_string(),
-        PropName::Computed(_) => "[computed]".to_string(),
-        PropName::BigInt(value) => value.value.to_string(),
-    }
-}
-
-fn module_export_name(name: &ModuleExportName) -> String {
-    name.atom().to_string()
 }
 
 fn import_specifier_name(specifier: &ImportSpecifier) -> String {
@@ -2044,11 +1356,29 @@ fn import_specifier_name(specifier: &ImportSpecifier) -> String {
     }
 }
 
-fn import_local_name(specifier: &ImportSpecifier) -> Option<String> {
-    match specifier {
-        ImportSpecifier::Named(named) => Some(ident_name(&named.local)),
-        ImportSpecifier::Default(default) => Some(ident_name(&default.local)),
-        ImportSpecifier::Namespace(namespace) => Some(ident_name(&namespace.local)),
+fn decl_names(decl: &Decl) -> Vec<String> {
+    match decl {
+        Decl::Class(decl) => vec![ident_name(&decl.ident)],
+        Decl::Fn(decl) => vec![ident_name(&decl.ident)],
+        Decl::Var(decl) => decl
+            .decls
+            .iter()
+            .filter_map(|decl| pat_name(&decl.name))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn decl_name(decl: &Decl) -> &'static str {
+    match decl {
+        Decl::Class(_) => "class",
+        Decl::Fn(_) => "function",
+        Decl::Var(_) => "variable",
+        Decl::Using(_) => "using",
+        Decl::TsInterface(_) => "typescript interface",
+        Decl::TsTypeAlias(_) => "typescript type alias",
+        Decl::TsEnum(_) => "typescript enum",
+        Decl::TsModule(_) => "typescript module",
     }
 }
 
@@ -2068,89 +1398,6 @@ fn export_specifier_name(specifier: &ExportSpecifier) -> String {
     }
 }
 
-fn decl_names(decl: &Decl) -> Vec<String> {
-    match decl {
-        Decl::Class(decl) => vec![ident_name(&decl.ident)],
-        Decl::Fn(decl) => vec![ident_name(&decl.ident)],
-        Decl::Var(decl) => decl
-            .decls
-            .iter()
-            .filter_map(|decl| pat_name(&decl.name))
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn class_member_name(member: &ClassMember) -> String {
-    match member {
-        ClassMember::Constructor(_) => "constructor".to_string(),
-        ClassMember::Method(method) => format!(
-            "{}{} method {}",
-            if method.is_static { "static " } else { "" },
-            method_kind_name(method.kind),
-            prop_name(&method.key)
-        ),
-        ClassMember::PrivateMethod(method) => format!(
-            "{}{} method #{}",
-            if method.is_static { "static " } else { "" },
-            method_kind_name(method.kind),
-            method.key.name
-        ),
-        ClassMember::ClassProp(prop) => format!(
-            "{}field {}",
-            if prop.is_static { "static " } else { "" },
-            prop_name(&prop.key)
-        ),
-        ClassMember::PrivateProp(prop) => format!(
-            "{}field #{}",
-            if prop.is_static { "static " } else { "" },
-            prop.key.name
-        ),
-        ClassMember::TsIndexSignature(_) => "typescript index signature".to_string(),
-        ClassMember::Empty(_) => "empty".to_string(),
-        ClassMember::StaticBlock(_) => "static block".to_string(),
-        ClassMember::AutoAccessor(accessor) => format!("accessor {}", key_name(&accessor.key)),
-    }
-}
-
-fn key_name(key: &Key) -> String {
-    match key {
-        Key::Private(name) => format!("#{}", name.name),
-        Key::Public(name) => prop_name(name),
-    }
-}
-
-fn method_kind_name(kind: MethodKind) -> &'static str {
-    match kind {
-        MethodKind::Method => "",
-        MethodKind::Getter => "get",
-        MethodKind::Setter => "set",
-    }
-}
-
-fn super_prop_name(expr: &SuperPropExpr) -> String {
-    match &expr.prop {
-        SuperProp::Ident(ident) => ident.sym.to_string(),
-        SuperProp::Computed(computed) => format!("[{:?}]", computed.expr),
-    }
-}
-
-fn simple_assign_target_name(target: &SimpleAssignTarget) -> &'static str {
-    match target {
-        SimpleAssignTarget::Ident(_) => "identifier",
-        SimpleAssignTarget::Member(_) => "member",
-        SimpleAssignTarget::SuperProp(_) => "super property",
-        SimpleAssignTarget::Paren(_) => "parenthesized",
-        SimpleAssignTarget::OptChain(_) => "optional chain",
-        SimpleAssignTarget::TsAs(_) => "typescript as",
-        SimpleAssignTarget::TsSatisfies(_) => "typescript satisfies",
-        SimpleAssignTarget::TsNonNull(_) => "typescript non-null",
-        SimpleAssignTarget::TsTypeAssertion(_) => "typescript type assertion",
-        SimpleAssignTarget::TsInstantiation(_) => "typescript instantiation",
-        SimpleAssignTarget::Invalid(_) => "invalid",
-    }
-}
-
 fn module_decl_name(decl: &ModuleDecl) -> &'static str {
     match decl {
         ModuleDecl::Import(_) => "import",
@@ -2165,16 +1412,41 @@ fn module_decl_name(decl: &ModuleDecl) -> &'static str {
     }
 }
 
-fn decl_name(decl: &Decl) -> &'static str {
-    match decl {
-        Decl::Class(_) => "class",
-        Decl::Fn(_) => "function",
-        Decl::Var(_) => "variable",
-        Decl::Using(_) => "using",
-        Decl::TsInterface(_) => "typescript interface",
-        Decl::TsTypeAlias(_) => "typescript type alias",
-        Decl::TsEnum(_) => "typescript enum",
-        Decl::TsModule(_) => "typescript module",
+fn pat_name(pat: &Pat) -> Option<String> {
+    match pat {
+        Pat::Ident(ident) => Some(ident_name(&ident.id)),
+        Pat::Expr(expr) => match &**expr {
+            Expr::Ident(ident) => Some(ident_name(ident)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn ident_name(ident: &Ident) -> String {
+    ident.sym.to_string()
+}
+
+fn unary_op(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Minus => "-",
+        UnaryOp::Plus => "+",
+        UnaryOp::Bang => "!",
+        UnaryOp::Tilde => "~",
+        UnaryOp::TypeOf => "typeof",
+        UnaryOp::Void => "void",
+        UnaryOp::Delete => "delete",
+    }
+}
+
+fn assign_binary_op(op: AssignOp) -> &'static str {
+    op.to_update().map(bin_op).unwrap_or("=")
+}
+
+fn super_prop_name(expr: &SuperPropExpr) -> String {
+    match &expr.prop {
+        SuperProp::Ident(ident) => ident.sym.to_string(),
+        SuperProp::Computed(computed) => format!("[{:?}]", computed.expr),
     }
 }
 
@@ -2221,10 +1493,6 @@ fn expr_name(expr: &Expr) -> &'static str {
     }
 }
 
-fn assign_binary_op(op: AssignOp) -> &'static str {
-    op.to_update().map(bin_op).unwrap_or("=")
-}
-
 fn bin_op(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::EqEq => "==",
@@ -2255,14 +1523,79 @@ fn bin_op(op: BinaryOp) -> &'static str {
     }
 }
 
-fn unary_op(op: UnaryOp) -> &'static str {
-    match op {
-        UnaryOp::Minus => "-",
-        UnaryOp::Plus => "+",
-        UnaryOp::Bang => "!",
-        UnaryOp::Tilde => "~",
-        UnaryOp::TypeOf => "typeof",
-        UnaryOp::Void => "void",
-        UnaryOp::Delete => "delete",
+fn prop_name(prop: &PropName) -> String {
+    match prop {
+        PropName::Ident(ident) => ident.sym.to_string(),
+        PropName::Str(value) => value.value.to_string(),
+        PropName::Num(value) => value.value.to_string(),
+        PropName::Computed(_) => "[computed]".to_string(),
+        PropName::BigInt(value) => value.value.to_string(),
+    }
+}
+
+fn class_member_name(member: &ClassMember) -> String {
+    match member {
+        ClassMember::Constructor(_) => "constructor".to_string(),
+        ClassMember::Method(method) => format!(
+            "{}{} method {}",
+            if method.is_static { "static " } else { "" },
+            method_kind_name(method.kind),
+            prop_name(&method.key)
+        ),
+        ClassMember::PrivateMethod(method) => format!(
+            "{}{} method #{}",
+            if method.is_static { "static " } else { "" },
+            method_kind_name(method.kind),
+            method.key.name
+        ),
+        ClassMember::ClassProp(prop) => format!(
+            "{}field {}",
+            if prop.is_static { "static " } else { "" },
+            prop_name(&prop.key)
+        ),
+        ClassMember::PrivateProp(prop) => format!(
+            "{}field #{}",
+            if prop.is_static { "static " } else { "" },
+            prop.key.name
+        ),
+        ClassMember::TsIndexSignature(_) => "typescript index signature".to_string(),
+        ClassMember::Empty(_) => "empty".to_string(),
+        ClassMember::StaticBlock(_) => "static block".to_string(),
+        ClassMember::AutoAccessor(accessor) => format!("accessor {}", key_name(&accessor.key)),
+    }
+}
+
+fn simple_assign_target_name(target: &SimpleAssignTarget) -> &'static str {
+    match target {
+        SimpleAssignTarget::Ident(_) => "identifier",
+        SimpleAssignTarget::Member(_) => "member",
+        SimpleAssignTarget::SuperProp(_) => "super property",
+        SimpleAssignTarget::Paren(_) => "parenthesized",
+        SimpleAssignTarget::OptChain(_) => "optional chain",
+        SimpleAssignTarget::TsAs(_) => "typescript as",
+        SimpleAssignTarget::TsSatisfies(_) => "typescript satisfies",
+        SimpleAssignTarget::TsNonNull(_) => "typescript non-null",
+        SimpleAssignTarget::TsTypeAssertion(_) => "typescript type assertion",
+        SimpleAssignTarget::TsInstantiation(_) => "typescript instantiation",
+        SimpleAssignTarget::Invalid(_) => "invalid",
+    }
+}
+
+fn module_export_name(name: &ModuleExportName) -> String {
+    name.atom().to_string()
+}
+
+fn method_kind_name(kind: MethodKind) -> &'static str {
+    match kind {
+        MethodKind::Method => "",
+        MethodKind::Getter => "get",
+        MethodKind::Setter => "set",
+    }
+}
+
+fn key_name(key: &Key) -> String {
+    match key {
+        Key::Private(name) => format!("#{}", name.name),
+        Key::Public(name) => prop_name(name),
     }
 }

@@ -3,3 +3,6 @@ target/
 **/.DS_Store
 .vscode/
 .commit.md
+./**.copy
+.bin
+.executor

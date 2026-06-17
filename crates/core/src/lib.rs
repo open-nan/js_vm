@@ -631,6 +631,160 @@ impl Default for EncodingNames {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObfuscationConfig {
+    pub encoding: EncodingNames,
+    pub extern_slots: Vec<u8>,
+}
+
+impl Default for ObfuscationConfig {
+    fn default() -> Self {
+        Self {
+            encoding: EncodingNames::default(),
+            extern_slots: Vec::new(),
+        }
+    }
+}
+
+impl ObfuscationConfig {
+    pub fn from_encoding_names(encoding: EncodingNames) -> Result<Self, EncodingError> {
+        let config = Self {
+            encoding,
+            extern_slots: Vec::new(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn from_encoding_and_extern_slots(
+        encoding: EncodingNames,
+        extern_slots: Vec<u8>,
+    ) -> Result<Self, EncodingError> {
+        let config = Self {
+            encoding,
+            extern_slots,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn from_encoding_config(encoding: &EncodingConfig) -> Result<Self, EncodingError> {
+        Self::from_encoding_names(encoding.names())
+    }
+
+    pub fn encoding_config(&self) -> Result<EncodingConfig, EncodingError> {
+        EncodingConfig::from_names(&self.encoding)
+    }
+
+    pub fn config_seed(&self) -> Result<String, EncodingError> {
+        self.paired_seed(&[])
+    }
+
+    pub fn paired_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
+        Ok(ObfuscationSeed::from_config(self.clone(), bytes)?.to_string())
+    }
+
+    pub fn from_seed(seed: &str) -> Result<Self, EncodingError> {
+        Ok(ObfuscationSeed::parse(seed)?.config)
+    }
+
+    pub fn from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
+        Ok(ObfuscationSeed::parse_for_bytes(seed, bytes)?.config)
+    }
+
+    pub fn validate(&self) -> Result<(), EncodingError> {
+        EncodingConfig::from_names(&self.encoding)?;
+        validate_slot_permutation(&self.extern_slots, "extern slot")
+    }
+
+    fn seed_permutation(&self) -> Result<String, EncodingError> {
+        self.validate()?;
+        let mut sections = vec![
+            names_to_seed_permutation(
+                &self.encoding.opcodes,
+                &default_opcode_mnemonics(),
+                "opcode",
+            )?,
+            names_to_seed_permutation(
+                &self.encoding.operand_tags,
+                &default_operand_tag_keys(),
+                "operand tag",
+            )?,
+            names_to_seed_permutation(
+                &self.encoding.constant_tags,
+                &default_constant_tag_keys(),
+                "constant tag",
+            )?,
+        ];
+        if !self.extern_slots.is_empty() {
+            sections.push(indexes_to_seed_permutation(
+                &self.extern_slots,
+                "extern slot",
+            )?);
+        }
+        Ok(sections.join("."))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObfuscationSeed {
+    pub fingerprint: u64,
+    pub config: ObfuscationConfig,
+}
+
+impl ObfuscationSeed {
+    pub fn from_config(config: ObfuscationConfig, bytes: &[u8]) -> Result<Self, EncodingError> {
+        let permutation = config.seed_permutation()?;
+        Ok(Self {
+            fingerprint: seed_fingerprint(&permutation, bytes),
+            config,
+        })
+    }
+
+    pub fn parse(seed: &str) -> Result<Self, EncodingError> {
+        let parsed = parse_obfuscation_seed(seed)?;
+        let config = obfuscation_config_from_seed_permutation(&parsed.permutation)?;
+        Ok(Self {
+            fingerprint: parsed.fingerprint,
+            config,
+        })
+    }
+
+    pub fn parse_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
+        let parsed = parse_obfuscation_seed(seed)?;
+        let actual = seed_fingerprint(&parsed.permutation, bytes);
+        if actual != parsed.fingerprint {
+            return Err(EncodingError::Seed(
+                "seed does not match bytecode bytes".to_string(),
+            ));
+        }
+        let config = obfuscation_config_from_seed_permutation(&parsed.permutation)?;
+        Ok(Self {
+            fingerprint: parsed.fingerprint,
+            config,
+        })
+    }
+
+    pub fn permutation(&self) -> Result<String, EncodingError> {
+        self.config.seed_permutation()
+    }
+}
+
+impl fmt::Display for ObfuscationSeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.permutation() {
+            Ok(permutation) => {
+                write!(
+                    f,
+                    "{ENCODING_SEED_PREFIX}-{:016x}-{permutation}",
+                    self.fingerprint
+                )
+            }
+            Err(_) => Err(fmt::Error),
+        }
+    }
+}
+
 pub const DEFAULT_BYTECODE_MAGIC: &str = "JSTKBC01";
 
 const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
@@ -851,42 +1005,15 @@ impl EncodingConfig {
 
     pub fn to_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
         self.validate()?;
-        let perm = self.seed_permutation()?;
-        let fingerprint = seed_fingerprint(&perm, bytes);
-        Ok(format!("{ENCODING_SEED_PREFIX}-{fingerprint:016x}-{perm}"))
+        ObfuscationConfig::from_encoding_config(self)?.paired_seed(bytes)
     }
 
     pub fn from_seed(seed: &str) -> Result<Self, EncodingError> {
-        let parsed = parse_encoding_seed(seed)?;
-        encoding_from_seed_permutation(&parsed.permutation)
+        ObfuscationConfig::from_seed(seed)?.encoding_config()
     }
 
     pub fn from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
-        let parsed = parse_encoding_seed(seed)?;
-        let actual = seed_fingerprint(&parsed.permutation, bytes);
-        if actual != parsed.fingerprint {
-            return Err(EncodingError::Seed(
-                "seed does not match bytecode bytes".to_string(),
-            ));
-        }
-        encoding_from_seed_permutation(&parsed.permutation)
-    }
-
-    fn seed_permutation(&self) -> Result<String, EncodingError> {
-        Ok(format!(
-            "{}.{}.{}",
-            map_to_seed_permutation(&self.opcodes, &default_opcode_mnemonics(), "opcode")?,
-            map_to_seed_permutation(
-                &self.operand_tags,
-                &default_operand_tag_keys(),
-                "operand tag"
-            )?,
-            map_to_seed_permutation(
-                &self.constant_tags,
-                &default_constant_tag_keys(),
-                "constant tag"
-            )?
-        ))
+        ObfuscationConfig::from_seed_for_bytes(seed, bytes)?.encoding_config()
     }
 
     pub fn validate(&self) -> Result<(), EncodingError> {
@@ -1577,12 +1704,12 @@ fn normalize_tag_key(key: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedEncodingSeed {
+struct ParsedObfuscationSeed {
     fingerprint: u64,
     permutation: String,
 }
 
-fn parse_encoding_seed(seed: &str) -> Result<ParsedEncodingSeed, EncodingError> {
+fn parse_obfuscation_seed(seed: &str) -> Result<ParsedObfuscationSeed, EncodingError> {
     let mut parts = seed.trim().split('-');
     let prefix = parts.next().unwrap_or_default();
     let fingerprint = parts.next().unwrap_or_default();
@@ -1595,29 +1722,45 @@ fn parse_encoding_seed(seed: &str) -> Result<ParsedEncodingSeed, EncodingError> 
     let fingerprint = u64::from_str_radix(fingerprint, 16)
         .map_err(|err| EncodingError::Seed(format!("invalid fingerprint: {err}")))?;
     validate_seed_permutation(permutation)?;
-    Ok(ParsedEncodingSeed {
+    Ok(ParsedObfuscationSeed {
         fingerprint,
         permutation: permutation.to_ascii_uppercase(),
     })
 }
 
-fn encoding_from_seed_permutation(permutation: &str) -> Result<EncodingConfig, EncodingError> {
+fn obfuscation_config_from_seed_permutation(
+    permutation: &str,
+) -> Result<ObfuscationConfig, EncodingError> {
     let mut parts = permutation.split('.');
     let opcode_perm = parts.next().unwrap_or_default();
     let operand_perm = parts.next().unwrap_or_default();
     let constant_perm = parts.next().unwrap_or_default();
+    let extern_perm = parts.next();
     if parts.next().is_some() {
         return Err(EncodingError::Seed(
-            "expected opcodes.operand_tags.constant_tags permutation".to_string(),
+            "expected opcodes.operand_tags.constant_tags[.extern_slots] permutation".to_string(),
         ));
     }
 
-    let mut config = EncodingConfig::default();
-    config.opcodes = seed_permutation_to_map(opcode_perm, &default_opcode_mnemonics(), "opcode")?;
-    config.operand_tags =
-        seed_permutation_to_map(operand_perm, &default_operand_tag_keys(), "operand tag")?;
-    config.constant_tags =
-        seed_permutation_to_map(constant_perm, &default_constant_tag_keys(), "constant tag")?;
+    let config = ObfuscationConfig {
+        encoding: EncodingNames {
+            opcodes: seed_permutation_to_names(opcode_perm, &default_opcode_mnemonics(), "opcode")?,
+            operand_tags: seed_permutation_to_names(
+                operand_perm,
+                &default_operand_tag_keys(),
+                "operand tag",
+            )?,
+            constant_tags: seed_permutation_to_names(
+                constant_perm,
+                &default_constant_tag_keys(),
+                "constant tag",
+            )?,
+        },
+        extern_slots: extern_perm
+            .map(|permutation| seed_permutation_to_indexes(permutation, "extern slot"))
+            .transpose()?
+            .unwrap_or_default(),
+    };
     config.validate()?;
     Ok(config)
 }
@@ -1692,46 +1835,52 @@ fn names_by_code(map: &BTreeMap<String, u8>) -> Vec<String> {
     rows.into_iter().map(|(_, name)| name).collect()
 }
 
-fn map_to_seed_permutation(
-    values: &BTreeMap<String, u8>,
+fn names_to_seed_permutation(
+    names: &[String],
     keys: &[String],
     kind: &str,
 ) -> Result<String, EncodingError> {
-    let mut by_code = vec![String::new(); keys.len()];
-    for (key, code) in values {
-        let code = *code as usize;
-        if code >= by_code.len() {
-            return Err(EncodingError::Seed(format!(
-                "{kind} code {code} is outside seed range"
-            )));
-        }
-        if !by_code[code].is_empty() {
-            return Err(EncodingError::Seed(format!(
-                "duplicate {kind} code {code} in seed source"
-            )));
-        }
-        by_code[code] = if kind == "opcode" {
-            normalize_opcode_key(key)
-        } else {
-            normalize_tag_key(key)
-        };
+    if names.len() != keys.len() {
+        return Err(EncodingError::Seed(format!(
+            "{kind} count mismatch: expected {}, got {}",
+            keys.len(),
+            names.len()
+        )));
     }
 
-    let mut perm = String::with_capacity(keys.len());
-    for key in by_code {
-        let Some(index) = keys.iter().position(|candidate| *candidate == key) else {
-            return Err(EncodingError::Seed(format!("unknown {kind} {key}")));
+    let mut seen = vec![false; keys.len()];
+    let mut permutation = String::with_capacity(keys.len());
+    for name in names {
+        let normalized = if kind == "opcode" {
+            normalize_opcode_key(name)
+        } else {
+            normalize_tag_key(name)
         };
-        perm.push(encode_base36_digit(index as u8));
+        let Some(index) = keys.iter().position(|candidate| *candidate == normalized) else {
+            return Err(EncodingError::Seed(format!("unknown {kind} {name}")));
+        };
+        if seen[index] {
+            return Err(EncodingError::Seed(format!("duplicate {kind} {name}")));
+        }
+        seen[index] = true;
+        permutation.push(encode_base36_digit(index as u8)?);
     }
-    Ok(perm)
+    Ok(permutation)
 }
 
-fn seed_permutation_to_map(
+fn indexes_to_seed_permutation(indexes: &[u8], kind: &str) -> Result<String, EncodingError> {
+    validate_slot_permutation(indexes, kind)?;
+    indexes
+        .iter()
+        .map(|index| encode_base36_digit(*index))
+        .collect()
+}
+
+fn seed_permutation_to_names(
     permutation: &str,
     keys: &[String],
     kind: &str,
-) -> Result<BTreeMap<String, u8>, EncodingError> {
+) -> Result<Vec<String>, EncodingError> {
     if permutation.len() != keys.len() {
         return Err(EncodingError::Seed(format!(
             "expected {kind} permutation length {}, got {}",
@@ -1740,8 +1889,8 @@ fn seed_permutation_to_map(
         )));
     }
     let mut seen = vec![false; keys.len()];
-    let mut values = BTreeMap::new();
-    for (code, byte) in permutation.bytes().enumerate() {
+    let mut values = Vec::with_capacity(keys.len());
+    for byte in permutation.bytes() {
         let index = decode_base36_digit(byte)? as usize;
         let Some(key) = keys.get(index) else {
             return Err(EncodingError::Seed(format!(
@@ -1754,7 +1903,7 @@ fn seed_permutation_to_map(
             )));
         }
         seen[index] = true;
-        values.insert(key.clone(), code as u8);
+        values.push(key.clone());
     }
     if let Some((index, _)) = seen.iter().enumerate().find(|(_, value)| !**value) {
         return Err(EncodingError::Seed(format!(
@@ -1765,14 +1914,48 @@ fn seed_permutation_to_map(
     Ok(values)
 }
 
+fn seed_permutation_to_indexes(permutation: &str, kind: &str) -> Result<Vec<u8>, EncodingError> {
+    let mut indexes = Vec::with_capacity(permutation.len());
+    for byte in permutation.bytes() {
+        indexes.push(decode_base36_digit(byte)?);
+    }
+    validate_slot_permutation(&indexes, kind)?;
+    Ok(indexes)
+}
+
+fn validate_slot_permutation(indexes: &[u8], kind: &str) -> Result<(), EncodingError> {
+    if indexes.len() > 36 {
+        return Err(EncodingError::Seed(format!(
+            "{kind} permutation supports at most 36 entries"
+        )));
+    }
+    let mut seen = vec![false; indexes.len()];
+    for index in indexes {
+        let index = *index as usize;
+        if index >= indexes.len() {
+            return Err(EncodingError::Seed(format!(
+                "{kind} index {index} is outside seed range"
+            )));
+        }
+        if seen[index] {
+            return Err(EncodingError::Seed(format!(
+                "duplicate {kind} index {index} in seed"
+            )));
+        }
+        seen[index] = true;
+    }
+    Ok(())
+}
+
 fn validate_seed_permutation(permutation: &str) -> Result<(), EncodingError> {
     let mut parts = permutation.split('.');
     let opcode_perm = parts.next().unwrap_or_default();
     let operand_perm = parts.next().unwrap_or_default();
     let constant_perm = parts.next().unwrap_or_default();
+    let extern_perm = parts.next();
     if parts.next().is_some() {
         return Err(EncodingError::Seed(
-            "expected opcodes.operand_tags.constant_tags permutation".to_string(),
+            "expected opcodes.operand_tags.constant_tags[.extern_slots] permutation".to_string(),
         ));
     }
     if opcode_perm.len() != BytecodeOp::all().len()
@@ -1783,14 +1966,19 @@ fn validate_seed_permutation(permutation: &str) -> Result<(), EncodingError> {
             "seed permutation has invalid section length".to_string(),
         ));
     }
+    if let Some(extern_perm) = extern_perm {
+        seed_permutation_to_indexes(extern_perm, "extern slot")?;
+    }
     Ok(())
 }
 
-fn encode_base36_digit(value: u8) -> char {
+fn encode_base36_digit(value: u8) -> Result<char, EncodingError> {
     match value {
-        0..=9 => char::from(b'0' + value),
-        10..=35 => char::from(b'A' + value - 10),
-        _ => '?',
+        0..=9 => Ok(char::from(b'0' + value)),
+        10..=35 => Ok(char::from(b'A' + value - 10)),
+        _ => Err(EncodingError::Seed(format!(
+            "seed index {value} is outside base36 range"
+        ))),
     }
 }
 
@@ -1968,7 +2156,10 @@ fn write_string(bytes: &mut Vec<u8>, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue};
+    use super::{
+        EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue, ObfuscationConfig,
+        ObfuscationSeed,
+    };
 
     #[test]
     fn renders_ir_text_from_core() {
@@ -2100,6 +2291,39 @@ mod tests {
         assert_eq!(restored.opcodes.get("LOAD_CONST"), Some(&8));
         assert_eq!(restored.operand_tags.get("register"), Some(&2));
         assert_eq!(restored.constant_tags.get("number"), Some(&2));
+    }
+
+    #[test]
+    fn encoding_seed_accepts_ui_extern_slot_permutation() {
+        let mut names = EncodingNames::default();
+        names.opcodes.swap(3, 8);
+        let encoding = EncodingConfig::from_names(&names).unwrap();
+        let seed = format!("{}.210", encoding.config_seed().unwrap());
+        let restored = EncodingConfig::from_seed(&seed).unwrap();
+        let obfuscation = ObfuscationConfig::from_seed(&seed).unwrap();
+
+        assert_eq!(restored.names(), names);
+        assert_eq!(obfuscation.encoding, names);
+        assert_eq!(obfuscation.extern_slots, vec![2, 1, 0]);
+        assert!(
+            EncodingConfig::from_seed(&format!("{}.211", encoding.config_seed().unwrap())).is_err()
+        );
+    }
+
+    #[test]
+    fn obfuscation_config_roundtrips_seed_and_fingerprint() {
+        let mut names = EncodingNames::default();
+        names.opcodes.swap(3, 8);
+        names.operand_tags.swap(0, 2);
+
+        let config =
+            ObfuscationConfig::from_encoding_and_extern_slots(names.clone(), vec![1, 0]).unwrap();
+        let seed = config.paired_seed(b"abc").unwrap();
+        let parsed = ObfuscationSeed::parse_for_bytes(&seed, b"abc").unwrap();
+
+        assert_eq!(parsed.config.encoding, names);
+        assert_eq!(parsed.config.extern_slots, vec![1, 0]);
+        assert!(ObfuscationSeed::parse_for_bytes(&seed, b"abd").is_err());
     }
 
     #[test]

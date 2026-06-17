@@ -28,16 +28,19 @@ sh scripts/build-wasm.sh
 
 ```bash
 cargo fmt --all --check
-cargo test -p js_token_core -p js_token_bin
-cargo check -p js_token_bin --target wasm32-unknown-unknown
+cargo test
+cargo check --target wasm32-unknown-unknown
 ```
 
 ## Architecture
 
-当前 workspace 分为两个 Rust crate 和一个 Web Workbench：
+当前 workspace 分为 Core、Runtime、Compiler 和两个 wasm facade：
 
 - `crates/core`: VM 核心抽象层。定义 IR、Bytecode、编码表、Seed、序列化和反序列化。
-- `crates/bin`: 编译器、执行器、CLI 和 wasm facade。负责 JS -> IR、IR -> Bytecode、Bytecode 执行。
+- `crates/runtime`: 执行器运行时。只依赖 Core，负责 Bytecode 执行和 HostBridge。
+- `crates/bin`: 编译器、CLI 和 Rust facade。负责 JS -> IR、IR -> Bytecode。
+- `crates/compiler_wasm`: Presentation Layer 使用的编译器 wasm。
+- `crates/executor_wasm`: 生成场景使用的轻量执行器 wasm。
 - `index.html`: wasm Web Workbench。提供 JS 编辑器、IR/Bytecode/Hex 视图、日志面板和 Obfuscation 配置。
 
 整体数据流：
@@ -93,14 +96,17 @@ let output = compile_source_with_options("console.log(1)", &options)?;
 wasm API：
 
 ```js
-import init, {
+import initCompiler, {
   Compiler,
   js_encoding_seed_for_seed_and_bytes,
   js_encoding_seed_from_rows,
-  js_execute_bytes_with_seed,
-} from "./pkg/compiler/js_token_bin.js";
+} from "./pkg/compiler/js_vm_compiler.js";
+import initExecutor, { js_execute_bytes_with_seed } from "./pkg/executor/js_vm_executor.js";
 
-await init("./pkg/compiler/js_token_bin_bg.wasm");
+await Promise.all([
+  initCompiler("./pkg/compiler/js_vm_compiler_bg.wasm"),
+  initExecutor("./pkg/executor/js_vm_executor_bg.wasm"),
+]);
 
 const compiler = new Compiler("console.log(1)");
 const irText = compiler.to_text();
@@ -353,8 +359,8 @@ cargo run -p js_token_bin --bin js-executor -- --seed "$SEED" input.bytecode
 - seed 同步、恢复、校验
 - Hex byte 与 ASCII 联动高亮
 - Hex 方向键导航
-- JS 高亮、行号、IR、Bytecode、Hex 的虚拟列表式渲染
-- 下载运行包和 runner 脚本生成
+- JS 高亮、行号、IR/Bytecode/Hex 大文本渲染优化
+- 下载执行器运行包和 runner 脚本生成
 
 ## GitHub Pages
 
@@ -368,9 +374,12 @@ Pages workflow 会构建 wasm，并显式发布：
 
 ```text
 dist/index.html
-dist/pkg/compiler/js_token_bin.js
-dist/pkg/compiler/js_token_bin_bg.wasm
+dist/pkg/compiler/js_vm_compiler.js
+dist/pkg/compiler/js_vm_compiler_bg.wasm
 dist/pkg/compiler/package.json
+dist/pkg/executor/js_vm_executor.js
+dist/pkg/executor/js_vm_executor_bg.wasm
+dist/pkg/executor/package.json
 ```
 
 ## 当前语义覆盖

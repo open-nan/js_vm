@@ -1149,15 +1149,15 @@
   <div id="toast" class="toast"></div>
 
   <script type="module">
-    import init, * as wasmPkg from './pkg/compiler/js_token_bin.js?v=compact-seed';
+    import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=split-wasm';
+    import initExecutor, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js?v=split-wasm';
 
     const {
       Compiler,
       js_encoding_rows_from_seed,
       js_encoding_seed_for_seed_and_bytes,
       js_encoding_seed_from_rows,
-      js_execute_bytes_with_seed,
-    } = wasmPkg;
+    } = compilerPkg;
 
     const examples = {
       basic: `function fib(n) {
@@ -1295,6 +1295,7 @@ export default def;`,
 
     const textEncoder = new TextEncoder();
     const VIRTUAL_BUFFER = 24;
+    let seedInputTimer = null;
 
     function byteLength(text) {
       return textEncoder.encode(text).length;
@@ -1309,6 +1310,115 @@ export default def;`,
     function lineHeightOf(element) {
       const value = Number.parseFloat(getComputedStyle(element).lineHeight);
       return Number.isFinite(value) && value > 0 ? value : 20;
+    }
+
+    function encodeBase36Digit(value) {
+      if (value < 0 || value >= 36) {
+        throw new Error(`seed index ${value} is outside base36 range`);
+      }
+      return value.toString(36).toUpperCase();
+    }
+
+    function decodeBase36Digit(value) {
+      const code = value.charCodeAt(0);
+      if (code >= 48 && code <= 57) return code - 48;
+      if (code >= 65 && code <= 90) return code - 65 + 10;
+      if (code >= 97 && code <= 122) return code - 97 + 10;
+      throw new Error(`invalid seed digit ${value}`);
+    }
+
+    function parseEncodingSeed(seed) {
+      const seedModel = ObfuscationSeed.parse(seed);
+      return {
+        fingerprint: seedModel.fingerprint,
+        permutation: seedModel.permutation(),
+        sections: seedModel.permutation().split('.'),
+        config: seedModel.config,
+      };
+    }
+
+    function seedFingerprint(permutation, bytes = new Uint8Array()) {
+      let hash = 0xcbf29ce484222325n;
+      const prime = 0x100000001b3n;
+      const mask = 0xffffffffffffffffn;
+      const update = (byte) => {
+        hash ^= BigInt(byte);
+        hash = (hash * prime) & mask;
+      };
+      for (let index = 0; index < permutation.length; index += 1) {
+        update(permutation.charCodeAt(index));
+      }
+      update(0xff);
+      for (const byte of bytes) {
+        update(byte);
+      }
+      return hash.toString(16).padStart(16, '0');
+    }
+
+    function seedFromPermutation(permutation, bytes = new Uint8Array()) {
+      return ObfuscationSeed
+        .fromConfig(ObfuscationConfig.fromSeedSections(permutation.split('.')), bytes)
+        .toString();
+    }
+
+    class ObfuscationConfig {
+      constructor(sections) {
+        this.opcodes = sections.opcodes || '';
+        this.operandTags = sections.operandTags || '';
+        this.constantTags = sections.constantTags || '';
+        this.externSlots = sections.externSlots || '';
+      }
+
+      static fromSeedSections(sections) {
+        return new ObfuscationConfig({
+          opcodes: sections[0] || '',
+          operandTags: sections[1] || '',
+          constantTags: sections[2] || '',
+          externSlots: sections[3] || '',
+        });
+      }
+
+      permutation() {
+        const sections = [this.opcodes, this.operandTags, this.constantTags];
+        if (this.externSlots) {
+          sections.push(this.externSlots);
+        }
+        return sections.join('.');
+      }
+
+      toSeed(bytes = new Uint8Array()) {
+        return ObfuscationSeed.fromConfig(this, bytes).toString();
+      }
+    }
+
+    class ObfuscationSeed {
+      constructor(fingerprint, config) {
+        this.fingerprint = fingerprint;
+        this.config = config;
+      }
+
+      static parse(seed) {
+        const parts = seed.trim().split('-');
+        if (parts.length !== 3 || parts[0] !== 'JSTKSEED2') {
+          throw new Error('expected JSTKSEED2-<hash>-<perm>');
+        }
+        return new ObfuscationSeed(
+          parts[1],
+          ObfuscationConfig.fromSeedSections(parts[2].toUpperCase().split('.')),
+        );
+      }
+
+      static fromConfig(config, bytes = new Uint8Array()) {
+        return new ObfuscationSeed(seedFingerprint(config.permutation(), bytes), config);
+      }
+
+      permutation() {
+        return this.config.permutation();
+      }
+
+      toString() {
+        return `JSTKSEED2-${this.fingerprint}-${this.permutation()}`;
+      }
     }
 
     const defaultOpcodeRows = [
@@ -1907,14 +2017,93 @@ export default def;`,
       };
     }
 
+    function validateSlotPermutation(slots, expectedLength) {
+      if (slots.length !== expectedLength) {
+        throw new Error(`extern slot count mismatch: expected ${expectedLength}, got ${slots.length}`);
+      }
+      const seen = new Set();
+      for (const slot of slots) {
+        if (!Number.isInteger(slot) || slot < 0 || slot >= expectedLength) {
+          throw new Error(`extern slot ${slot} is outside range`);
+        }
+        if (seen.has(slot)) {
+          throw new Error(`duplicate extern slot ${slot}`);
+        }
+        seen.add(slot);
+      }
+      return slots;
+    }
+
+    function currentExternPermutation() {
+      const slots = state.externRows.map((row) => row.slot);
+      validateSlotPermutation(slots, state.externRows.length);
+      return slots.map(encodeBase36Digit).join('');
+    }
+
+    function deterministicPermutationFromSeed(seed, length) {
+      if (length > 36) {
+        throw new Error('extern seed supports up to 36 slots');
+      }
+      const slots = Array.from({ length }, (_, index) => index);
+      let stateValue = 2166136261;
+      for (let index = 0; index < seed.length; index += 1) {
+        stateValue ^= seed.charCodeAt(index);
+        stateValue = Math.imul(stateValue, 16777619) >>> 0;
+      }
+      const next = () => {
+        stateValue ^= stateValue << 13;
+        stateValue ^= stateValue >>> 17;
+        stateValue ^= stateValue << 5;
+        return stateValue >>> 0;
+      };
+      for (let index = slots.length - 1; index > 0; index -= 1) {
+        const swapIndex = next() % (index + 1);
+        [slots[index], slots[swapIndex]] = [slots[swapIndex], slots[index]];
+      }
+      return slots;
+    }
+
+    function externSlotsFromSeed(seed, expectedLength) {
+      if (!expectedLength) return [];
+      const parsed = parseEncodingSeed(seed);
+      const externPermutation = parsed.sections[3];
+      if (externPermutation && externPermutation.length === expectedLength) {
+        return validateSlotPermutation(
+          Array.from(externPermutation, decodeBase36Digit),
+          expectedLength,
+        );
+      }
+      return deterministicPermutationFromSeed(seed, expectedLength);
+    }
+
+    function applyExternSlotsFromSeed(seed) {
+      const slots = externSlotsFromSeed(seed, state.externRows.length);
+      state.externRows = state.externRows.map((row, index) => ({
+        ...row,
+        slot: slots[index] ?? index,
+      }));
+      state.selectedExternRows = [];
+    }
+
+    function seedWithCurrentExternPermutation(seed, bytes = new Uint8Array()) {
+      const parsed = parseEncodingSeed(seed);
+      const sections = parsed.sections.slice(0, 3);
+      const externPermutation = currentExternPermutation();
+      if (externPermutation) {
+        sections.push(externPermutation);
+      }
+      return seedFromPermutation(sections.join('.'), bytes);
+    }
+
     function seedFromCurrentRows(bytes = new Uint8Array()) {
       const rows = encodingRowNames();
-      return js_encoding_seed_from_rows(
+      const seed = js_encoding_seed_from_rows(
         rows.opcodes,
         rows.operandTags,
         rows.constantTags,
-        bytes,
+        new Uint8Array(),
       );
+      return seedWithCurrentExternPermutation(seed, bytes);
     }
 
     function rowsFromSeed(seed) {
@@ -1936,26 +2125,61 @@ export default def;`,
       };
     }
 
-    function applyOpcodeSeed() {
+    function applyOpcodeSeed(options = {}) {
+      const quiet = options.quiet === true;
       const seed = opcodeSeedInput.value.trim();
-      if (!seed) return;
+      if (!seed) return false;
       try {
         const rows = rowsFromSeed(seed);
         state.opcodeRows = rows.opcodes;
         state.operandTagRows = rows.operandTags;
         state.constantTagRows = rows.constantTags;
+        applyExternSlotsFromSeed(seed);
         state.opcodeSeed = seed;
         opcodeSeedInput.value = seed;
         state.selectedOpcodeRows = [];
         state.selectedOperandTagRows = [];
         state.selectedConstantTagRows = [];
+        state.selectedExternRows = [];
         renderOpcodeTable();
         syncOpcodesToBytes();
-        showToast('Seed applied');
+        if (!quiet) {
+          showToast('Seed applied');
+        }
+        return true;
       } catch (err) {
-        showToast('Invalid seed');
-        appendLog('error', `Seed Error\n${formatLogValue(err)}`);
+        if (!quiet) {
+          showToast('Invalid seed');
+          appendLog('error', `Seed Error\n${formatLogValue(err)}`);
+        }
+        return false;
       }
+    }
+
+    function randomPermutationSection(length) {
+      if (length > 36) {
+        throw new Error('seed section supports up to 36 entries');
+      }
+      const values = Array.from({ length }, (_, index) => index);
+      const random = new Uint32Array(length);
+      crypto.getRandomValues(random);
+      for (let index = values.length - 1; index > 0; index -= 1) {
+        const swapIndex = random[index] % (index + 1);
+        [values[index], values[swapIndex]] = [values[swapIndex], values[index]];
+      }
+      return values.map(encodeBase36Digit).join('');
+    }
+
+    function randomObfuscationSeed() {
+      const sections = [
+        randomPermutationSection(defaultOpcodeRows.length),
+        randomPermutationSection(defaultOperandTagRows.length),
+        randomPermutationSection(defaultConstantTagRows.length),
+      ];
+      if (state.externRows.length) {
+        sections.push(randomPermutationSection(state.externRows.length));
+      }
+      return seedFromPermutation(sections.join('.'));
     }
 
     function syncSeedInputs(seed) {
@@ -2000,16 +2224,17 @@ export default def;`,
         throw new Error('missing compiled bytecode or seed');
       }
       return `// JS VM runtime package:
-// Put the downloaded pkg folder next to this HTML file as ./pkg/compiler/.
-// GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/compiler/
-import init, { js_execute_bytes_with_seed } from './pkg/compiler/js_token_bin.js';
+// Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
+// GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
+import init, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_executor.js';
 
 const bytes = new Uint8Array([${byteArrayLiteral(state.compiledBytes)}]);
 const seed = ${JSON.stringify(seed)};
+const encoding = seed.split('-').slice(2).join('-');
 
-await init('./pkg/compiler/js_token_bin_bg.wasm');
+await init('./pkg/executor/js_vm_runtime_bg.wasm');
 const result = js_execute_bytes_with_seed(bytes, seed);
-console.log('[js-vm]', result);`;
+console.log('[js-vm]', { result, seed, encoding });`;
     }
 
     function downloadTextFile(filename, text) {
@@ -2076,11 +2301,11 @@ console.log('[js-vm]', result);`;
       try {
         const moduleCode = runtimeRunnerModuleCode();
         const script = `<script type="module">\n${moduleCode}\n</` + 'script>';
-        const baseUrl = 'https://raw.githubusercontent.com/open-nan/js_vm/main/pkg/compiler';
+        const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
         const copied = await copyRunnerScript(script);
         await Promise.all([
-          downloadRemoteFile(`${baseUrl}/js_token_bin.js`, 'js_token_bin.js'),
-          downloadRemoteFile(`${baseUrl}/js_token_bin_bg.wasm`, 'js_token_bin_bg.wasm'),
+          downloadRemoteFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
+          downloadRemoteFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
         ]);
         downloadTextFile('js-vm-runner.js', moduleCode);
         if (copied) {
@@ -2207,37 +2432,14 @@ console.log('[js-vm]', result);`;
       syncOpcodesToBytes();
     }
 
-    function shuffleRowNames(rows) {
-      const names = rows.map((row) => row.name);
-      for (let index = names.length - 1; index > 0; index -= 1) {
-        const swapIndex = Math.floor(Math.random() * (index + 1));
-        [names[index], names[swapIndex]] = [names[swapIndex], names[index]];
-      }
-      return rows.map((row, index) => ({
-        ...row,
-        name: names[index],
-      }));
-    }
-
     function shuffleOpcodeNames() {
-      state.opcodeRows = shuffleRowNames(state.opcodeRows);
-      state.operandTagRows = shuffleRowNames(state.operandTagRows);
-      state.constantTagRows = shuffleRowNames(state.constantTagRows);
-      const slots = state.externRows.map((row) => row.slot);
-      for (let index = slots.length - 1; index > 0; index -= 1) {
-        const swapIndex = Math.floor(Math.random() * (index + 1));
-        [slots[index], slots[swapIndex]] = [slots[swapIndex], slots[index]];
+      try {
+        opcodeSeedInput.value = randomObfuscationSeed();
+        applyOpcodeSeed();
+      } catch (err) {
+        showToast('Randomize failed');
+        appendLog('error', `Seed Error\n${formatLogValue(err)}`);
       }
-      state.externRows = state.externRows.map((row, index) => ({
-        ...row,
-        slot: slots[index],
-      }));
-      state.selectedOpcodeRows = [];
-      state.selectedOperandTagRows = [];
-      state.selectedConstantTagRows = [];
-      state.selectedExternRows = [];
-      renderOpcodeTable();
-      syncOpcodesToBytes();
     }
 
     function setActiveView(view) {
@@ -2369,6 +2571,13 @@ console.log('[js-vm]', result);`;
         usedSlots.add(slot);
         return { value, slot };
       });
+      if (state.opcodeSeed && state.opcodeSeed.startsWith('JSTKSEED2-')) {
+        try {
+          applyExternSlotsFromSeed(state.opcodeSeed);
+        } catch {
+          state.externRows = state.externRows.map((row, index) => ({ ...row, slot: index }));
+        }
+      }
       state.selectedExternRows = [];
       renderOpcodeTable();
     }
@@ -2708,10 +2917,17 @@ console.log('[js-vm]', result);`;
 
     resetOpcodesBtn.addEventListener('click', resetOpcodeTable);
     shuffleOpcodesBtn.addEventListener('click', shuffleOpcodeNames);
+    opcodeSeedInput.addEventListener('input', () => {
+      clearTimeout(seedInputTimer);
+      seedInputTimer = setTimeout(() => {
+        applyOpcodeSeed({ quiet: true });
+      }, 300);
+    });
     opcodeSeedInput.addEventListener('change', applyOpcodeSeed);
     opcodeSeedInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
+        clearTimeout(seedInputTimer);
         applyOpcodeSeed();
       }
     });
@@ -2780,7 +2996,10 @@ console.log('[js-vm]', result);`;
     setStatus('', 'Initializing');
 
     try {
-      await init('./pkg/compiler/js_token_bin_bg.wasm?v=compact-seed');
+      await Promise.all([
+        initCompiler('./pkg/compiler/js_vm_compiler_bg.wasm?v=split-wasm'),
+        initExecutor('./pkg/executor/js_vm_runtime_bg.wasm?v=split-wasm'),
+      ]);
       state.ready = true;
       wasmState.textContent = 'WASM ready';
       setStatus('ready', 'Ready');

@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/bin",
+    "crates/runtime",
+    "crates/compiler",
 ]
 resolver = "3"
 
@@ -11,6 +12,7 @@ edition = "2024"
 
 [workspace.dependencies]
 js_token_core = { path = "crates/core" }
+js_token_runtime = { path = "crates/runtime" }
 wasm-bindgen = "0.2"
 swc_common = "14"
 swc_ecma_parser = "24"
