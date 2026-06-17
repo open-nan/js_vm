@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JS VM Workbench</title>
   <style>
     :root {
@@ -758,13 +758,6 @@
       font-size: 12px;
     }
 
-    .seed-row {
-      display: grid;
-      grid-template-columns: 34px minmax(0, 1fr) 34px;
-      align-items: center;
-      gap: 8px;
-    }
-
     .seed-placeholder {
       width: 34px;
       height: 30px;
@@ -1127,7 +1120,7 @@
           <div class="console-panel" aria-label="运行日志">
             <div class="console-head">
               <strong>Console</strong>
-              <span id="logInfo">Compile 0ms · Run 0ms · 0 logs</span>
+              <span id="logInfo">Run 0ms · 0 logs</span>
             </div>
             <pre id="consoleLog" class="console-log"></pre>
           </div>
@@ -1455,6 +1448,9 @@ export default def;`,
       ['JUMP', 30],
       ['JUMP_IF_FALSE', 31],
       ['UNSUPPORTED', 32],
+      ['LOAD_CONST_CONST', 33],
+      ['POP_REG', 34],
+      ['CALL_1', 35],
     ].map(([name, code]) => ({ name, code }));
 
     state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
@@ -2617,7 +2613,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
       consoleLog.textContent = state.logs.length
         ? state.logs.map((entry) => `[${entry.time}] ${entry.type.toUpperCase()} ${entry.message}`).join('\n')
         : 'Console output will appear here.';
-      logInfo.textContent = `Compile ${Math.round(state.compileDuration)}ms · Run ${Math.round(state.runDuration)}ms · ${state.logs.length} logs`;
+      logInfo.textContent = `Run ${Math.round(state.runDuration)}ms · ${state.logs.length} logs`;
       consoleLog.scrollTop = consoleLog.scrollHeight;
     }
 

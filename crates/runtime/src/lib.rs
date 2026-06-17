@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, fmt};
 use js_token_core::{
     BytecodeConstant, BytecodeInstruction, BytecodeModule, BytecodeOp, BytecodeOperand,
 };
+use std::{collections::BTreeMap, fmt};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -309,6 +309,9 @@ impl Executor {
                     }
                 }
                 BytecodeOp::Unsupported => {
+                    return Err(ExecuteError::Unsupported(instruction.op.mnemonic()));
+                }
+                BytecodeOp::LoadConstConst | BytecodeOp::PopReg | BytecodeOp::CallOne => {
                     return Err(ExecuteError::Unsupported(instruction.op.mnemonic()));
                 }
             }

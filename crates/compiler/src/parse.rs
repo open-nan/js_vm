@@ -1,8 +1,8 @@
-use swc_ecma_ast::*;
-use swc_common::{FileName, SourceMap, sync::Lrc};
-use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 use js_token_core::{IrInstruction, IrModule, IrValue};
 use std::collections::{BTreeMap, BTreeSet};
+use swc_common::{FileName, SourceMap, sync::Lrc};
+use swc_ecma_ast::*;
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 pub struct LoweringContext {
     instructions: Vec<IrInstruction>,

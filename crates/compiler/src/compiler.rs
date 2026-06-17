@@ -1,10 +1,7 @@
-use js_token_core::{
-    BytecodeModule, EncodingConfig, IrModule,
-};
-use wasm_bindgen::prelude::*;
-use swc_ecma_ast::*;
 use crate::parse::{LoweringContext, parse_source};
-
+use js_token_core::{BytecodeModule, EncodingConfig, IrModule};
+use swc_ecma_ast::*;
+use wasm_bindgen::prelude::*;
 
 pub struct Compiler {
     ir: IrModule,

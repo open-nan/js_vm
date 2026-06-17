@@ -508,6 +508,9 @@ pub enum BytecodeOp {
     Jump = 30,
     JumpIfFalse = 31,
     Unsupported = 32,
+    LoadConstConst = 33,
+    PopReg = 34,
+    CallOne = 35,
 }
 
 impl BytecodeOp {
@@ -546,6 +549,9 @@ impl BytecodeOp {
             BytecodeOp::Jump,
             BytecodeOp::JumpIfFalse,
             BytecodeOp::Unsupported,
+            BytecodeOp::LoadConstConst,
+            BytecodeOp::PopReg,
+            BytecodeOp::CallOne,
         ]
     }
 
@@ -584,6 +590,9 @@ impl BytecodeOp {
             BytecodeOp::Jump => "JUMP",
             BytecodeOp::JumpIfFalse => "JUMP_IF_FALSE",
             BytecodeOp::Unsupported => "UNSUPPORTED",
+            BytecodeOp::LoadConstConst => "LOAD_CONST_CONST",
+            BytecodeOp::PopReg => "POP_REG",
+            BytecodeOp::CallOne => "CALL_1",
         }
     }
 
@@ -592,6 +601,15 @@ impl BytecodeOp {
             .iter()
             .copied()
             .find(|op| op.mnemonic() == mnemonic)
+    }
+
+    fn canonical(self) -> Self {
+        match self {
+            BytecodeOp::LoadConstConst => BytecodeOp::LoadConst,
+            BytecodeOp::PopReg => BytecodeOp::Pop,
+            BytecodeOp::CallOne => BytecodeOp::Call,
+            op => op,
+        }
     }
 }
 
@@ -785,7 +803,7 @@ impl fmt::Display for ObfuscationSeed {
     }
 }
 
-pub const DEFAULT_BYTECODE_MAGIC: &str = "JSTKBC01";
+pub const DEFAULT_BYTECODE_MAGIC: &str = "JSTKBC03";
 
 const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
 
@@ -825,6 +843,9 @@ impl Default for EncodingConfig {
             (BytecodeOp::Jump, 30),
             (BytecodeOp::JumpIfFalse, 31),
             (BytecodeOp::Unsupported, 32),
+            (BytecodeOp::LoadConstConst, 33),
+            (BytecodeOp::PopReg, 34),
+            (BytecodeOp::CallOne, 35),
         ]
         .into_iter()
         .map(|(op, code)| (op.mnemonic().to_string(), code))
@@ -1078,6 +1099,7 @@ impl EncodingConfig {
 pub enum EncodingError {
     MissingKey(String),
     UnknownCode(String),
+    UnexpectedOperand(String),
     UnexpectedEof,
     InvalidMagic { expected: String },
     Yaml(String),
@@ -1089,6 +1111,9 @@ impl fmt::Display for EncodingError {
         match self {
             EncodingError::MissingKey(key) => write!(f, "missing encoding key {key}"),
             EncodingError::UnknownCode(code) => write!(f, "unknown encoding code {code}"),
+            EncodingError::UnexpectedOperand(message) => {
+                write!(f, "unexpected bytecode operand: {message}")
+            }
             EncodingError::UnexpectedEof => write!(f, "unexpected end of bytecode"),
             EncodingError::InvalidMagic { expected } => {
                 write!(f, "invalid bytecode magic, expected {expected:?}")
@@ -1116,6 +1141,19 @@ pub enum BytecodeOperand {
     Label(u32),
     Count(u32),
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperandKind {
+    Register,
+    Constant,
+    Name,
+    Label,
+    Count,
+    Value,
+    OptionalRegister,
+    OptionalName,
+    OptionalValue,
 }
 
 impl BytecodeOperand {
@@ -1238,12 +1276,7 @@ impl BytecodeModule {
         }
         write_u32(&mut bytes, self.instructions.len() as u32);
         for instruction in &self.instructions {
-            bytes.push(encoding.opcode(instruction.op)?);
-            write_u32(&mut bytes, instruction.operands.len() as u32);
-            for operand in &instruction.operands {
-                bytes.push(operand.tag(encoding)?);
-                write_u32(&mut bytes, operand.payload());
-            }
+            write_instruction(&mut bytes, instruction, encoding)?;
         }
         Ok(bytes)
     }
@@ -1276,14 +1309,11 @@ impl BytecodeModule {
         let mut instructions = Vec::with_capacity(instruction_count);
         for _ in 0..instruction_count {
             let op = encoding.opcode_from_code(cursor.read_u8()?)?;
-            let operand_count = cursor.read_u32()? as usize;
-            let mut operands = Vec::with_capacity(operand_count);
-            for _ in 0..operand_count {
-                let tag = cursor.read_u8()?;
-                let payload = cursor.read_u32()?;
-                operands.push(BytecodeOperand::from_tag_payload(tag, payload, encoding)?);
-            }
-            instructions.push(BytecodeInstruction { op, operands });
+            let operands = read_instruction_operands(&mut cursor, op, encoding)?;
+            instructions.push(BytecodeInstruction {
+                op: op.canonical(),
+                operands,
+            });
         }
 
         Ok(Self {
@@ -1328,6 +1358,679 @@ impl BytecodeModule {
             BytecodeOperand::Count(value) => format!("#{value}"),
             BytecodeOperand::None => "none".to_string(),
         }
+    }
+}
+
+fn write_instruction_operands(
+    bytes: &mut Vec<u8>,
+    instruction: &BytecodeInstruction,
+    encoding: &EncodingConfig,
+) -> Result<(), EncodingError> {
+    match instruction.op {
+        BytecodeOp::Array => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            let count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(bytes, instruction, 2, count, OperandKind::Value, encoding)?;
+            ensure_operand_len(instruction, 2 + count)
+        }
+        BytecodeOp::Object => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            let count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 2 + count * 2)?;
+            for index in 0..count {
+                write_operand(
+                    bytes,
+                    operand_at(instruction, 2 + index * 2)?,
+                    OperandKind::Constant,
+                    encoding,
+                )?;
+                write_operand(
+                    bytes,
+                    operand_at(instruction, 3 + index * 2)?,
+                    OperandKind::Value,
+                    encoding,
+                )?;
+            }
+            Ok(())
+        }
+        BytecodeOp::Call | BytecodeOp::New => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            let count = count_at(instruction, 2)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(bytes, instruction, 3, count, OperandKind::Value, encoding)?;
+            ensure_operand_len(instruction, 3 + count)
+        }
+        BytecodeOp::CallOne => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 4)?;
+            if count_at(instruction, 2)? != 1 {
+                return Err(EncodingError::UnexpectedOperand(
+                    "CALL_1 expected exactly one argument".to_string(),
+                ));
+            }
+            write_operand(
+                bytes,
+                operand_at(instruction, 3)?,
+                OperandKind::Value,
+                encoding,
+            )
+        }
+        BytecodeOp::Template => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            let quasi_count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(
+                bytes,
+                instruction,
+                2,
+                quasi_count,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            let expr_count_index = 2 + quasi_count;
+            let expr_count = count_at(instruction, expr_count_index)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, expr_count_index)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(
+                bytes,
+                instruction,
+                expr_count_index + 1,
+                expr_count,
+                OperandKind::Value,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, expr_count_index + 1 + expr_count)
+        }
+        BytecodeOp::FunctionStart => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Name,
+                encoding,
+            )?;
+            let count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(bytes, instruction, 2, count, OperandKind::Name, encoding)?;
+            ensure_operand_len(instruction, 2 + count)
+        }
+        BytecodeOp::FunctionExprStart => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::OptionalName,
+                encoding,
+            )?;
+            let count = count_at(instruction, 2)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(bytes, instruction, 3, count, OperandKind::Name, encoding)?;
+            ensure_operand_len(instruction, 3 + count)
+        }
+        BytecodeOp::Class => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::OptionalRegister,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::OptionalName,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::OptionalValue,
+                encoding,
+            )?;
+            let count = count_at(instruction, 3)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 3)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(
+                bytes,
+                instruction,
+                4,
+                count,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 4 + count)
+        }
+        BytecodeOp::Import => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            let count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(
+                bytes,
+                instruction,
+                2,
+                count,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 2 + count)
+        }
+        BytecodeOp::Export => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            let count = count_at(instruction, 1)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(bytes, instruction, 2, count, OperandKind::Name, encoding)?;
+            ensure_operand_len(instruction, 2 + count)
+        }
+        op => {
+            let schema = fixed_operand_schema(op);
+            ensure_operand_len(instruction, schema.len())?;
+            for (operand, kind) in instruction.operands.iter().zip(schema.iter().copied()) {
+                write_operand(bytes, operand, kind, encoding)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn write_instruction(
+    bytes: &mut Vec<u8>,
+    instruction: &BytecodeInstruction,
+    encoding: &EncodingConfig,
+) -> Result<(), EncodingError> {
+    let wire_op = specialized_wire_op(instruction);
+    bytes.push(encoding.opcode(wire_op)?);
+    write_instruction_operands(
+        bytes,
+        &BytecodeInstruction {
+            op: wire_op,
+            operands: instruction.operands.clone(),
+        },
+        encoding,
+    )
+}
+
+fn specialized_wire_op(instruction: &BytecodeInstruction) -> BytecodeOp {
+    match instruction.op {
+        BytecodeOp::LoadConst => {
+            if matches!(
+                instruction.operands.as_slice(),
+                [BytecodeOperand::Register(_), BytecodeOperand::Constant(_)]
+            ) {
+                BytecodeOp::LoadConstConst
+            } else {
+                BytecodeOp::LoadConst
+            }
+        }
+        BytecodeOp::Pop => {
+            if matches!(
+                instruction.operands.as_slice(),
+                [BytecodeOperand::Register(_)]
+            ) {
+                BytecodeOp::PopReg
+            } else {
+                BytecodeOp::Pop
+            }
+        }
+        BytecodeOp::Call => {
+            if matches!(
+                instruction.operands.as_slice(),
+                [
+                    BytecodeOperand::Register(_),
+                    _,
+                    BytecodeOperand::Count(1),
+                    _
+                ]
+            ) {
+                BytecodeOp::CallOne
+            } else {
+                BytecodeOp::Call
+            }
+        }
+        op => op,
+    }
+}
+
+fn read_instruction_operands(
+    cursor: &mut ByteReader<'_>,
+    op: BytecodeOp,
+    encoding: &EncodingConfig,
+) -> Result<Vec<BytecodeOperand>, EncodingError> {
+    let mut operands = Vec::new();
+    match op {
+        BytecodeOp::Array => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Value,
+                encoding,
+            )?;
+        }
+        BytecodeOp::Object => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            for _ in 0..count_value {
+                operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+                operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            }
+        }
+        BytecodeOp::Call | BytecodeOp::New => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Value,
+                encoding,
+            )?;
+        }
+        BytecodeOp::CallOne => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            operands.push(BytecodeOperand::Count(1));
+            operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+        }
+        BytecodeOp::Template => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            let quasi_count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let quasi_count_value = quasi_count.payload() as usize;
+            operands.push(quasi_count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                quasi_count_value,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            let expr_count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let expr_count_value = expr_count.payload() as usize;
+            operands.push(expr_count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                expr_count_value,
+                OperandKind::Value,
+                encoding,
+            )?;
+        }
+        BytecodeOp::FunctionStart => {
+            operands.push(read_operand(cursor, OperandKind::Name, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Name,
+                encoding,
+            )?;
+        }
+        BytecodeOp::FunctionExprStart => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::OptionalName, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Name,
+                encoding,
+            )?;
+        }
+        BytecodeOp::Class => {
+            operands.push(read_operand(
+                cursor,
+                OperandKind::OptionalRegister,
+                encoding,
+            )?);
+            operands.push(read_operand(cursor, OperandKind::OptionalName, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::OptionalValue, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Constant,
+                encoding,
+            )?;
+        }
+        BytecodeOp::Import => {
+            operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Constant,
+                encoding,
+            )?;
+        }
+        BytecodeOp::Export => {
+            operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value = count.payload() as usize;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Name,
+                encoding,
+            )?;
+        }
+        op => {
+            for kind in fixed_operand_schema(op).iter().copied() {
+                operands.push(read_operand(cursor, kind, encoding)?);
+            }
+        }
+    }
+    Ok(operands)
+}
+
+fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
+    use OperandKind::*;
+    match op {
+        BytecodeOp::Marker => &[Constant],
+        BytecodeOp::Label => &[Label],
+        BytecodeOp::Declare => &[Constant, Name],
+        BytecodeOp::LoadConst => &[Register, Value],
+        BytecodeOp::LoadConstConst => &[Register, Constant],
+        BytecodeOp::LoadName => &[Register, Name],
+        BytecodeOp::StoreName => &[Name, Value],
+        BytecodeOp::StoreMember => &[Value, Constant, Value],
+        BytecodeOp::Move => &[Register, Value],
+        BytecodeOp::Binary => &[Register, Constant, Value, Value],
+        BytecodeOp::Unary => &[Register, Constant, Value],
+        BytecodeOp::Member => &[Register, Value, Constant],
+        BytecodeOp::FunctionEnd
+        | BytecodeOp::FunctionExprEnd
+        | BytecodeOp::TryStart
+        | BytecodeOp::FinallyStart
+        | BytecodeOp::TryEnd => &[],
+        BytecodeOp::CatchStart => &[OptionalName],
+        BytecodeOp::Throw => &[Value],
+        BytecodeOp::Return => &[OptionalValue],
+        BytecodeOp::Pop => &[Value],
+        BytecodeOp::PopReg => &[Register],
+        BytecodeOp::Jump => &[Label],
+        BytecodeOp::JumpIfFalse => &[Value, Label],
+        BytecodeOp::Unsupported => &[Constant],
+        BytecodeOp::Array
+        | BytecodeOp::Object
+        | BytecodeOp::Call
+        | BytecodeOp::New
+        | BytecodeOp::Template
+        | BytecodeOp::FunctionStart
+        | BytecodeOp::FunctionExprStart
+        | BytecodeOp::Class
+        | BytecodeOp::Import
+        | BytecodeOp::Export
+        | BytecodeOp::CallOne => &[],
+    }
+}
+
+fn write_repeated_operands(
+    bytes: &mut Vec<u8>,
+    instruction: &BytecodeInstruction,
+    start: usize,
+    count: usize,
+    kind: OperandKind,
+    encoding: &EncodingConfig,
+) -> Result<(), EncodingError> {
+    ensure_operand_min_len(instruction, start + count)?;
+    for index in 0..count {
+        write_operand(
+            bytes,
+            operand_at(instruction, start + index)?,
+            kind,
+            encoding,
+        )?;
+    }
+    Ok(())
+}
+
+fn read_repeated_operands(
+    cursor: &mut ByteReader<'_>,
+    operands: &mut Vec<BytecodeOperand>,
+    count: usize,
+    kind: OperandKind,
+    encoding: &EncodingConfig,
+) -> Result<(), EncodingError> {
+    for _ in 0..count {
+        operands.push(read_operand(cursor, kind, encoding)?);
+    }
+    Ok(())
+}
+
+fn write_operand(
+    bytes: &mut Vec<u8>,
+    operand: &BytecodeOperand,
+    kind: OperandKind,
+    encoding: &EncodingConfig,
+) -> Result<(), EncodingError> {
+    match kind {
+        OperandKind::Value
+        | OperandKind::OptionalValue
+        | OperandKind::OptionalRegister
+        | OperandKind::OptionalName => {
+            bytes.push(operand.tag(encoding)?);
+            write_u32(bytes, operand.payload());
+            Ok(())
+        }
+        _ => {
+            ensure_operand_kind(operand, kind)?;
+            write_u32(bytes, operand.payload());
+            Ok(())
+        }
+    }
+}
+
+fn read_operand(
+    cursor: &mut ByteReader<'_>,
+    kind: OperandKind,
+    encoding: &EncodingConfig,
+) -> Result<BytecodeOperand, EncodingError> {
+    match kind {
+        OperandKind::Register => Ok(BytecodeOperand::Register(cursor.read_u32()?)),
+        OperandKind::Constant => Ok(BytecodeOperand::Constant(cursor.read_u32()?)),
+        OperandKind::Name => Ok(BytecodeOperand::Name(cursor.read_u32()?)),
+        OperandKind::Label => Ok(BytecodeOperand::Label(cursor.read_u32()?)),
+        OperandKind::Count => Ok(BytecodeOperand::Count(cursor.read_u32()?)),
+        OperandKind::Value
+        | OperandKind::OptionalRegister
+        | OperandKind::OptionalName
+        | OperandKind::OptionalValue => {
+            let tag = cursor.read_u8()?;
+            let payload = cursor.read_u32()?;
+            BytecodeOperand::from_tag_payload(tag, payload, encoding)
+        }
+    }
+}
+
+fn ensure_operand_kind(operand: &BytecodeOperand, kind: OperandKind) -> Result<(), EncodingError> {
+    let valid = matches!(
+        (kind, operand),
+        (OperandKind::Register, BytecodeOperand::Register(_))
+            | (OperandKind::Constant, BytecodeOperand::Constant(_))
+            | (OperandKind::Name, BytecodeOperand::Name(_))
+            | (OperandKind::Label, BytecodeOperand::Label(_))
+            | (OperandKind::Count, BytecodeOperand::Count(_))
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(EncodingError::UnexpectedOperand(format!(
+            "operand {operand:?} does not match schema {kind:?}"
+        )))
+    }
+}
+
+fn operand_at(
+    instruction: &BytecodeInstruction,
+    index: usize,
+) -> Result<&BytecodeOperand, EncodingError> {
+    instruction.operands.get(index).ok_or_else(|| {
+        EncodingError::UnexpectedOperand(format!(
+            "{} missing operand {index}",
+            instruction.op.mnemonic()
+        ))
+    })
+}
+
+fn count_at(instruction: &BytecodeInstruction, index: usize) -> Result<usize, EncodingError> {
+    match operand_at(instruction, index)? {
+        BytecodeOperand::Count(value) => Ok(*value as usize),
+        operand => Err(EncodingError::UnexpectedOperand(format!(
+            "{} operand {index} expected count, got {operand:?}",
+            instruction.op.mnemonic()
+        ))),
+    }
+}
+
+fn ensure_operand_len(
+    instruction: &BytecodeInstruction,
+    expected: usize,
+) -> Result<(), EncodingError> {
+    if instruction.operands.len() == expected {
+        Ok(())
+    } else {
+        Err(EncodingError::UnexpectedOperand(format!(
+            "{} expected {expected} operands, got {}",
+            instruction.op.mnemonic(),
+            instruction.operands.len()
+        )))
+    }
+}
+
+fn ensure_operand_min_len(
+    instruction: &BytecodeInstruction,
+    expected_min: usize,
+) -> Result<(), EncodingError> {
+    if instruction.operands.len() >= expected_min {
+        Ok(())
+    } else {
+        Err(EncodingError::UnexpectedOperand(format!(
+            "{} expected at least {expected_min} operands, got {}",
+            instruction.op.mnemonic(),
+            instruction.operands.len()
+        )))
     }
 }
 
@@ -2157,8 +2860,8 @@ fn write_string(bytes: &mut Vec<u8>, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue, ObfuscationConfig,
-        ObfuscationSeed,
+        DEFAULT_BYTECODE_MAGIC, EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue,
+        ObfuscationConfig, ObfuscationSeed,
     };
 
     #[test]
@@ -2196,7 +2899,123 @@ mod tests {
 
         let bytecode = module.to_bytecode();
         assert!(bytecode.to_text().contains("LOAD_CONST"));
-        assert!(bytecode.to_bytes().starts_with(b"JSTKBC01"));
+        assert!(
+            bytecode
+                .to_bytes()
+                .starts_with(DEFAULT_BYTECODE_MAGIC.as_bytes())
+        );
+    }
+
+    #[test]
+    fn compact_bytecode_roundtrips_dynamic_operand_layouts() {
+        let module = IrModule {
+            extern_slots: vec!["console".to_string()],
+            instructions: vec![
+                IrInstruction::Array {
+                    dst: "arr".to_string(),
+                    items: vec![IrValue::Number(1.0), IrValue::String("x".to_string())],
+                },
+                IrInstruction::Object {
+                    dst: "obj".to_string(),
+                    props: vec![
+                        ("a".to_string(), IrValue::Register("arr".to_string())),
+                        ("b".to_string(), IrValue::Bool(true)),
+                    ],
+                },
+                IrInstruction::Call {
+                    dst: "call".to_string(),
+                    callee: IrValue::Name("fn".to_string()),
+                    args: vec![
+                        IrValue::Register("arr".to_string()),
+                        IrValue::Register("obj".to_string()),
+                    ],
+                },
+                IrInstruction::New {
+                    dst: "instance".to_string(),
+                    callee: IrValue::Name("Ctor".to_string()),
+                    args: vec![IrValue::Register("call".to_string())],
+                },
+                IrInstruction::Template {
+                    dst: "template".to_string(),
+                    quasis: vec!["hello ".to_string(), "".to_string()],
+                    exprs: vec![IrValue::Register("instance".to_string())],
+                },
+                IrInstruction::Function {
+                    name: "named".to_string(),
+                    params: vec!["value".to_string()],
+                    body: vec![IrInstruction::Return(Some(IrValue::Name(
+                        "value".to_string(),
+                    )))],
+                },
+                IrInstruction::FunctionExpr {
+                    dst: "expr".to_string(),
+                    name: None,
+                    params: vec!["left".to_string(), "right".to_string()],
+                    body: vec![IrInstruction::Return(None)],
+                },
+                IrInstruction::Class {
+                    dst: Some("klass".to_string()),
+                    name: Some("Klass".to_string()),
+                    super_class: Some(IrValue::Name("Base".to_string())),
+                    members: vec!["method".to_string(), "field".to_string()],
+                },
+                IrInstruction::Import {
+                    source: "./mod.js".to_string(),
+                    specifiers: vec!["a".to_string(), "b".to_string()],
+                },
+                IrInstruction::Export {
+                    kind: "named".to_string(),
+                    names: vec!["a".to_string(), "b".to_string()],
+                },
+            ],
+        };
+
+        let bytecode = module.to_bytecode();
+        let bytes = bytecode.to_bytes();
+        let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
+
+        assert_eq!(restored, bytecode);
+        assert!(bytes.starts_with(DEFAULT_BYTECODE_MAGIC.as_bytes()));
+    }
+
+    #[test]
+    fn specialized_opcodes_decode_to_canonical_instructions() {
+        let bytecode = super::BytecodeModule {
+            extern_slots: Vec::new(),
+            constants: vec![super::BytecodeConstant::Number(1.0)],
+            instructions: vec![
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::LoadConst,
+                    operands: vec![
+                        super::BytecodeOperand::Register(0),
+                        super::BytecodeOperand::Constant(0),
+                    ],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Pop,
+                    operands: vec![super::BytecodeOperand::Register(0)],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Return,
+                    operands: vec![super::BytecodeOperand::Register(0)],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Call,
+                    operands: vec![
+                        super::BytecodeOperand::Register(1),
+                        super::BytecodeOperand::Register(0),
+                        super::BytecodeOperand::Count(1),
+                        super::BytecodeOperand::Register(0),
+                    ],
+                },
+            ],
+        };
+        let bytes = bytecode.to_bytes();
+
+        assert!(bytes.contains(&(super::BytecodeOp::LoadConstConst as u8)));
+        assert!(bytes.contains(&(super::BytecodeOp::PopReg as u8)));
+        assert!(bytes.contains(&(super::BytecodeOp::CallOne as u8)));
+        assert_eq!(super::BytecodeModule::from_bytes(&bytes).unwrap(), bytecode);
     }
 
     #[test]
