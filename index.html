@@ -2226,7 +2226,7 @@ export default def;`,
       return `// JS VM runtime package:
 // Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
 // GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
-import init, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_executor.js';
+import init, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js';
 
 const bytes = new Uint8Array([${byteArrayLiteral(state.compiledBytes)}]);
 const seed = ${JSON.stringify(seed)};

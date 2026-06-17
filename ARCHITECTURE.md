@@ -139,7 +139,7 @@ Compiler Layer 主要由 `js_token_bin` 暴露 Rust/CLI 门面，并由 `js_vm_c
 
 ### Runtime Layer
 
-Runtime Layer 主要由 `js_token_runtime` 暴露 Rust 执行器，并由 `js_vm_executor` wasm 包暴露给生成场景。执行器只依赖 Core Layer，不依赖 SWC 或编译器。
+Runtime Layer 主要由 `js_token_runtime` 暴露 Rust 执行器，并由 `js_vm_runtime` wasm 包暴露给生成场景。执行器只依赖 Core Layer，不依赖 SWC 或编译器。
 
 #### 推荐 Rust 执行接口
 
@@ -206,8 +206,8 @@ Presentation Layer 主要提供人机交互能力，不属于核心 VM 语义。
 - `pkg/compiler/js_vm_compiler.js`
 - `pkg/compiler/js_vm_compiler_bg.wasm`
 - `pkg/compiler/package.json`
-- `pkg/executor/js_vm_executor.js`
-- `pkg/executor/js_vm_executor_bg.wasm`
+- `pkg/executor/js_vm_runtime.js`
+- `pkg/executor/js_vm_runtime_bg.wasm`
 - `pkg/executor/package.json`
 
 #### GitHub Pages

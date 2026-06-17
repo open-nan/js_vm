@@ -46,10 +46,10 @@ jobs:
           cp pkg/compiler/js_vm_compiler.d.ts dist/pkg/compiler/
           cp pkg/compiler/js_vm_compiler_bg.wasm.d.ts dist/pkg/compiler/
           cp pkg/compiler/package.json dist/pkg/compiler/
-          cp pkg/executor/js_vm_executor.js dist/pkg/executor/
-          cp pkg/executor/js_vm_executor_bg.wasm dist/pkg/executor/
-          cp pkg/executor/js_vm_executor.d.ts dist/pkg/executor/
-          cp pkg/executor/js_vm_executor_bg.wasm.d.ts dist/pkg/executor/
+          cp pkg/executor/js_vm_runtime.js dist/pkg/executor/
+          cp pkg/executor/js_vm_runtime_bg.wasm dist/pkg/executor/
+          cp pkg/executor/js_vm_runtime.d.ts dist/pkg/executor/
+          cp pkg/executor/js_vm_runtime_bg.wasm.d.ts dist/pkg/executor/
           cp pkg/executor/package.json dist/pkg/executor/
           touch dist/.nojekyll
 
@@ -58,8 +58,8 @@ jobs:
           test -f dist/index.html
           test -f dist/pkg/compiler/js_vm_compiler.js
           test -f dist/pkg/compiler/js_vm_compiler_bg.wasm
-          test -f dist/pkg/executor/js_vm_executor.js
-          test -f dist/pkg/executor/js_vm_executor_bg.wasm
+          test -f dist/pkg/executor/js_vm_runtime.js
+          test -f dist/pkg/executor/js_vm_runtime_bg.wasm
           find dist -maxdepth 3 -type f | sort
 
       - name: Deploy to gh-pages
