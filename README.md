@@ -29,6 +29,26 @@ cargo test
 cargo check -p js_token_bin --target wasm32-unknown-unknown
 ```
 
+## Chain Tests
+
+链路测试集位于 `tests`，按 `regressions`、`syntax`、`runtime`、`obfuscation`、`fixtures` 分类组织。测试文件使用 `*.test.js` / `*.test.ts` / `*.test.jsx` / `*.test.tsx` / `*.test.vue` 命名。
+
+```bash
+sh scripts/verify.sh
+```
+
+该脚本会依次运行 Rust 测试、构建 wasm、执行 `node tests/index.js`，覆盖编译、编码、随机 seed 和执行器完整链路。
+
+## CI
+
+`.github/workflows/ci.yml` 会在 PR、`dev/codex`、`main` 和 merge queue 上运行完整验证：
+
+```text
+cargo test -> sh scripts/build-wasm.sh -> node tests/index.js
+```
+
+为了保证合并到 `main` 前测试必须全通过，需要在 GitHub 仓库设置中把 `CI / Verify Full Test Chain` 配置为 `main` 分支的 required status check。
+
 ## Build wasm
 
 ```bash

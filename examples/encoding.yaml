@@ -1,4 +1,4 @@
-magic: "JSTKBC01"
+magic: "JS"
 
 opcodes:
   MARKER: 0
@@ -34,14 +34,19 @@ opcodes:
   JUMP: 30
   JUMP_IF_FALSE: 31
   UNSUPPORTED: 32
+  LOAD_CONST_CONST: 33
+  POP_REG: 34
+  CALL_1: 35
 
 operand_tags:
   register: 0
   constant: 1
   name: 2
-  label: 3
-  count: 4
-  none: 5
+  extern: 3
+  label: 4
+  count: 5
+  none: 6
+  function: 7
 
 constant_tags:
   number: 0

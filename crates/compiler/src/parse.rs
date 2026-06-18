@@ -994,18 +994,129 @@ impl LoweringContext {
             .as_ref()
             .map(|super_class| self.lower_expr(super_class));
         let members = class.body.iter().map(class_member_name).collect::<Vec<_>>();
+        let class_value = dst
+            .as_ref()
+            .map(|dst| IrValue::Register(dst.clone()))
+            .or_else(|| name.as_ref().map(|name| IrValue::Name(name.clone())));
         self.emit(IrInstruction::Class {
             dst: dst.clone(),
             name: name.clone(),
             super_class,
             members,
         });
+        if let Some(class_value) = &class_value {
+            self.lower_class_members(class_value.clone(), class);
+        }
         if let Some(name) = name {
             if dst.is_none() {
                 return IrValue::Name(name);
             }
         }
         dst.map(IrValue::Register).unwrap_or(IrValue::Undefined)
+    }
+
+    fn lower_class_members(&mut self, class_value: IrValue, class: &Class) {
+        for member in &class.body {
+            match member {
+                ClassMember::Constructor(constructor) => {
+                    let value = self.lower_constructor_function(constructor);
+                    self.emit(IrInstruction::StoreMember {
+                        object: class_value.clone(),
+                        property: "constructor".to_string(),
+                        src: value,
+                    });
+                }
+                ClassMember::Method(method) if method.kind == MethodKind::Method => {
+                    let key = prop_name(&method.key);
+                    let value = self.lower_function_value(Some(key.clone()), &method.function);
+                    self.emit(IrInstruction::StoreMember {
+                        object: class_value.clone(),
+                        property: if method.is_static {
+                            key
+                        } else {
+                            format!("prototype.{key}")
+                        },
+                        src: value,
+                    });
+                }
+                ClassMember::Method(method) => {
+                    self.emit(IrInstruction::Unsupported(format!(
+                        "class {} method {}",
+                        method_kind_name(method.kind),
+                        prop_name(&method.key)
+                    )));
+                }
+                ClassMember::PrivateMethod(method) => {
+                    self.emit(IrInstruction::Unsupported(format!(
+                        "class private method #{}",
+                        method.key.name
+                    )));
+                }
+                ClassMember::ClassProp(prop) => {
+                    if let Some(value) = &prop.value {
+                        let value = self.lower_expr(value);
+                        self.emit(IrInstruction::StoreMember {
+                            object: class_value.clone(),
+                            property: if prop.is_static {
+                                prop_name(&prop.key)
+                            } else {
+                                format!("prototype.{}", prop_name(&prop.key))
+                            },
+                            src: value,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn lower_function_value(&mut self, name: Option<String>, function: &Function) -> IrValue {
+        let dst = self.temp();
+        let params = function
+            .params
+            .iter()
+            .map(|param| pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string()))
+            .collect::<Vec<_>>();
+        let mut body_ctx = self.child();
+        for param in &params {
+            body_ctx.declare_local(param.clone());
+        }
+        if let Some(body) = &function.body {
+            body_ctx.lower_block(body);
+        }
+        self.merge_child_externs(&body_ctx);
+        self.emit(IrInstruction::FunctionExpr {
+            dst: dst.clone(),
+            name,
+            params,
+            body: body_ctx.instructions,
+        });
+        IrValue::Register(dst)
+    }
+
+    fn lower_constructor_function(&mut self, constructor: &Constructor) -> IrValue {
+        let dst = self.temp();
+        let params = constructor
+            .params
+            .iter()
+            .map(constructor_param_name)
+            .collect::<Vec<_>>();
+        let mut body_ctx = self.child();
+        for param in &params {
+            body_ctx.declare_local(param.clone());
+        }
+        if let Some(body) = &constructor.body {
+            body_ctx.lower_block(body);
+        }
+        self.merge_child_externs(&body_ctx);
+        self.emit(IrInstruction::FunctionExpr {
+            dst: dst.clone(),
+            name: Some("constructor".to_string()),
+            params,
+            body: body_ctx.instructions,
+        });
+        IrValue::Register(dst)
     }
 
     fn lower_opt_chain(&mut self, expr: &OptChainExpr) -> IrValue {
@@ -1144,9 +1255,11 @@ impl LoweringContext {
                 for (index, elem) in array.elems.iter().enumerate() {
                     if let Some(elem) = elem {
                         let item = self.temp();
-                        self.emit(IrInstruction::Marker(format!(
-                            "%{item} = destructure_array {value}, {index}"
-                        )));
+                        self.emit(IrInstruction::Member {
+                            dst: item.clone(),
+                            object: value.clone(),
+                            property: index.to_string(),
+                        });
                         self.lower_pat_binding(elem, IrValue::Register(item), kind);
                     }
                 }
@@ -1157,18 +1270,22 @@ impl LoweringContext {
                         ObjectPatProp::KeyValue(prop) => {
                             let key = prop_name(&prop.key);
                             let item = self.temp();
-                            self.emit(IrInstruction::Marker(format!(
-                                "%{item} = destructure_object {value}, {key}"
-                            )));
+                            self.emit(IrInstruction::Member {
+                                dst: item.clone(),
+                                object: value.clone(),
+                                property: key,
+                            });
                             self.lower_pat_binding(&prop.value, IrValue::Register(item), kind);
                         }
                         ObjectPatProp::Assign(prop) => {
                             let key = ident_name(&prop.key);
                             self.declare_local(key.clone());
                             let item = self.temp();
-                            self.emit(IrInstruction::Marker(format!(
-                                "%{item} = destructure_object {value}, {key}"
-                            )));
+                            self.emit(IrInstruction::Member {
+                                dst: item.clone(),
+                                object: value.clone(),
+                                property: key.clone(),
+                            });
                             self.emit(IrInstruction::Declare {
                                 kind: kind.to_string(),
                                 name: key.clone(),
@@ -1420,6 +1537,15 @@ fn pat_name(pat: &Pat) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn constructor_param_name(param: &ParamOrTsParamProp) -> String {
+    match param {
+        ParamOrTsParamProp::Param(param) => {
+            pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string())
+        }
+        ParamOrTsParamProp::TsParamProp(_) => "<unsupported>".to_string(),
     }
 }
 

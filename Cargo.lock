@@ -306,6 +306,7 @@ name = "js_vm_compiler"
 version = "0.1.0"
 dependencies = [
  "js_token_core",
+ "js_vm_runtime",
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",

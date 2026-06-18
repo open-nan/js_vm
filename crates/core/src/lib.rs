@@ -803,7 +803,7 @@ impl fmt::Display for ObfuscationSeed {
     }
 }
 
-pub const DEFAULT_BYTECODE_MAGIC: &str = "JSTKBC03";
+pub const DEFAULT_BYTECODE_MAGIC: &str = "JS";
 
 const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
 
@@ -855,9 +855,11 @@ impl Default for EncodingConfig {
             ("register", 0),
             ("constant", 1),
             ("name", 2),
-            ("label", 3),
-            ("count", 4),
-            ("none", 5),
+            ("extern", 3),
+            ("label", 4),
+            ("count", 5),
+            ("none", 6),
+            ("function", 7),
         ]
         .into_iter()
         .map(|(name, tag)| (name.to_string(), tag))
@@ -1047,7 +1049,9 @@ impl EncodingConfig {
         for op in BytecodeOp::all() {
             self.opcode(*op)?;
         }
-        for key in ["register", "constant", "name", "label", "count", "none"] {
+        for key in [
+            "register", "constant", "name", "extern", "label", "count", "none", "function",
+        ] {
             self.operand_tag(key)?;
         }
         for key in ["number", "string", "bool", "null", "undefined"] {
@@ -1138,7 +1142,11 @@ pub enum BytecodeOperand {
     Register(u32),
     Constant(u32),
     Name(u32),
+    External(u32),
+    Function(u32),
     Label(u32),
+    Operator(u32),
+    DeclKind(u32),
     Count(u32),
     None,
 }
@@ -1148,7 +1156,11 @@ enum OperandKind {
     Register,
     Constant,
     Name,
+    NameRef,
+    Function,
     Label,
+    Operator,
+    DeclKind,
     Count,
     Value,
     OptionalRegister,
@@ -1162,8 +1174,12 @@ impl BytecodeOperand {
             BytecodeOperand::Register(_) => encoding.operand_tag("register"),
             BytecodeOperand::Constant(_) => encoding.operand_tag("constant"),
             BytecodeOperand::Name(_) => encoding.operand_tag("name"),
+            BytecodeOperand::External(_) => encoding.operand_tag("extern"),
+            BytecodeOperand::Function(_) => encoding.operand_tag("function"),
             BytecodeOperand::Label(_) => encoding.operand_tag("label"),
+            BytecodeOperand::Operator(_) => encoding.operand_tag("count"),
             BytecodeOperand::Count(_) => encoding.operand_tag("count"),
+            BytecodeOperand::DeclKind(_) => encoding.operand_tag("count"),
             BytecodeOperand::None => encoding.operand_tag("none"),
         }
     }
@@ -1173,7 +1189,11 @@ impl BytecodeOperand {
             BytecodeOperand::Register(value)
             | BytecodeOperand::Constant(value)
             | BytecodeOperand::Name(value)
+            | BytecodeOperand::External(value)
+            | BytecodeOperand::Function(value)
             | BytecodeOperand::Label(value)
+            | BytecodeOperand::Operator(value)
+            | BytecodeOperand::DeclKind(value)
             | BytecodeOperand::Count(value) => *value,
             BytecodeOperand::None => 0,
         }
@@ -1188,6 +1208,8 @@ impl BytecodeOperand {
             "register" => Ok(BytecodeOperand::Register(payload)),
             "constant" => Ok(BytecodeOperand::Constant(payload)),
             "name" => Ok(BytecodeOperand::Name(payload)),
+            "extern" => Ok(BytecodeOperand::External(payload)),
+            "function" => Ok(BytecodeOperand::Function(payload)),
             "label" => Ok(BytecodeOperand::Label(payload)),
             "count" => Ok(BytecodeOperand::Count(payload)),
             "none" => Ok(BytecodeOperand::None),
@@ -1202,9 +1224,18 @@ pub struct BytecodeInstruction {
     pub operands: Vec<BytecodeOperand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytecodeFunction {
+    pub name: Option<u32>,
+    pub params: Vec<u32>,
+    pub has_return: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct BytecodeModule {
     pub extern_slots: Vec<String>,
+    pub names: Vec<String>,
+    pub functions: Vec<BytecodeFunction>,
     pub constants: Vec<BytecodeConstant>,
     pub instructions: Vec<BytecodeInstruction>,
 }
@@ -1216,6 +1247,33 @@ impl BytecodeModule {
             let _ = writeln!(out, ".externs");
             for (index, name) in self.extern_slots.iter().enumerate() {
                 let _ = writeln!(out, "  e{index} = {name}");
+            }
+        }
+        if !self.names.is_empty() {
+            let _ = writeln!(out, ".names");
+            for (index, name) in self.names.iter().enumerate() {
+                let _ = writeln!(out, "  n{index} = {name:?}");
+            }
+        }
+        if !self.functions.is_empty() {
+            let _ = writeln!(out, ".fun");
+            for (index, function) in self.functions.iter().enumerate() {
+                let name = function
+                    .name
+                    .map(|name| self.format_name_index(name))
+                    .unwrap_or_else(|| "<anonymous>".to_string());
+                let params = function
+                    .params
+                    .iter()
+                    .map(|param| self.format_name_index(*param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = writeln!(
+                    out,
+                    "  f{index} = name:{name}, argc:{}, returns:{}, params:[{params}]",
+                    function.params.len(),
+                    function.has_return
+                );
             }
         }
         let _ = writeln!(out, ".constants");
@@ -1255,6 +1313,19 @@ impl BytecodeModule {
         for slot in &self.extern_slots {
             write_string(&mut bytes, slot);
         }
+        write_u32(&mut bytes, self.names.len() as u32);
+        for name in &self.names {
+            write_name_string(&mut bytes, name, &self.extern_slots);
+        }
+        write_u32(&mut bytes, self.functions.len() as u32);
+        for function in &self.functions {
+            write_optional_u32(&mut bytes, function.name);
+            write_u32(&mut bytes, function.params.len() as u32);
+            bytes.push(u8::from(function.has_return));
+            for param in &function.params {
+                write_u32(&mut bytes, *param);
+            }
+        }
         write_u32(&mut bytes, self.constants.len() as u32);
         for constant in &self.constants {
             match constant {
@@ -1264,7 +1335,7 @@ impl BytecodeModule {
                 }
                 BytecodeConstant::String(value) => {
                     bytes.push(encoding.constant_tag("string")?);
-                    write_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value);
                 }
                 BytecodeConstant::Bool(value) => {
                     bytes.push(encoding.constant_tag("bool")?);
@@ -1293,19 +1364,42 @@ impl BytecodeModule {
         let mut cursor = ByteReader::new(bytes);
         cursor.expect_magic(encoding)?;
 
-        let extern_count = cursor.read_u32()? as usize;
+        let extern_count = cursor.read_bounded_count("extern slots")?;
         let mut extern_slots = Vec::with_capacity(extern_count);
         for _ in 0..extern_count {
             extern_slots.push(cursor.read_string()?);
         }
 
-        let constant_count = cursor.read_u32()? as usize;
+        let name_count = cursor.read_bounded_count("names")?;
+        let mut names = Vec::with_capacity(name_count);
+        for _ in 0..name_count {
+            names.push(cursor.read_name_string(&extern_slots)?);
+        }
+
+        let function_count = cursor.read_bounded_count("functions")?;
+        let mut functions = Vec::with_capacity(function_count);
+        for _ in 0..function_count {
+            let name = cursor.read_optional_u32()?;
+            let param_count = cursor.read_bounded_count("function params")?;
+            let has_return = cursor.read_u8()? != 0;
+            let mut params = Vec::with_capacity(param_count);
+            for _ in 0..param_count {
+                params.push(cursor.read_u32()?);
+            }
+            functions.push(BytecodeFunction {
+                name,
+                params,
+                has_return,
+            });
+        }
+
+        let constant_count = cursor.read_bounded_count("constants")?;
         let mut constants = Vec::with_capacity(constant_count);
         for _ in 0..constant_count {
             constants.push(cursor.read_constant(encoding)?);
         }
 
-        let instruction_count = cursor.read_u32()? as usize;
+        let instruction_count = cursor.read_bounded_count("instructions")?;
         let mut instructions = Vec::with_capacity(instruction_count);
         for _ in 0..instruction_count {
             let op = encoding.opcode_from_code(cursor.read_u8()?)?;
@@ -1315,9 +1409,12 @@ impl BytecodeModule {
                 operands,
             });
         }
+        cursor.expect_end()?;
 
         Ok(Self {
             extern_slots,
+            names,
+            functions,
             constants,
             instructions,
         })
@@ -1341,23 +1438,44 @@ impl BytecodeModule {
             }
             BytecodeOperand::Name(index) => {
                 let name = self
-                    .constants
+                    .names
                     .get(*index as usize)
-                    .map(ToString::to_string)
+                    .map(|value| format!("{value:?}"))
                     .unwrap_or_else(|| "<bad-name>".to_string());
                 format!("name#{index}({name})")
             }
-            BytecodeOperand::Label(index) => {
-                let label = self
-                    .constants
+            BytecodeOperand::External(index) => {
+                let name = self
+                    .extern_slots
                     .get(*index as usize)
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "<bad-label>".to_string());
-                format!("label#{index}({label})")
+                    .map(|value| format!("{value:?}"))
+                    .unwrap_or_else(|| "<bad-extern>".to_string());
+                format!("extern#{index}({name})")
             }
+            BytecodeOperand::Function(index) => {
+                format!("fun#{index}")
+            }
+            BytecodeOperand::Label(index) => {
+                format!("label#{index}")
+            }
+            BytecodeOperand::Operator(value) => operator_name(*value)
+                .map(|op| format!("op#{value}({op:?})"))
+                .unwrap_or_else(|| format!("op#{value}(<bad-op>)")),
+            BytecodeOperand::DeclKind(value) => decl_kind_name(*value)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("decl#{value}")),
             BytecodeOperand::Count(value) => format!("#{value}"),
             BytecodeOperand::None => "none".to_string(),
         }
+    }
+
+    fn format_name_index(&self, index: u32) -> String {
+        let name = self
+            .names
+            .get(index as usize)
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_else(|| "<bad-name>".to_string());
+        format!("name#{index}({name})")
     }
 }
 
@@ -1508,18 +1626,10 @@ fn write_instruction_operands(
             write_operand(
                 bytes,
                 operand_at(instruction, 0)?,
-                OperandKind::Name,
+                OperandKind::Function,
                 encoding,
             )?;
-            let count = count_at(instruction, 1)?;
-            write_operand(
-                bytes,
-                operand_at(instruction, 1)?,
-                OperandKind::Count,
-                encoding,
-            )?;
-            write_repeated_operands(bytes, instruction, 2, count, OperandKind::Name, encoding)?;
-            ensure_operand_len(instruction, 2 + count)
+            ensure_operand_len(instruction, 1)
         }
         BytecodeOp::FunctionExprStart => {
             write_operand(
@@ -1531,18 +1641,10 @@ fn write_instruction_operands(
             write_operand(
                 bytes,
                 operand_at(instruction, 1)?,
-                OperandKind::OptionalName,
+                OperandKind::Function,
                 encoding,
             )?;
-            let count = count_at(instruction, 2)?;
-            write_operand(
-                bytes,
-                operand_at(instruction, 2)?,
-                OperandKind::Count,
-                encoding,
-            )?;
-            write_repeated_operands(bytes, instruction, 3, count, OperandKind::Name, encoding)?;
-            ensure_operand_len(instruction, 3 + count)
+            ensure_operand_len(instruction, 2)
         }
         BytecodeOp::Class => {
             write_operand(
@@ -1700,7 +1802,7 @@ fn read_instruction_operands(
         BytecodeOp::Array => {
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "array item")?;
             operands.push(count);
             read_repeated_operands(
                 cursor,
@@ -1713,7 +1815,7 @@ fn read_instruction_operands(
         BytecodeOp::Object => {
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "object property")?;
             operands.push(count);
             for _ in 0..count_value {
                 operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
@@ -1724,7 +1826,7 @@ fn read_instruction_operands(
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
             operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "call argument")?;
             operands.push(count);
             read_repeated_operands(
                 cursor,
@@ -1743,7 +1845,8 @@ fn read_instruction_operands(
         BytecodeOp::Template => {
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
             let quasi_count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let quasi_count_value = quasi_count.payload() as usize;
+            let quasi_count_value =
+                bounded_dynamic_count(cursor, quasi_count.payload(), "template quasi")?;
             operands.push(quasi_count);
             read_repeated_operands(
                 cursor,
@@ -1753,7 +1856,8 @@ fn read_instruction_operands(
                 encoding,
             )?;
             let expr_count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let expr_count_value = expr_count.payload() as usize;
+            let expr_count_value =
+                bounded_dynamic_count(cursor, expr_count.payload(), "template expression")?;
             operands.push(expr_count);
             read_repeated_operands(
                 cursor,
@@ -1764,31 +1868,11 @@ fn read_instruction_operands(
             )?;
         }
         BytecodeOp::FunctionStart => {
-            operands.push(read_operand(cursor, OperandKind::Name, encoding)?);
-            let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
-            operands.push(count);
-            read_repeated_operands(
-                cursor,
-                &mut operands,
-                count_value,
-                OperandKind::Name,
-                encoding,
-            )?;
+            operands.push(read_operand(cursor, OperandKind::Function, encoding)?);
         }
         BytecodeOp::FunctionExprStart => {
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
-            operands.push(read_operand(cursor, OperandKind::OptionalName, encoding)?);
-            let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
-            operands.push(count);
-            read_repeated_operands(
-                cursor,
-                &mut operands,
-                count_value,
-                OperandKind::Name,
-                encoding,
-            )?;
+            operands.push(read_operand(cursor, OperandKind::Function, encoding)?);
         }
         BytecodeOp::Class => {
             operands.push(read_operand(
@@ -1799,7 +1883,7 @@ fn read_instruction_operands(
             operands.push(read_operand(cursor, OperandKind::OptionalName, encoding)?);
             operands.push(read_operand(cursor, OperandKind::OptionalValue, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "class member")?;
             operands.push(count);
             read_repeated_operands(
                 cursor,
@@ -1812,7 +1896,7 @@ fn read_instruction_operands(
         BytecodeOp::Import => {
             operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "import specifier")?;
             operands.push(count);
             read_repeated_operands(
                 cursor,
@@ -1825,7 +1909,7 @@ fn read_instruction_operands(
         BytecodeOp::Export => {
             operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
-            let count_value = count.payload() as usize;
+            let count_value = bounded_dynamic_count(cursor, count.payload(), "export name")?;
             operands.push(count);
             read_repeated_operands(
                 cursor,
@@ -1844,21 +1928,38 @@ fn read_instruction_operands(
     Ok(operands)
 }
 
+fn bounded_dynamic_count(
+    cursor: &ByteReader<'_>,
+    count: u32,
+    kind: &str,
+) -> Result<usize, EncodingError> {
+    let count = count as usize;
+    let remaining = cursor.remaining();
+    if count > remaining {
+        return Err(EncodingError::UnknownCode(format!(
+            "{kind} count {count} exceeds remaining bytecode bytes {remaining}"
+        )));
+    }
+    Ok(count)
+}
+
 fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
     use OperandKind::*;
     match op {
         BytecodeOp::Marker => &[Constant],
         BytecodeOp::Label => &[Label],
-        BytecodeOp::Declare => &[Constant, Name],
+        BytecodeOp::Declare => &[DeclKind, Name],
         BytecodeOp::LoadConst => &[Register, Value],
         BytecodeOp::LoadConstConst => &[Register, Constant],
-        BytecodeOp::LoadName => &[Register, Name],
-        BytecodeOp::StoreName => &[Name, Value],
+        BytecodeOp::LoadName => &[Register, NameRef],
+        BytecodeOp::StoreName => &[NameRef, Value],
         BytecodeOp::StoreMember => &[Value, Constant, Value],
         BytecodeOp::Move => &[Register, Value],
-        BytecodeOp::Binary => &[Register, Constant, Value, Value],
-        BytecodeOp::Unary => &[Register, Constant, Value],
+        BytecodeOp::Binary => &[Register, Operator, Value, Value],
+        BytecodeOp::Unary => &[Register, Operator, Value],
         BytecodeOp::Member => &[Register, Value, Constant],
+        BytecodeOp::FunctionStart => &[Function],
+        BytecodeOp::FunctionExprStart => &[Register, Function],
         BytecodeOp::FunctionEnd
         | BytecodeOp::FunctionExprEnd
         | BytecodeOp::TryStart
@@ -1877,8 +1978,6 @@ fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
         | BytecodeOp::Call
         | BytecodeOp::New
         | BytecodeOp::Template
-        | BytecodeOp::FunctionStart
-        | BytecodeOp::FunctionExprStart
         | BytecodeOp::Class
         | BytecodeOp::Import
         | BytecodeOp::Export
@@ -1936,7 +2035,12 @@ fn write_operand(
         }
         _ => {
             ensure_operand_kind(operand, kind)?;
-            write_u32(bytes, operand.payload());
+            let payload = if kind == OperandKind::NameRef {
+                encode_name_ref_operand(operand)?
+            } else {
+                operand.payload()
+            };
+            write_u32(bytes, payload);
             Ok(())
         }
     }
@@ -1951,7 +2055,11 @@ fn read_operand(
         OperandKind::Register => Ok(BytecodeOperand::Register(cursor.read_u32()?)),
         OperandKind::Constant => Ok(BytecodeOperand::Constant(cursor.read_u32()?)),
         OperandKind::Name => Ok(BytecodeOperand::Name(cursor.read_u32()?)),
+        OperandKind::NameRef => Ok(decode_name_ref_operand(cursor.read_u32()?)),
+        OperandKind::Function => Ok(BytecodeOperand::Function(cursor.read_u32()?)),
         OperandKind::Label => Ok(BytecodeOperand::Label(cursor.read_u32()?)),
+        OperandKind::Operator => Ok(BytecodeOperand::Operator(cursor.read_u32()?)),
+        OperandKind::DeclKind => Ok(BytecodeOperand::DeclKind(cursor.read_u32()?)),
         OperandKind::Count => Ok(BytecodeOperand::Count(cursor.read_u32()?)),
         OperandKind::Value
         | OperandKind::OptionalRegister
@@ -1970,7 +2078,12 @@ fn ensure_operand_kind(operand: &BytecodeOperand, kind: OperandKind) -> Result<(
         (OperandKind::Register, BytecodeOperand::Register(_))
             | (OperandKind::Constant, BytecodeOperand::Constant(_))
             | (OperandKind::Name, BytecodeOperand::Name(_))
+            | (OperandKind::NameRef, BytecodeOperand::Name(_))
+            | (OperandKind::NameRef, BytecodeOperand::External(_))
+            | (OperandKind::Function, BytecodeOperand::Function(_))
             | (OperandKind::Label, BytecodeOperand::Label(_))
+            | (OperandKind::Operator, BytecodeOperand::Operator(_))
+            | (OperandKind::DeclKind, BytecodeOperand::DeclKind(_))
             | (OperandKind::Count, BytecodeOperand::Count(_))
     );
     if valid {
@@ -1979,6 +2092,31 @@ fn ensure_operand_kind(operand: &BytecodeOperand, kind: OperandKind) -> Result<(
         Err(EncodingError::UnexpectedOperand(format!(
             "operand {operand:?} does not match schema {kind:?}"
         )))
+    }
+}
+
+fn encode_name_ref_operand(operand: &BytecodeOperand) -> Result<u32, EncodingError> {
+    let (payload, tag_bit) = match operand {
+        BytecodeOperand::Name(value) => (*value, 0),
+        BytecodeOperand::External(value) => (*value, 1),
+        operand => {
+            return Err(EncodingError::UnexpectedOperand(format!(
+                "name ref expected name or extern, got {operand:?}"
+            )));
+        }
+    };
+    payload
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(tag_bit))
+        .ok_or_else(|| EncodingError::UnexpectedOperand("name ref index overflow".to_string()))
+}
+
+fn decode_name_ref_operand(payload: u32) -> BytecodeOperand {
+    let index = payload >> 1;
+    if payload & 1 == 0 {
+        BytecodeOperand::Name(index)
+    } else {
+        BytecodeOperand::External(index)
     }
 }
 
@@ -2036,16 +2174,38 @@ fn ensure_operand_min_len(
 
 #[derive(Default)]
 struct BytecodeBuilder {
+    extern_slots: Vec<String>,
+    extern_slot_ids: BTreeMap<String, u32>,
+    names: Vec<String>,
+    name_ids: BTreeMap<String, u32>,
+    label_ids: BTreeMap<String, u32>,
+    scopes: Vec<NameScope>,
+    local_name_id: usize,
     constants: Vec<BytecodeConstant>,
     constant_ids: BTreeMap<String, u32>,
+    functions: Vec<BytecodeFunction>,
     instructions: Vec<BytecodeInstruction>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct NameScope {
+    names: BTreeMap<String, String>,
 }
 
 impl BytecodeBuilder {
     fn compile_module(mut self, module: &IrModule) -> BytecodeModule {
+        self.extern_slots = module.extern_slots.clone();
+        self.extern_slot_ids = self
+            .extern_slots
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index as u32))
+            .collect();
         self.compile_instructions(&module.instructions);
         BytecodeModule {
-            extern_slots: module.extern_slots.clone(),
+            extern_slots: self.extern_slots.clone(),
+            names: self.names,
+            functions: self.functions,
             constants: self.constants,
             instructions: self.instructions,
         }
@@ -2068,7 +2228,7 @@ impl BytecodeBuilder {
                 self.emit(BytecodeOp::Label, vec![operand]);
             }
             IrInstruction::Declare { kind, name } => {
-                let kind = self.string_constant_operand(kind);
+                let kind = BytecodeOperand::DeclKind(decl_kind_id(kind));
                 let name = self.name_operand(name);
                 self.emit(BytecodeOp::Declare, vec![kind, name]);
             }
@@ -2079,11 +2239,11 @@ impl BytecodeBuilder {
             }
             IrInstruction::LoadName { dst, name } => {
                 let dst = self.register_operand(dst);
-                let name = self.name_operand(name);
+                let name = self.name_ref_operand(name);
                 self.emit(BytecodeOp::LoadName, vec![dst, name]);
             }
             IrInstruction::StoreName { name, src } => {
-                let name = self.name_operand(name);
+                let name = self.name_ref_operand(name);
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::StoreName, vec![name, src]);
             }
@@ -2109,14 +2269,14 @@ impl BytecodeBuilder {
                 right,
             } => {
                 let dst = self.register_operand(dst);
-                let op = self.string_constant_operand(op);
+                let op = self.operator_operand(op);
                 let left = self.value_operand(left);
                 let right = self.value_operand(right);
                 self.emit(BytecodeOp::Binary, vec![dst, op, left, right]);
             }
             IrInstruction::Unary { dst, op, arg } => {
                 let dst = self.register_operand(dst);
-                let op = self.string_constant_operand(op);
+                let op = self.operator_operand(op);
                 let arg = self.value_operand(arg);
                 self.emit(BytecodeOp::Unary, vec![dst, op, arg]);
             }
@@ -2178,13 +2338,15 @@ impl BytecodeBuilder {
                 self.emit(BytecodeOp::Template, operands);
             }
             IrInstruction::Function { name, params, body } => {
-                let mut operands = vec![
-                    self.name_operand(name),
-                    BytecodeOperand::Count(params.len() as u32),
-                ];
-                operands.extend(params.iter().map(|param| self.name_operand(param)));
-                self.emit(BytecodeOp::FunctionStart, operands);
+                let scope = self.function_scope(params, body, Some(name));
+                let function = self.function_entry(Some(name), params, body, &scope);
+                self.emit(
+                    BytecodeOp::FunctionStart,
+                    vec![BytecodeOperand::Function(function)],
+                );
+                self.scopes.push(scope);
                 self.compile_instructions(body);
+                self.scopes.pop();
                 self.emit(BytecodeOp::FunctionEnd, Vec::new());
             }
             IrInstruction::FunctionExpr {
@@ -2193,16 +2355,18 @@ impl BytecodeBuilder {
                 params,
                 body,
             } => {
-                let mut operands = vec![
-                    self.register_operand(dst),
-                    name.as_ref()
-                        .map(|name| self.name_operand(name))
-                        .unwrap_or(BytecodeOperand::None),
-                    BytecodeOperand::Count(params.len() as u32),
-                ];
-                operands.extend(params.iter().map(|param| self.name_operand(param)));
-                self.emit(BytecodeOp::FunctionExprStart, operands);
+                let scope = self.function_scope(params, body, name.as_deref());
+                let function = self.function_entry(name.as_deref(), params, body, &scope);
+                self.emit(
+                    BytecodeOp::FunctionExprStart,
+                    vec![
+                        self.register_operand(dst),
+                        BytecodeOperand::Function(function),
+                    ],
+                );
+                self.scopes.push(scope);
                 self.compile_instructions(body);
+                self.scopes.pop();
                 self.emit(BytecodeOp::FunctionExprEnd, Vec::new());
             }
             IrInstruction::Class {
@@ -2311,7 +2475,7 @@ impl BytecodeBuilder {
     fn value_operand(&mut self, value: &IrValue) -> BytecodeOperand {
         match value {
             IrValue::Register(value) => self.register_operand(value),
-            IrValue::Name(value) => self.name_operand(value),
+            IrValue::Name(value) => self.name_ref_operand(value),
             IrValue::Number(value) => {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Number(*value)))
             }
@@ -2331,11 +2495,52 @@ impl BytecodeBuilder {
     }
 
     fn name_operand(&mut self, name: &str) -> BytecodeOperand {
-        BytecodeOperand::Name(self.constant(BytecodeConstant::String(name.to_string())))
+        let name = self.scoped_name(name);
+        BytecodeOperand::Name(self.name(&name))
+    }
+
+    fn name_ref_operand(&mut self, name: &str) -> BytecodeOperand {
+        let name = self.scoped_name(name);
+        if let Some(slot) = self.extern_slot_ids.get(&name) {
+            BytecodeOperand::External(*slot)
+        } else {
+            BytecodeOperand::Name(self.name(&name))
+        }
     }
 
     fn label_operand(&mut self, label: &str) -> BytecodeOperand {
-        BytecodeOperand::Label(self.constant(BytecodeConstant::String(label.to_string())))
+        BytecodeOperand::Label(self.label(label))
+    }
+
+    fn function_entry(
+        &mut self,
+        name: Option<&str>,
+        params: &[String],
+        body: &[IrInstruction],
+        scope: &NameScope,
+    ) -> u32 {
+        let name = name.map(|name| {
+            let scoped = self.scoped_name(name);
+            self.name(&scoped)
+        });
+        let params = params
+            .iter()
+            .map(|param| {
+                let name = scope.names.get(param).map(String::as_str).unwrap_or(param);
+                self.name(name)
+            })
+            .collect();
+        let id = self.functions.len() as u32;
+        self.functions.push(BytecodeFunction {
+            name,
+            params,
+            has_return: instructions_have_return_value(body),
+        });
+        id
+    }
+
+    fn operator_operand(&self, operator: &str) -> BytecodeOperand {
+        BytecodeOperand::Operator(operator_id(operator))
     }
 
     fn string_constant_operand(&mut self, value: &str) -> BytecodeOperand {
@@ -2352,6 +2557,80 @@ impl BytecodeBuilder {
         self.constant_ids.insert(key, id);
         id
     }
+
+    fn name(&mut self, name: &str) -> u32 {
+        if let Some(id) = self.name_ids.get(name) {
+            return *id;
+        }
+        let id = self.names.len() as u32;
+        self.names.push(name.to_string());
+        self.name_ids.insert(name.to_string(), id);
+        id
+    }
+
+    fn scoped_name(&self, name: &str) -> String {
+        for scope in self.scopes.iter().rev() {
+            if let Some(name) = scope.names.get(name) {
+                return name.clone();
+            }
+        }
+        name.to_string()
+    }
+
+    fn function_scope(
+        &mut self,
+        params: &[String],
+        body: &[IrInstruction],
+        function_name: Option<&str>,
+    ) -> NameScope {
+        let mut names = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut used_encoded = BTreeSet::new();
+        let mut scope = NameScope::default();
+        if let Some(function_name) = function_name {
+            if let Some(encoded) = self.scoped_name_if_local(function_name) {
+                seen.insert(function_name.to_string());
+                used_encoded.insert(encoded.clone());
+                scope.names.insert(function_name.to_string(), encoded);
+            }
+        }
+        for param in params {
+            if seen.insert(param.clone()) {
+                names.push(param.clone());
+            }
+        }
+        collect_local_scope_names(body, &mut names, &mut seen);
+
+        for name in names {
+            let encoded = loop {
+                let candidate = compact_local_name(self.local_name_id);
+                self.local_name_id += 1;
+                if used_encoded.insert(candidate.clone()) {
+                    break candidate;
+                }
+            };
+            scope.names.insert(name, encoded);
+        }
+        scope
+    }
+
+    fn scoped_name_if_local(&self, name: &str) -> Option<String> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(name) = scope.names.get(name) {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+    fn label(&mut self, label: &str) -> u32 {
+        if let Some(id) = self.label_ids.get(label) {
+            return *id;
+        }
+        let id = self.label_ids.len() as u32;
+        self.label_ids.insert(label.to_string(), id);
+        id
+    }
 }
 
 fn register_id(register: &str) -> u32 {
@@ -2361,6 +2640,153 @@ fn register_id(register: &str) -> u32 {
         .parse::<u32>()
         .unwrap_or(0)
 }
+
+fn collect_local_scope_names(
+    instructions: &[IrInstruction],
+    names: &mut Vec<String>,
+    seen: &mut BTreeSet<String>,
+) {
+    for instruction in instructions {
+        match instruction {
+            IrInstruction::Declare { name, .. } | IrInstruction::Function { name, .. } => {
+                if seen.insert(name.clone()) {
+                    names.push(name.clone());
+                }
+            }
+            IrInstruction::Try {
+                body,
+                catch_param,
+                catch_body,
+                finally_body,
+            } => {
+                collect_local_scope_names(body, names, seen);
+                if let Some(catch_param) = catch_param {
+                    if seen.insert(catch_param.clone()) {
+                        names.push(catch_param.clone());
+                    }
+                }
+                collect_local_scope_names(catch_body, names, seen);
+                collect_local_scope_names(finally_body, names, seen);
+            }
+            IrInstruction::FunctionExpr { .. } => {}
+            _ => {}
+        }
+    }
+}
+
+fn instructions_have_return_value(instructions: &[IrInstruction]) -> bool {
+    instructions.iter().any(instruction_has_return_value)
+}
+
+fn instruction_has_return_value(instruction: &IrInstruction) -> bool {
+    match instruction {
+        IrInstruction::Return(Some(_)) => true,
+        IrInstruction::Try {
+            body,
+            catch_body,
+            finally_body,
+            ..
+        } => {
+            instructions_have_return_value(body)
+                || instructions_have_return_value(catch_body)
+                || instructions_have_return_value(finally_body)
+        }
+        IrInstruction::Function { .. } | IrInstruction::FunctionExpr { .. } => false,
+        _ => false,
+    }
+}
+
+fn compact_local_name(index: usize) -> String {
+    const COMPACT_LOCAL_NAME_ALPHABET: &[char] = &[
+        '~', '`', '!', '@', '#', '%', '^', '&', '*', '-', '+', '=', ':', ';', '.', ',', '?', '/',
+        '|', '<', '>', '[', ']', '{', '}', '(', ')',
+    ];
+
+    if let Some(name) = COMPACT_LOCAL_NAME_ALPHABET.get(index) {
+        return name.to_string();
+    }
+
+    format!(
+        "~{}",
+        encode_local_name_index(index - COMPACT_LOCAL_NAME_ALPHABET.len())
+    )
+}
+
+fn encode_local_name_index(mut index: usize) -> String {
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut encoded = Vec::new();
+    loop {
+        encoded.push(DIGITS[index % DIGITS.len()] as char);
+        index /= DIGITS.len();
+        if index == 0 {
+            break;
+        }
+    }
+    encoded.iter().rev().collect()
+}
+
+fn decl_kind_id(kind: &str) -> u32 {
+    match kind {
+        "var" => 0,
+        "let" => 1,
+        "const" => 2,
+        _ => 3,
+    }
+}
+
+fn decl_kind_name(kind: u32) -> Option<&'static str> {
+    match kind {
+        0 => Some("var"),
+        1 => Some("let"),
+        2 => Some("const"),
+        3 => Some("decl"),
+        _ => None,
+    }
+}
+
+fn operator_id(operator: &str) -> u32 {
+    OPERATOR_NAMES
+        .iter()
+        .position(|candidate| *candidate == operator)
+        .unwrap_or(OPERATOR_NAMES.len()) as u32
+}
+
+fn operator_name(operator: u32) -> Option<&'static str> {
+    OPERATOR_NAMES.get(operator as usize).copied()
+}
+
+const OPERATOR_NAMES: &[&str] = &[
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "**",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "===",
+    "!=",
+    "!==",
+    "&&",
+    "||",
+    "??",
+    "&",
+    "|",
+    "^",
+    "<<",
+    ">>",
+    ">>>",
+    "!",
+    "~",
+    "typeof",
+    "void",
+    "delete",
+    "in",
+    "instanceof",
+];
 
 fn constant_key(constant: &BytecodeConstant) -> String {
     match constant {
@@ -2476,10 +2902,12 @@ fn default_opcode_mnemonics() -> Vec<String> {
 }
 
 fn default_operand_tag_keys() -> Vec<String> {
-    ["register", "constant", "name", "label", "count", "none"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "register", "constant", "name", "extern", "label", "count", "none", "function",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn default_constant_tag_keys() -> Vec<String> {
@@ -2743,7 +3171,7 @@ impl<'a> ByteReader<'a> {
             return Ok(BytecodeConstant::Number(self.read_number()?));
         }
         if tag == encoding.constant_tag("string")? {
-            return Ok(BytecodeConstant::String(self.read_string()?));
+            return Ok(BytecodeConstant::String(self.read_constant_string()?));
         }
         if tag == encoding.constant_tag("bool")? {
             return Ok(BytecodeConstant::Bool(self.read_u8()? != 0));
@@ -2780,6 +3208,27 @@ impl<'a> ByteReader<'a> {
         }
     }
 
+    fn read_optional_u32(&mut self) -> Result<Option<u32>, EncodingError> {
+        match self.read_u32()? {
+            0 => Ok(None),
+            value => value
+                .checked_sub(1)
+                .map(Some)
+                .ok_or_else(|| EncodingError::UnknownCode("optional u32 marker".to_string())),
+        }
+    }
+
+    fn read_bounded_count(&mut self, kind: &str) -> Result<usize, EncodingError> {
+        let count = self.read_u32()? as usize;
+        let remaining = self.remaining();
+        if count > remaining {
+            return Err(EncodingError::UnknownCode(format!(
+                "{kind} count {count} exceeds remaining bytecode bytes {remaining}"
+            )));
+        }
+        Ok(count)
+    }
+
     fn read_f64(&mut self) -> Result<f64, EncodingError> {
         let bytes = self.read_slice(8)?;
         Ok(f64::from_le_bytes(
@@ -2802,6 +3251,47 @@ impl<'a> ByteReader<'a> {
             .map_err(|err| EncodingError::UnknownCode(format!("utf8 string: {err}")))
     }
 
+    fn read_constant_string(&mut self) -> Result<String, EncodingError> {
+        match self.read_u32()? {
+            0 => {
+                let index = self.read_u32()? as usize;
+                constant_string_atom(index)
+                    .map(str::to_string)
+                    .ok_or_else(|| EncodingError::UnknownCode(format!("string atom {index}")))
+            }
+            len_plus_one => {
+                let len = len_plus_one
+                    .checked_sub(1)
+                    .ok_or_else(|| EncodingError::UnknownCode("string length marker".to_string()))?
+                    as usize;
+                let bytes = self.read_slice(len)?;
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|err| EncodingError::UnknownCode(format!("utf8 string: {err}")))
+            }
+        }
+    }
+
+    fn read_name_string(&mut self, extern_slots: &[String]) -> Result<String, EncodingError> {
+        let marker = self.read_u32()? as usize;
+        if marker < extern_slots.len() {
+            return Ok(extern_slots[marker].clone());
+        }
+        let atom_marker = extern_slots.len();
+        if marker == atom_marker {
+            let index = self.read_u32()? as usize;
+            return constant_string_atom(index)
+                .map(str::to_string)
+                .ok_or_else(|| EncodingError::UnknownCode(format!("name string atom {index}")));
+        }
+
+        let len = marker
+            .checked_sub(atom_marker + 1)
+            .ok_or_else(|| EncodingError::UnknownCode("name string length marker".to_string()))?;
+        let bytes = self.read_slice(len)?;
+        String::from_utf8(bytes.to_vec())
+            .map_err(|err| EncodingError::UnknownCode(format!("utf8 name string: {err}")))
+    }
+
     fn read_slice(&mut self, len: usize) -> Result<&'a [u8], EncodingError> {
         let end = self
             .offset
@@ -2812,6 +3302,21 @@ impl<'a> ByteReader<'a> {
         };
         self.offset = end;
         Ok(bytes)
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
+
+    fn expect_end(&self) -> Result<(), EncodingError> {
+        let remaining = self.remaining();
+        if remaining == 0 {
+            Ok(())
+        } else {
+            Err(EncodingError::UnknownCode(format!(
+                "trailing bytecode bytes {remaining}"
+            )))
+        }
     }
 }
 
@@ -2828,6 +3333,10 @@ fn write_u32(bytes: &mut Vec<u8>, value: u32) {
             break;
         }
     }
+}
+
+fn write_optional_u32(bytes: &mut Vec<u8>, value: Option<u32>) {
+    write_u32(bytes, value.map(|value| value + 1).unwrap_or(0));
 }
 
 fn write_number(bytes: &mut Vec<u8>, value: f64) {
@@ -2856,6 +3365,93 @@ fn write_string(bytes: &mut Vec<u8>, value: &str) {
     write_u32(bytes, value.len() as u32);
     bytes.extend_from_slice(value.as_bytes());
 }
+
+fn write_constant_string(bytes: &mut Vec<u8>, value: &str) {
+    if let Some(index) = constant_string_atom_index(value) {
+        write_u32(bytes, 0);
+        write_u32(bytes, index as u32);
+    } else {
+        write_u32(bytes, value.len() as u32 + 1);
+        bytes.extend_from_slice(value.as_bytes());
+    }
+}
+
+fn write_name_string(bytes: &mut Vec<u8>, value: &str, extern_slots: &[String]) {
+    if let Some(index) = extern_slot_index(extern_slots, value) {
+        write_u32(bytes, index as u32);
+    } else if let Some(index) = constant_string_atom_index(value) {
+        write_u32(bytes, extern_slots.len() as u32);
+        write_u32(bytes, index as u32);
+    } else {
+        write_u32(bytes, extern_slots.len() as u32 + value.len() as u32 + 1);
+        bytes.extend_from_slice(value.as_bytes());
+    }
+}
+
+fn extern_slot_index(extern_slots: &[String], value: &str) -> Option<usize> {
+    extern_slots.iter().position(|slot| slot == value)
+}
+
+fn constant_string_atom_index(value: &str) -> Option<usize> {
+    CONSTANT_STRING_ATOMS
+        .iter()
+        .position(|candidate| *candidate == value)
+}
+
+fn constant_string_atom(index: usize) -> Option<&'static str> {
+    CONSTANT_STRING_ATOMS.get(index).copied()
+}
+
+const CONSTANT_STRING_ATOMS: &[&str] = &[
+    "",
+    "const",
+    "let",
+    "var",
+    "function",
+    "return",
+    "default",
+    "named",
+    "all",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "**",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "===",
+    "!=",
+    "!==",
+    "&&",
+    "||",
+    "!",
+    "~",
+    "typeof",
+    "void",
+    "delete",
+    "in",
+    "instanceof",
+    "console",
+    "log",
+    "info",
+    "warn",
+    "error",
+    "debug",
+    "window",
+    "document",
+    "fetch",
+    "then",
+    "catch",
+    "length",
+    "prototype",
+    "constructor",
+    "toString",
+    "valueOf",
+];
 
 #[cfg(test)]
 mod tests {
@@ -2979,9 +3575,41 @@ mod tests {
     }
 
     #[test]
+    fn functions_are_declared_in_fun_section_and_indexed_from_code() {
+        let module = IrModule {
+            extern_slots: Vec::new(),
+            instructions: vec![IrInstruction::Function {
+                name: "add".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                body: vec![IrInstruction::Return(Some(IrValue::Name(
+                    "left".to_string(),
+                )))],
+            }],
+        };
+
+        let bytecode = module.to_bytecode();
+        let text = bytecode.to_text();
+        let bytes = bytecode.to_bytes();
+        let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
+
+        assert_eq!(bytecode.functions.len(), 1);
+        assert_eq!(bytecode.functions[0].params.len(), 2);
+        assert!(bytecode.functions[0].has_return);
+        assert!(text.contains(".fun"), "{text}");
+        assert!(text.contains("argc:2"), "{text}");
+        assert!(text.contains("returns:true"), "{text}");
+        assert!(text.contains("FUNCTION_START fun#0"), "{text}");
+        assert!(!text.contains("FUNCTION_START fun#0("), "{text}");
+        assert!(!text.contains("FUNCTION_START name#"), "{text}");
+        assert_eq!(restored, bytecode);
+    }
+
+    #[test]
     fn specialized_opcodes_decode_to_canonical_instructions() {
         let bytecode = super::BytecodeModule {
             extern_slots: Vec::new(),
+            names: Vec::new(),
+            functions: Vec::new(),
             constants: vec![super::BytecodeConstant::Number(1.0)],
             instructions: vec![
                 super::BytecodeInstruction {
@@ -3016,6 +3644,85 @@ mod tests {
         assert!(bytes.contains(&(super::BytecodeOp::PopReg as u8)));
         assert!(bytes.contains(&(super::BytecodeOp::CallOne as u8)));
         assert_eq!(super::BytecodeModule::from_bytes(&bytes).unwrap(), bytecode);
+    }
+
+    #[test]
+    fn string_constants_use_compact_atoms() {
+        let bytecode = super::BytecodeModule {
+            extern_slots: Vec::new(),
+            names: Vec::new(),
+            functions: Vec::new(),
+            constants: vec![
+                super::BytecodeConstant::String("const".to_string()),
+                super::BytecodeConstant::String("+".to_string()),
+                super::BytecodeConstant::String("custom-name".to_string()),
+            ],
+            instructions: Vec::new(),
+        };
+        let bytes = bytecode.to_bytes();
+        let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
+
+        assert_eq!(restored, bytecode);
+        assert!(bytes.len() < DEFAULT_BYTECODE_MAGIC.len() + 1 + 1 + 8 + 3 + 11 + 1);
+    }
+
+    #[test]
+    fn load_name_can_reference_extern_slots_without_names_entry() {
+        let bytecode = super::BytecodeModule {
+            extern_slots: vec!["console".to_string()],
+            names: Vec::new(),
+            functions: Vec::new(),
+            constants: vec![
+                super::BytecodeConstant::String("log".to_string()),
+                super::BytecodeConstant::String("ass".to_string()),
+            ],
+            instructions: vec![
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::LoadName,
+                    operands: vec![
+                        super::BytecodeOperand::Register(0),
+                        super::BytecodeOperand::External(0),
+                    ],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Member,
+                    operands: vec![
+                        super::BytecodeOperand::Register(1),
+                        super::BytecodeOperand::Register(0),
+                        super::BytecodeOperand::Constant(0),
+                    ],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::LoadConst,
+                    operands: vec![
+                        super::BytecodeOperand::Register(2),
+                        super::BytecodeOperand::Constant(1),
+                    ],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Call,
+                    operands: vec![
+                        super::BytecodeOperand::Register(3),
+                        super::BytecodeOperand::Register(1),
+                        super::BytecodeOperand::Count(1),
+                        super::BytecodeOperand::Register(2),
+                    ],
+                },
+                super::BytecodeInstruction {
+                    op: super::BytecodeOp::Pop,
+                    operands: vec![super::BytecodeOperand::Register(3)],
+                },
+            ],
+        };
+
+        let bytes = bytecode.to_bytes();
+        let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
+        let text = bytecode.to_text();
+
+        assert_eq!(restored, bytecode);
+        assert_eq!(count_subslice(&bytes, b"console"), 1);
+        assert!(!text.contains(".names"));
+        assert!(text.contains("LOAD_NAME r0, extern#0(\"console\")"));
     }
 
     #[test]
@@ -3151,5 +3858,12 @@ mod tests {
         encoding.opcodes.insert("LOAD_CONST".to_string(), 8);
 
         assert!(encoding.validate().is_err());
+    }
+
+    fn count_subslice(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
     }
 }
