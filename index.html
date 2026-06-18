@@ -1,0 +1,3026 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JS VM Workbench</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #181b1f;
+      --panel-2: #1f2329;
+      --line: #313741;
+      --line-soft: #242a31;
+      --text: #e8edf2;
+      --muted: #9aa7b4;
+      --accent: #29b6a8;
+      --accent-2: #e7a93b;
+      --danger: #f16d75;
+      --code: #d7e0ea;
+      --shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    button,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    button {
+      height: 34px;
+      border: 1px solid var(--line);
+      background: #20262d;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0 11px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #46515f;
+      background: #252c34;
+    }
+
+    button.primary {
+      border-color: #1d9187;
+      background: #168477;
+    }
+
+    button.primary:hover {
+      background: #1a9a8b;
+    }
+
+    button.icon {
+      width: 34px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 15px;
+    }
+
+    select {
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #14181d;
+      color: var(--text);
+      padding: 0 28px 0 10px;
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr) 28px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      background: #15181c;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand strong {
+      font-size: 15px;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(360px, 48%) minmax(380px, 52%);
+    }
+
+    .editor-pane,
+    .output-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 40px minmax(0, 1fr);
+      background: var(--panel);
+    }
+
+    .editor-pane {
+      border-right: 1px solid var(--line);
+    }
+
+    .pane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--panel-2);
+    }
+
+    .pane-title {
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: 0;
+      color: #cfd8e3;
+    }
+
+    .editor-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      overflow: auto;
+    }
+
+    .editor-shell {
+      min-height: 0;
+      display: none;
+      grid-template-columns: 52px minmax(0, 1fr);
+      background: #111417;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 20px;
+    }
+
+    .editor-shell.active {
+      display: grid;
+    }
+
+    .line-numbers {
+      margin: 0;
+      padding: 14px 10px 14px 0;
+      box-sizing: border-box;
+      overflow: hidden;
+      text-align: right;
+      color: #64707d;
+      border-right: 1px solid #222830;
+      user-select: none;
+      white-space: pre;
+    }
+
+    .editor-stack {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .highlight-layer {
+      position: absolute;
+      inset: 0;
+      margin: 0;
+      padding: 14px 16px;
+      box-sizing: border-box;
+      overflow: auto;
+      color: var(--code);
+      font: inherit;
+      letter-spacing: 0;
+      pointer-events: none;
+      tab-size: 2;
+      white-space: pre;
+      line-height: inherit;
+    }
+
+    .highlight-layer::-webkit-scrollbar {
+      display: none;
+    }
+
+    .editor-stack.has-selection .highlight-layer {
+      visibility: hidden;
+    }
+
+    .tok-keyword {
+      color: #6fb7ff;
+    }
+
+    .tok-control {
+      color: #d9a8ff;
+    }
+
+    .tok-string {
+      color: #8fd694;
+    }
+
+    .tok-template {
+      color: #9bd7ff;
+    }
+
+    .tok-number {
+      color: #f0c674;
+    }
+
+    .tok-comment {
+      color: #6f7f8f;
+      font-style: italic;
+    }
+
+    .tok-builtin {
+      color: #58d4c8;
+    }
+
+    .tok-function {
+      color: #f5d76e;
+    }
+
+    .tok-property {
+      color: #83c9ff;
+    }
+
+    .tok-operator {
+      color: #ff9f80;
+    }
+
+    .tok-punct {
+      color: #8d99a6;
+    }
+
+    .completion-menu {
+      position: absolute;
+      z-index: 3;
+      min-width: 220px;
+      max-width: min(360px, calc(100% - 24px));
+      max-height: 242px;
+      overflow: auto;
+      display: none;
+      padding: 5px;
+      border: 1px solid #3a4652;
+      border-radius: 6px;
+      background: #161b21;
+      box-shadow: 0 16px 38px rgba(0, 0, 0, 0.45);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .completion-menu.open {
+      display: block;
+    }
+
+    .completion-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 7px;
+      border-radius: 4px;
+      color: #d7e0ea;
+      cursor: pointer;
+    }
+
+    .completion-item.active {
+      background: #26423f;
+      color: #ffffff;
+    }
+
+    .completion-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .completion-kind {
+      color: #8fa0b1;
+      font-size: 11px;
+    }
+
+    .completion-item.active .completion-kind {
+      color: #bdd8d3;
+    }
+
+    #editor {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 14px 16px;
+      box-sizing: border-box;
+      resize: none;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: rgba(238, 244, 251, 0.01);
+      caret-color: var(--accent);
+      font: inherit;
+      letter-spacing: 0;
+      tab-size: 2;
+      white-space: pre;
+      overflow: auto;
+      line-height: inherit;
+      -webkit-text-fill-color: rgba(238, 244, 251, 0.01);
+    }
+
+    #editor::selection {
+      background: rgba(41, 182, 168, 0.28);
+      color: #eef4fb;
+      -webkit-text-fill-color: #eef4fb;
+    }
+
+    #editor.has-selection {
+      color: var(--code);
+      -webkit-text-fill-color: var(--code);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+      overflow: auto;
+    }
+
+    .tab {
+      height: 28px;
+      border-radius: 5px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border-color: transparent;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+
+    .tab.active {
+      color: #ffffff;
+      background: #263039;
+      border-color: #38434f;
+    }
+
+    .output-wrap {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) minmax(150px, 32%);
+      background: #111417;
+    }
+
+    .output-wrap.bytes-mode {
+      grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 32%);
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line-soft);
+      background: #15191e;
+    }
+
+    .metric {
+      padding: 9px 12px;
+      border-right: 1px solid var(--line-soft);
+      min-width: 0;
+    }
+
+    .metric:last-child {
+      border-right: none;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .metric strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .output {
+      position: relative;
+      margin: 0;
+      padding: 14px 16px;
+      overflow: auto;
+      color: var(--code);
+      font: 13px/1.58 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .output.error {
+      color: #ffd8db;
+      background: #211416;
+    }
+
+    .output:focus {
+      outline: 1px solid #3c8f72;
+      outline-offset: -1px;
+    }
+
+    .output.hidden {
+      display: none;
+    }
+
+    .output.hex-output {
+      display: grid;
+      min-height: 0;
+      overflow: hidden;
+      padding: 0;
+      white-space: normal;
+    }
+
+    .output.virtual-output {
+      padding: 0;
+      white-space: normal;
+    }
+
+    .virtual-spacer {
+      position: relative;
+      min-width: max-content;
+    }
+
+    .virtual-lines {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      padding: 14px 16px;
+      white-space: pre;
+    }
+
+    .hex-section {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .hex-section:last-child {
+      border-bottom: none;
+    }
+
+    .hex-section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #15191e;
+      color: var(--muted);
+      font: 12px/1.4 Inter, system-ui, sans-serif;
+    }
+
+    .hex-section-title strong {
+      color: var(--text);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .hex-bytecode {
+      margin: 0;
+      padding: 12px 14px;
+      min-height: 0;
+      overflow: auto;
+      color: var(--code);
+      font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .hex-dump {
+      position: relative;
+      min-width: max-content;
+      overflow: auto;
+      padding: 10px 12px 14px;
+      color: var(--code);
+      font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .hex-spacer {
+      position: relative;
+      min-width: max-content;
+    }
+
+    .hex-rows {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+    }
+
+    .hex-row {
+      display: grid;
+      grid-template-columns: 76px repeat(16, 28px) 18px 156px;
+      align-items: center;
+      column-gap: 0;
+    }
+
+    .hex-row {
+      min-height: 23px;
+    }
+
+    .hex-offset {
+      color: #778898;
+      user-select: none;
+    }
+
+    .hex-byte {
+      display: inline-flex;
+      width: 24px;
+      height: 20px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      cursor: default;
+    }
+
+    .hex-byte.empty {
+      color: #3a444e;
+    }
+
+    .hex-gap {
+      color: #46525e;
+      text-align: center;
+      user-select: none;
+    }
+
+    .hex-ascii {
+      display: flex;
+      gap: 0;
+      color: #a7b5c2;
+    }
+
+    .hex-char {
+      display: inline-flex;
+      width: 9px;
+      height: 20px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      cursor: default;
+    }
+
+    .hex-byte.selected,
+    .hex-char.selected {
+      color: #08120f;
+      background: #8ddfbc;
+      box-shadow: 0 0 0 1px rgba(141, 223, 188, 0.42);
+    }
+
+    .hex-byte.related,
+    .hex-char.related {
+      color: #dffcf2;
+      background: #263f38;
+    }
+
+    .byte-changed {
+      display: inline-block;
+      border-radius: 3px;
+      color: #08120f;
+      background: #7af0b4;
+      box-shadow: 0 0 0 2px rgba(122, 240, 180, 0.2);
+    }
+
+    .byte-change-animate {
+      animation: byteChangeFade 2s ease-out forwards;
+    }
+
+    @keyframes byteChangeFade {
+      0% {
+        color: #08120f;
+        background: #7af0b4;
+        box-shadow: 0 0 0 2px rgba(122, 240, 180, 0.28);
+      }
+
+      55% {
+        color: #08120f;
+        background: #7af0b4;
+      }
+
+      100% {
+        color: inherit;
+        background: transparent;
+        box-shadow: none;
+      }
+    }
+
+    .console-panel {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      border-top: 1px solid var(--line);
+      background: #0f1215;
+    }
+
+    .console-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .console-head strong {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .console-log {
+      margin: 0;
+      padding: 10px 12px;
+      overflow: auto;
+      color: #cfd8e3;
+      font: 12px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .config-tab {
+      height: 27px;
+      border-radius: 5px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border-color: transparent;
+      white-space: nowrap;
+    }
+
+    .config-tab.active {
+      color: #ffffff;
+      background: #263039;
+      border-color: #38434f;
+    }
+
+    .config-view {
+      display: none;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .config-view.active {
+      display: block;
+    }
+
+    .extern-panel.active {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .extern-toolbar {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .extern-list {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      color: var(--code);
+      font: 12px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .opcode-panel {
+      display: none;
+      min-height: 0;
+      overflow: hidden;
+      background: #111417;
+    }
+
+    .opcode-panel.active {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .opcode-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .opcode-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .opcode-seed {
+      display: grid;
+      gap: 5px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .seed-placeholder {
+      width: 34px;
+      height: 30px;
+    }
+
+    .seed-input {
+      width: 100%;
+      min-width: 0;
+      height: 30px;
+      border: 1px solid #2a323b;
+      border-radius: 5px;
+      padding: 0 9px;
+      background: #0f1317;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--code);
+      font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .seed-input:focus {
+      outline: 1px solid #3c8f72;
+      border-color: #3c8f72;
+    }
+
+    .bytes-seed {
+      display: none;
+      gap: 5px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #12171c;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .bytes-seed.active {
+      display: grid;
+    }
+
+    .opcode-table-wrap {
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      padding-bottom: 12px;
+    }
+
+    .opcode-table {
+      width: 100%;
+      border-collapse: collapse;
+      font: 12px/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      table-layout: fixed;
+    }
+
+    .tag-table {
+      margin: 0 12px;
+    }
+
+    .tag-table:first-child {
+      margin-top: 0;
+    }
+
+    .extern-obfuscation-table th:first-child,
+    .extern-obfuscation-table td:first-child {
+      width: 68%;
+    }
+
+    .table-caption {
+      padding: 9px 10px;
+      border-bottom: 1px solid #222830;
+      color: var(--muted);
+      background: #15191e;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .opcode-table th,
+    .opcode-table td {
+      border-bottom: 1px solid #222830;
+      padding: 7px 10px;
+      text-align: left;
+    }
+
+    .opcode-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #171c22;
+      color: #9fb0c0;
+      font-weight: 650;
+    }
+
+    .opcode-row {
+      cursor: pointer;
+    }
+
+    .opcode-row:hover {
+      background: #182129;
+    }
+
+    .opcode-row.selected {
+      background: #263f3d;
+    }
+
+    .opcode-code {
+      width: 86px;
+      color: #f0c674;
+    }
+
+    .opcode-name {
+      color: #d7e0ea;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .opcode-code {
+      width: 58px;
+    }
+
+    .opcode-split {
+      width: 1px;
+      padding: 0;
+      background: #222830;
+    }
+
+    .opcode-empty {
+      cursor: default;
+      background: #111417;
+    }
+
+    .opcode-empty:hover {
+      background: #111417;
+    }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 12px;
+      border-top: 1px solid var(--line);
+      background: #15181c;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status-left,
+    .status-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      flex: 0 0 auto;
+    }
+
+    .dot.ready {
+      background: var(--accent);
+    }
+
+    .dot.error {
+      background: var(--danger);
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 42px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #20262d;
+      color: var(--text);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+      font-size: 13px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 900px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        min-height: 100%;
+        height: auto;
+        grid-template-rows: auto auto 28px;
+      }
+
+      .topbar {
+        min-height: 52px;
+        flex-wrap: wrap;
+        padding: 9px 10px;
+      }
+
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: 52vh 58vh;
+      }
+
+      .editor-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .meta-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <strong>JS VM Workbench</strong>
+        <span id="wasmState">WASM loading</span>
+      </div>
+      <div class="actions">
+        <select id="exampleSelect" aria-label="示例">
+          <option value="basic">基础执行</option>
+          <option value="extern">外部对象</option>
+          <option value="class">类与方法</option>
+          <option value="module">模块语法</option>
+          <option value="exception">异常</option>
+        </select>
+        <button id="downloadPkgBtn" type="button">下载运行包</button>
+        <button id="clearBtn" class="icon" type="button" title="清空控制台">×</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="editor-pane">
+        <div class="pane-head">
+          <div class="editor-tabs" role="tablist" aria-label="编辑区">
+            <button class="config-tab active" type="button" data-config-view="javascript">JavaScript</button>
+            <button class="config-tab" type="button" data-config-view="opcodes">Obfuscation</button>
+          </div>
+          <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
+        </div>
+        <div id="editorShell" class="editor-shell active">
+          <pre id="lineNumbers" class="line-numbers">1</pre>
+          <div class="editor-stack">
+            <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
+            <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+            <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
+          </div>
+        </div>
+        <div id="opcodePanel" class="config-view opcode-panel">
+          <div class="opcode-toolbar">
+            <span id="opcodeStatus">Obfuscation map</span>
+            <div class="opcode-actions">
+              <button id="shuffleOpcodesBtn" type="button">Randomize</button>
+              <button id="resetOpcodesBtn" type="button">重置</button>
+            </div>
+          </div>
+          <div class="opcode-seed">
+            <span>Seed</span>
+            <div class="seed-row">
+              <input id="opcodeSeedInput" class="seed-input" type="text" value="(build pending)" spellcheck="false">
+              <span class="seed-placeholder"></span>
+            </div>
+          </div>
+          <div class="opcode-table-wrap">
+            <table class="opcode-table tag-table extern-obfuscation-table">
+              <caption class="table-caption">externs</caption>
+              <thead>
+                <tr>
+                  <th>value</th>
+                  <th>HostBridge slot</th>
+                </tr>
+              </thead>
+              <tbody id="externSlotTableBody"></tbody>
+            </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">opcodes</caption>
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>指令名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>指令名称</th>
+                </tr>
+              </thead>
+              <tbody id="opcodeTableBody"></tbody>
+            </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">operand_tags</caption>
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>名称</th>
+                </tr>
+              </thead>
+              <tbody id="operandTagTableBody"></tbody>
+            </table>
+            <table class="opcode-table tag-table">
+              <caption class="table-caption">constant_tags</caption>
+              <thead>
+                <tr>
+                  <th>code</th>
+                  <th>名称</th>
+                  <th class="opcode-split"></th>
+                  <th>code</th>
+                  <th>名称</th>
+                </tr>
+              </thead>
+              <tbody id="constantTagTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="output-pane">
+        <div class="pane-head">
+          <div class="tabs" role="tablist" aria-label="输出">
+            <button class="tab active" type="button" data-view="ir">IR</button>
+            <button class="tab" type="button" data-view="bytecode">Bytecode</button>
+            <button class="tab" type="button" data-view="bytes">Hex</button>
+          </div>
+          <div class="pane-title" id="timingInfo">Compile 0ms</div>
+        </div>
+        <div id="outputWrap" class="output-wrap">
+          <div class="meta-grid">
+            <div class="metric"><span>JAVASCRIPT</span><strong id="metricJavaScriptBytes">0 B</strong></div>
+            <div class="metric"><span>IR</span><strong id="metricIr">0 lines</strong></div>
+            <div class="metric"><span>BYTECODE</span><strong id="metricBytecode">0 lines</strong></div>
+            <div class="metric"><span>BYTES</span><strong id="metricBytes">0 B</strong></div>
+            <div class="metric"><span>EXTERNS</span><strong id="metricExterns">0</strong></div>
+          </div>
+          <div id="bytesSeedPanel" class="bytes-seed">
+            <span>Seed</span>
+            <div class="seed-row">
+              <span class="seed-placeholder"></span>
+              <input id="bytesSeedInput" class="seed-input" type="text" spellcheck="false">
+              <span class="seed-placeholder"></span>
+            </div>
+          </div>
+          <pre id="output" class="output" tabindex="0"></pre>
+          <div class="console-panel" aria-label="运行日志">
+            <div class="console-head">
+              <strong>Console</strong>
+              <span id="logInfo">Run 0ms · 0 logs</span>
+            </div>
+            <pre id="consoleLog" class="console-log"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <div class="status-left">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">Initializing</span>
+      </div>
+      <div class="status-right">
+        <span id="sizeInfo">0 chars</span>
+        <span id="lineInfo">1 lines</span>
+      </div>
+    </footer>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script type="module">
+    import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=fun-index';
+    import initExecutor, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js?v=fun-index';
+
+    const {
+      Compiler,
+      js_encoding_rows_from_seed,
+      js_encoding_seed_for_seed_and_bytes,
+      js_encoding_seed_from_rows,
+    } = compilerPkg;
+
+    const examples = {
+      basic: `function fib(n) {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+const value = fib(6);
+value;`,
+      extern: `console.log("vm boot");
+console.log(1 + 2);
+
+const title = window.title;
+console.log(title);
+42;`,
+      class: `class Counter {
+  constructor(value) {
+    this.value = value;
+  }
+
+  inc() {
+    this.value = this.value + 1;
+    return this.value;
+  }
+}
+
+const counter = new Counter(3);
+counter.inc();`,
+      module: `import def, { value as importedValue } from "pkg";
+
+export class Box {
+  get() {
+    return importedValue;
+  }
+}
+
+export default def;`,
+      exception: `try {
+  throw "boom";
+} catch (err) {
+  console.log(err);
+} finally {
+  console.log("done");
+}
+
+7;`,
+    };
+
+    const state = {
+      compiler: null,
+      activeView: 'ir',
+      views: {
+        ir: '',
+        bytecode: '',
+        bytes: '',
+      },
+      viewErrors: {
+        ir: false,
+        bytecode: false,
+        bytes: false,
+      },
+      completion: {
+        open: false,
+        items: [],
+        active: 0,
+        from: 0,
+        to: 0,
+      },
+      ready: false,
+      timer: 0,
+      opcodeRows: [],
+      operandTagRows: [],
+      constantTagRows: [],
+      externRows: [],
+      selectedOpcodeRows: [],
+      selectedOperandTagRows: [],
+      selectedConstantTagRows: [],
+      selectedExternRows: [],
+      activeConfigView: 'javascript',
+      logs: [],
+      byteTokens: [],
+      bytesHtml: '',
+      hexSelectedIndex: null,
+      hexChangedIndexes: new Set(),
+      hexChangedUntil: 0,
+      hexChangeAnimationPending: false,
+      virtualText: {
+        view: '',
+        lines: [],
+      },
+      compileDuration: 0,
+      runDuration: 0,
+      opcodeSeed: '',
+      compiledBytes: null,
+    };
+
+    const editor = document.getElementById('editor');
+    const editorShell = document.getElementById('editorShell');
+    const highlightLayer = document.getElementById('highlightLayer');
+    const completionMenu = document.getElementById('completionMenu');
+    const lineNumbers = document.getElementById('lineNumbers');
+    const outputWrap = document.getElementById('outputWrap');
+    const output = document.getElementById('output');
+    const consoleLog = document.getElementById('consoleLog');
+    const logInfo = document.getElementById('logInfo');
+    const downloadPkgBtn = document.getElementById('downloadPkgBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const exampleSelect = document.getElementById('exampleSelect');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const wasmState = document.getElementById('wasmState');
+    const cursorInfo = document.getElementById('cursorInfo');
+    const sizeInfo = document.getElementById('sizeInfo');
+    const lineInfo = document.getElementById('lineInfo');
+    const timingInfo = document.getElementById('timingInfo');
+    const metricJavaScriptBytes = document.getElementById('metricJavaScriptBytes');
+    const metricIr = document.getElementById('metricIr');
+    const metricBytecode = document.getElementById('metricBytecode');
+    const metricBytes = document.getElementById('metricBytes');
+    const metricExterns = document.getElementById('metricExterns');
+    const opcodePanel = document.getElementById('opcodePanel');
+    const externSlotTableBody = document.getElementById('externSlotTableBody');
+    const opcodeTableBody = document.getElementById('opcodeTableBody');
+    const operandTagTableBody = document.getElementById('operandTagTableBody');
+    const constantTagTableBody = document.getElementById('constantTagTableBody');
+    const opcodeStatus = document.getElementById('opcodeStatus');
+    const opcodeSeedInput = document.getElementById('opcodeSeedInput');
+    const bytesSeedPanel = document.getElementById('bytesSeedPanel');
+    const bytesSeedInput = document.getElementById('bytesSeedInput');
+    const resetOpcodesBtn = document.getElementById('resetOpcodesBtn');
+    const shuffleOpcodesBtn = document.getElementById('shuffleOpcodesBtn');
+    const toast = document.getElementById('toast');
+
+    editor.value = examples.basic;
+
+    const textEncoder = new TextEncoder();
+    const VIRTUAL_BUFFER = 24;
+    let seedInputTimer = null;
+    window.__jsVmHostLog = (level, message) => {
+      const target = typeof console[level] === 'function' ? console[level] : console.log;
+      target.call(console, message);
+    };
+
+    function byteLength(text) {
+      return textEncoder.encode(text).length;
+    }
+
+    function formatByteSize(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+      return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+    }
+
+    function lineHeightOf(element) {
+      const value = Number.parseFloat(getComputedStyle(element).lineHeight);
+      return Number.isFinite(value) && value > 0 ? value : 20;
+    }
+
+    function encodeBase36Digit(value) {
+      if (value < 0 || value >= 36) {
+        throw new Error(`seed index ${value} is outside base36 range`);
+      }
+      return value.toString(36).toUpperCase();
+    }
+
+    function decodeBase36Digit(value) {
+      const code = value.charCodeAt(0);
+      if (code >= 48 && code <= 57) return code - 48;
+      if (code >= 65 && code <= 90) return code - 65 + 10;
+      if (code >= 97 && code <= 122) return code - 97 + 10;
+      throw new Error(`invalid seed digit ${value}`);
+    }
+
+    function parseEncodingSeed(seed) {
+      const seedModel = ObfuscationSeed.parse(seed);
+      return {
+        fingerprint: seedModel.fingerprint,
+        permutation: seedModel.permutation(),
+        sections: seedModel.permutation().split('.'),
+        config: seedModel.config,
+      };
+    }
+
+    function seedFingerprint(permutation, bytes = new Uint8Array()) {
+      let hash = 0xcbf29ce484222325n;
+      const prime = 0x100000001b3n;
+      const mask = 0xffffffffffffffffn;
+      const update = (byte) => {
+        hash ^= BigInt(byte);
+        hash = (hash * prime) & mask;
+      };
+      for (let index = 0; index < permutation.length; index += 1) {
+        update(permutation.charCodeAt(index));
+      }
+      update(0xff);
+      for (const byte of bytes) {
+        update(byte);
+      }
+      return hash.toString(16).padStart(16, '0');
+    }
+
+    function seedFromPermutation(permutation, bytes = new Uint8Array()) {
+      return ObfuscationSeed
+        .fromConfig(ObfuscationConfig.fromSeedSections(permutation.split('.')), bytes)
+        .toString();
+    }
+
+    class ObfuscationConfig {
+      constructor(sections) {
+        this.opcodes = sections.opcodes || '';
+        this.operandTags = sections.operandTags || '';
+        this.constantTags = sections.constantTags || '';
+        this.externSlots = sections.externSlots || '';
+      }
+
+      static fromSeedSections(sections) {
+        return new ObfuscationConfig({
+          opcodes: sections[0] || '',
+          operandTags: sections[1] || '',
+          constantTags: sections[2] || '',
+          externSlots: sections[3] || '',
+        });
+      }
+
+      permutation() {
+        const sections = [this.opcodes, this.operandTags, this.constantTags];
+        if (this.externSlots) {
+          sections.push(this.externSlots);
+        }
+        return sections.join('.');
+      }
+
+      toSeed(bytes = new Uint8Array()) {
+        return ObfuscationSeed.fromConfig(this, bytes).toString();
+      }
+    }
+
+    class ObfuscationSeed {
+      constructor(fingerprint, config) {
+        this.fingerprint = fingerprint;
+        this.config = config;
+      }
+
+      static parse(seed) {
+        const parts = seed.trim().split('-');
+        if (parts.length !== 3 || parts[0] !== 'JSTKSEED2') {
+          throw new Error('expected JSTKSEED2-<hash>-<perm>');
+        }
+        return new ObfuscationSeed(
+          parts[1],
+          ObfuscationConfig.fromSeedSections(parts[2].toUpperCase().split('.')),
+        );
+      }
+
+      static fromConfig(config, bytes = new Uint8Array()) {
+        return new ObfuscationSeed(seedFingerprint(config.permutation(), bytes), config);
+      }
+
+      permutation() {
+        return this.config.permutation();
+      }
+
+      toString() {
+        return `JSTKSEED2-${this.fingerprint}-${this.permutation()}`;
+      }
+    }
+
+    const defaultOpcodeRows = [
+      ['MARKER', 0],
+      ['LABEL', 1],
+      ['DECLARE', 2],
+      ['LOAD_CONST', 3],
+      ['LOAD_NAME', 4],
+      ['STORE_NAME', 5],
+      ['STORE_MEMBER', 6],
+      ['MOVE', 7],
+      ['BINARY', 8],
+      ['UNARY', 9],
+      ['MEMBER', 10],
+      ['ARRAY', 11],
+      ['OBJECT', 12],
+      ['CALL', 13],
+      ['NEW', 14],
+      ['TEMPLATE', 15],
+      ['FUNCTION_START', 16],
+      ['FUNCTION_END', 17],
+      ['FUNCTION_EXPR_START', 18],
+      ['FUNCTION_EXPR_END', 19],
+      ['CLASS', 20],
+      ['IMPORT', 21],
+      ['EXPORT', 22],
+      ['THROW', 23],
+      ['TRY_START', 24],
+      ['CATCH_START', 25],
+      ['FINALLY_START', 26],
+      ['TRY_END', 27],
+      ['RETURN', 28],
+      ['POP', 29],
+      ['JUMP', 30],
+      ['JUMP_IF_FALSE', 31],
+      ['UNSUPPORTED', 32],
+      ['LOAD_CONST_CONST', 33],
+      ['POP_REG', 34],
+      ['CALL_1', 35],
+    ].map(([name, code]) => ({ name, code }));
+
+    state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
+
+    const defaultOperandTagRows = [
+      ['register', 0],
+      ['constant', 1],
+      ['name', 2],
+      ['extern', 3],
+      ['label', 4],
+      ['count', 5],
+      ['none', 6],
+      ['function', 7],
+    ].map(([name, code]) => ({ name, code }));
+
+    const defaultConstantTagRows = [
+      ['number', 0],
+      ['string', 1],
+      ['bool', 2],
+      ['null', 3],
+      ['undefined', 4],
+    ].map(([name, code]) => ({ name, code }));
+
+    state.operandTagRows = defaultOperandTagRows.map((row) => ({ ...row }));
+    state.constantTagRows = defaultConstantTagRows.map((row) => ({ ...row }));
+
+    const keywordSet = new Set([
+      'as', 'async', 'await', 'class', 'const', 'debugger', 'default', 'delete',
+      'export', 'extends', 'from', 'function', 'get', 'import', 'in', 'instanceof',
+      'let', 'new', 'of', 'return', 'set', 'static', 'super', 'this', 'typeof',
+      'var', 'void', 'with', 'yield',
+    ]);
+
+    const controlSet = new Set([
+      'break', 'case', 'catch', 'continue', 'do', 'else', 'finally', 'for',
+      'if', 'switch', 'throw', 'try', 'while',
+    ]);
+
+    const literalSet = new Set(['false', 'Infinity', 'NaN', 'null', 'true', 'undefined']);
+
+    const builtinSet = new Set([
+      'Array', 'Boolean', 'console', 'Date', 'Error', 'JSON', 'Map', 'Math',
+      'Number', 'Object', 'Promise', 'Reflect', 'RegExp', 'Set', 'String',
+      'Symbol', 'WeakMap', 'WeakSet', 'WebAssembly', 'window', 'document',
+      'globalThis',
+    ]);
+
+    const snippetCompletions = [
+      { label: 'console.log', kind: 'snippet', insert: 'console.log($0);', cursor: -2 },
+      { label: 'function', kind: 'snippet', insert: 'function name() {\n  $0\n}', cursor: -2 },
+      { label: 'if', kind: 'snippet', insert: 'if ($0) {\n  \n}', cursor: -7 },
+      { label: 'for', kind: 'snippet', insert: 'for (let i = 0; i < length; i++) {\n  $0\n}', cursor: -2 },
+      { label: 'try/catch', kind: 'snippet', insert: 'try {\n  $0\n} catch (err) {\n  console.log(err);\n}', cursor: -35 },
+      { label: 'class', kind: 'snippet', insert: 'class Name {\n  constructor() {\n    $0\n  }\n}', cursor: -8 },
+      { label: 'import', kind: 'snippet', insert: 'import name from "module";' },
+      { label: 'export default', kind: 'snippet', insert: 'export default $0;', cursor: -1 },
+    ];
+
+    const propertyCompletions = [
+      { label: 'length', kind: 'property' },
+      { label: 'log', kind: 'method', insert: 'log($0)', cursor: -1 },
+      { label: 'warn', kind: 'method', insert: 'warn($0)', cursor: -1 },
+      { label: 'error', kind: 'method', insert: 'error($0)', cursor: -1 },
+      { label: 'push', kind: 'method', insert: 'push($0)', cursor: -1 },
+      { label: 'pop', kind: 'method', insert: 'pop()' },
+      { label: 'map', kind: 'method', insert: 'map((item) => item)' },
+      { label: 'filter', kind: 'method', insert: 'filter((item) => item)' },
+      { label: 'reduce', kind: 'method', insert: 'reduce((acc, item) => acc, initial)' },
+      { label: 'forEach', kind: 'method', insert: 'forEach((item) => {\n  $0\n})', cursor: -3 },
+      { label: 'slice', kind: 'method', insert: 'slice($0)', cursor: -1 },
+      { label: 'includes', kind: 'method', insert: 'includes($0)', cursor: -1 },
+      { label: 'toString', kind: 'method', insert: 'toString()' },
+      { label: 'valueOf', kind: 'method', insert: 'valueOf()' },
+      { label: 'then', kind: 'method', insert: 'then((value) => value)' },
+      { label: 'catch', kind: 'method', insert: 'catch((err) => err)' },
+    ];
+
+    function baseCompletions() {
+      const declared = Array.from(new Set(
+        editor.value.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g) || [],
+      ))
+        .filter((word) => !keywordSet.has(word) && !controlSet.has(word) && !literalSet.has(word))
+        .slice(0, 80)
+        .map((label) => ({ label, kind: builtinSet.has(label) ? 'builtin' : 'local' }));
+
+      return [
+        ...Array.from(controlSet, (label) => ({ label, kind: 'control' })),
+        ...Array.from(keywordSet, (label) => ({ label, kind: 'keyword' })),
+        ...Array.from(literalSet, (label) => ({ label, kind: 'literal' })),
+        ...Array.from(builtinSet, (label) => ({ label, kind: 'builtin' })),
+        ...snippetCompletions,
+        ...declared,
+      ];
+    }
+
+    function setStatus(kind, text) {
+      statusDot.className = `dot ${kind}`;
+      statusText.textContent = text;
+    }
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add('show');
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1300);
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function span(className, value) {
+      return `<span class="${className}">${escapeHtml(value)}</span>`;
+    }
+
+    function isIdentStart(char) {
+      return /[A-Za-z_$]/.test(char);
+    }
+
+    function isIdentPart(char) {
+      return /[A-Za-z0-9_$]/.test(char);
+    }
+
+    function readQuoted(source, start, quote) {
+      let index = start + 1;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === '\\') {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (char === quote) break;
+      }
+      return index;
+    }
+
+    function readTemplate(source, start) {
+      let index = start + 1;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === '\\') {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (char === '`') break;
+      }
+      return index;
+    }
+
+    function previousSignificant(source, index) {
+      let cursor = index - 1;
+      while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+      return cursor >= 0 ? source[cursor] : '';
+    }
+
+    function nextSignificant(source, index) {
+      let cursor = index;
+      while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+      return cursor < source.length ? source[cursor] : '';
+    }
+
+    function highlightJavaScript(source) {
+      let html = '';
+      let index = 0;
+
+      while (index < source.length) {
+        const char = source[index];
+        const next = source[index + 1] || '';
+
+        if (char === '/' && next === '/') {
+          const end = source.indexOf('\n', index);
+          const stop = end === -1 ? source.length : end;
+          html += span('tok-comment', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '/' && next === '*') {
+          const end = source.indexOf('*/', index + 2);
+          const stop = end === -1 ? source.length : end + 2;
+          html += span('tok-comment', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '"' || char === "'") {
+          const stop = readQuoted(source, index, char);
+          html += span('tok-string', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (char === '`') {
+          const stop = readTemplate(source, index);
+          html += span('tok-template', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/\d/.test(char)) {
+          const match = source.slice(index).match(/^(?:0[xX][\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?n?)/);
+          if (match) {
+            html += span('tok-number', match[0]);
+            index += match[0].length;
+            continue;
+          }
+        }
+
+        if (isIdentStart(char)) {
+          let stop = index + 1;
+          while (stop < source.length && isIdentPart(source[stop])) stop += 1;
+          const word = source.slice(index, stop);
+          const prev = previousSignificant(source, index);
+          const nextSig = nextSignificant(source, stop);
+          if (controlSet.has(word)) {
+            html += span('tok-control', word);
+          } else if (keywordSet.has(word) || literalSet.has(word)) {
+            html += span('tok-keyword', word);
+          } else if (prev === '.') {
+            html += span('tok-property', word);
+          } else if (nextSig === '(') {
+            html += span('tok-function', word);
+          } else if (builtinSet.has(word)) {
+            html += span('tok-builtin', word);
+          } else {
+            html += escapeHtml(word);
+          }
+          index = stop;
+          continue;
+        }
+
+        if (/[+\-*%=&|!<>?:~^]/.test(char)) {
+          let stop = index + 1;
+          while (stop < source.length && /[+\-*%=&|!<>?:~^]/.test(source[stop])) stop += 1;
+          html += span('tok-operator', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/[()[\]{}.,;]/.test(char)) {
+          html += span('tok-punct', char);
+          index += 1;
+          continue;
+        }
+
+        html += escapeHtml(char);
+        index += 1;
+      }
+
+      return html || ' ';
+    }
+
+    function updateHighlight() {
+      highlightLayer.innerHTML = highlightJavaScript(editor.value);
+      highlightLayer.scrollTop = editor.scrollTop;
+      highlightLayer.scrollLeft = editor.scrollLeft;
+    }
+
+    function updateLineNumbers(lines) {
+      lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
+      lineNumbers.scrollTop = editor.scrollTop;
+    }
+
+    function updateEditorStats() {
+      const text = editor.value;
+      const beforeCursor = text.slice(0, editor.selectionStart);
+      const lines = text.split('\n').length;
+      const line = beforeCursor.split('\n').length;
+      const col = beforeCursor.length - beforeCursor.lastIndexOf('\n');
+      const jsBytes = byteLength(text);
+      updateLineNumbers(lines);
+      cursorInfo.textContent = `Ln ${line}, Col ${col}`;
+      sizeInfo.textContent = `${text.length} chars · ${formatByteSize(jsBytes)}`;
+      lineInfo.textContent = `${lines} lines`;
+      metricJavaScriptBytes.textContent = formatByteSize(jsBytes);
+      updateHighlight();
+    }
+
+    function completionContext() {
+      const text = editor.value;
+      const cursor = editor.selectionStart;
+      const beforeCursor = text.slice(0, cursor);
+      const match = beforeCursor.match(/[A-Za-z_$][A-Za-z0-9_$]*$/);
+      const prefix = match ? match[0] : '';
+      const from = cursor - prefix.length;
+      const isProperty = text[from - 1] === '.';
+      const objectMatch = isProperty
+        ? text.slice(0, from - 1).match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*$/)
+        : null;
+      return {
+        prefix,
+        from,
+        to: cursor,
+        isProperty,
+        objectName: objectMatch ? objectMatch[1] : '',
+      };
+    }
+
+    function completionsForContext(context, explicit = false) {
+      const source = context.isProperty ? propertyCompletions : baseCompletions();
+      const propertyBoosts = {
+        console: ['log', 'warn', 'error'],
+        Math: ['abs', 'floor', 'ceil', 'round', 'max', 'min', 'random', 'sqrt'],
+        JSON: ['parse', 'stringify'],
+        Object: ['keys', 'values', 'entries', 'assign'],
+        Array: ['isArray', 'from'],
+      };
+      const boosted = context.objectName && propertyBoosts[context.objectName]
+        ? propertyBoosts[context.objectName].map((label) => ({
+          label,
+          kind: 'method',
+          insert: `${label}($0)`,
+          boost: true,
+        }))
+        : [];
+      const pool = [...boosted, ...source];
+      const seen = new Set();
+      const prefix = context.prefix.toLowerCase();
+      return pool
+        .filter((item) => explicit || prefix || context.isProperty)
+        .filter((item) => item.label.toLowerCase().startsWith(prefix))
+        .filter((item) => !(item.kind === 'local' && item.label === context.prefix))
+        .filter((item) => {
+          if (seen.has(item.label)) return false;
+          seen.add(item.label);
+          return true;
+        })
+        .sort((left, right) => {
+          if (left.boost !== right.boost) return left.boost ? -1 : 1;
+          const common = ['console', 'console.log', 'log', 'function', 'const', 'let', 'return'];
+          const leftRank = common.indexOf(left.label);
+          const rightRank = common.indexOf(right.label);
+          if (leftRank !== -1 || rightRank !== -1) {
+            return (leftRank === -1 ? 99 : leftRank) - (rightRank === -1 ? 99 : rightRank);
+          }
+          return left.label.localeCompare(right.label);
+        })
+        .slice(0, 12);
+    }
+
+    function editorMetrics() {
+      const style = getComputedStyle(editor);
+      const canvas = editorMetrics.canvas || (editorMetrics.canvas = document.createElement('canvas'));
+      const context = canvas.getContext('2d');
+      context.font = `${style.fontSize} ${style.fontFamily}`;
+      return {
+        charWidth: context.measureText('M').width,
+        lineHeight: parseFloat(style.lineHeight) || 20,
+        paddingLeft: parseFloat(style.paddingLeft) || 16,
+        paddingTop: parseFloat(style.paddingTop) || 14,
+      };
+    }
+
+    function positionCompletionMenu(from) {
+      const before = editor.value.slice(0, from);
+      const line = before.split('\n').length;
+      const col = before.length - before.lastIndexOf('\n') - 1;
+      const metrics = editorMetrics();
+      const left = metrics.paddingLeft + col * metrics.charWidth - editor.scrollLeft;
+      const top = metrics.paddingTop + line * metrics.lineHeight - editor.scrollTop + 2;
+      const maxLeft = Math.max(8, editor.clientWidth - 240);
+      completionMenu.style.left = `${Math.min(Math.max(8, left), maxLeft)}px`;
+      completionMenu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function renderCompletions() {
+      completionMenu.innerHTML = state.completion.items
+        .map((item, index) => `
+          <div class="completion-item ${index === state.completion.active ? 'active' : ''}" data-index="${index}" role="option">
+            <span class="completion-label">${escapeHtml(item.label)}</span>
+            <span class="completion-kind">${escapeHtml(item.kind)}</span>
+          </div>
+        `)
+        .join('');
+      completionMenu.classList.toggle('open', state.completion.open);
+    }
+
+    function showCompletions(explicit = false) {
+      const context = completionContext();
+      const items = completionsForContext(context, explicit);
+      if (!items.length) {
+        hideCompletions();
+        return;
+      }
+
+      state.completion = {
+        open: true,
+        items,
+        active: 0,
+        from: context.from,
+        to: context.to,
+      };
+      positionCompletionMenu(context.from);
+      renderCompletions();
+    }
+
+    function hideCompletions() {
+      state.completion.open = false;
+      state.completion.items = [];
+      completionMenu.classList.remove('open');
+    }
+
+    function moveCompletion(delta) {
+      if (!state.completion.open) return;
+      const count = state.completion.items.length;
+      state.completion.active = (state.completion.active + delta + count) % count;
+      renderCompletions();
+      completionMenu
+        .querySelector(`[data-index="${state.completion.active}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function acceptCompletion(index = state.completion.active) {
+      if (!state.completion.open) return false;
+      const item = state.completion.items[index];
+      if (!item) return false;
+
+      let insert = item.insert || item.label;
+      let cursorOffset = insert.length;
+      const marker = insert.indexOf('$0');
+      if (marker !== -1) {
+        insert = insert.replace('$0', '');
+        cursorOffset = marker;
+      }
+
+      editor.setRangeText(insert, state.completion.from, state.completion.to, 'end');
+      const cursor = state.completion.from + cursorOffset;
+      editor.selectionStart = cursor;
+      editor.selectionEnd = cursor;
+      hideCompletions();
+      updateEditorStats();
+      scheduleBuild();
+      editor.focus();
+      return true;
+    }
+
+    function syncScroll() {
+      updateLineNumbers(editor.value.split('\n').length);
+      updateHighlight();
+      if (state.completion.open) {
+        positionCompletionMenu(state.completion.from);
+      }
+    }
+
+    function updateEditorSelectionState() {
+      const hasSelection =
+        document.activeElement === editor && editor.selectionStart !== editor.selectionEnd;
+      editor.classList.toggle('has-selection', hasSelection);
+      editorShell.querySelector('.editor-stack')?.classList.toggle('has-selection', hasSelection);
+    }
+
+    function lineCount(text) {
+      return text ? text.split('\n').length : 0;
+    }
+
+    function formatBytes(bytes) {
+      return Array.from(bytes, (byte, index) => {
+        const hex = byte.toString(16).padStart(2, '0');
+        const prefix = index % 16 === 0 ? `${index.toString(16).padStart(6, '0')}: ` : '';
+        const suffix = index % 16 === 15 ? '\n' : ' ';
+        return `${prefix}${hex}${suffix}`;
+      }).join('').trimEnd();
+    }
+
+    function changedByteIndexes(previous, next) {
+      if (!previous.length) return new Set();
+      const changed = new Set();
+      const count = Math.max(previous.length, next.length);
+      for (let index = 0; index < count; index += 1) {
+        if (previous[index] !== next[index]) {
+          changed.add(index);
+        }
+      }
+      return changed;
+    }
+
+    function printableByte(byte) {
+      return byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.';
+    }
+
+    function renderHexView(bytes, changed) {
+      state.hexChangedIndexes = changed;
+      state.hexChangedUntil = changed.size ? performance.now() + 2000 : 0;
+      state.hexChangeAnimationPending = changed.size > 0;
+      const rows = Math.ceil(bytes.length / 16);
+      return `
+        <section class="hex-section">
+          <div class="hex-section-title">
+            <strong>Hex</strong>
+            <span>${bytes.length} bytes</span>
+          </div>
+          <div class="hex-dump" data-row-count="${rows}"></div>
+        </section>
+      `;
+    }
+
+    function renderHexRows() {
+      const dump = output.querySelector('.hex-dump');
+      if (!dump) return;
+      const rowHeight = 23;
+      const totalRows = Math.ceil(state.byteTokens.length / 16);
+      const firstRow = Math.max(0, Math.floor(dump.scrollTop / rowHeight) - VIRTUAL_BUFFER);
+      const visibleRows = Math.ceil(dump.clientHeight / rowHeight) + VIRTUAL_BUFFER * 2;
+      const lastRow = Math.min(totalRows, firstRow + visibleRows);
+      const rows = [];
+      const changedActive = state.hexChangedIndexes.size > 0 && performance.now() < state.hexChangedUntil;
+      const animateChanged = state.hexChangeAnimationPending;
+      for (let row = firstRow; row < lastRow; row += 1) {
+        const offset = row * 16;
+        const slice = state.byteTokens.slice(offset, offset + 16);
+        const hexCells = [];
+        const asciiCells = [];
+        for (let column = 0; column < 16; column += 1) {
+          const index = offset + column;
+          const byte = slice[column];
+          if (byte === undefined) {
+            hexCells.push('<span class="hex-byte empty">--</span>');
+            asciiCells.push('<span class="hex-char"> </span>');
+            continue;
+          }
+          const isChanged = changedActive && state.hexChangedIndexes.has(index);
+          const changedClass = isChanged ? ' byte-changed' : '';
+          const animateClass = isChanged && animateChanged ? ' byte-change-animate' : '';
+          const selectedClass = state.hexSelectedIndex === index ? ' selected' : '';
+          const hex = byte.toString(16).padStart(2, '0');
+          const printable = printableByte(byte);
+          const char = escapeHtml(printable);
+          const title = `offset 0x${index.toString(16).padStart(8, '0')} · byte 0x${hex} · ascii ${printable}`;
+          hexCells.push(`<span class="hex-byte${changedClass}${animateClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${hex}</span>`);
+          asciiCells.push(`<span class="hex-char${changedClass}${animateClass}${selectedClass}" data-index="${index}" title="${escapeHtml(title)}">${char}</span>`);
+        }
+        rows.push(`
+          <div class="hex-row">
+            <span class="hex-offset">${offset.toString(16).padStart(8, '0')}</span>
+            ${hexCells.join('')}
+            <span class="hex-gap">|</span>
+            <span class="hex-ascii">${asciiCells.join('')}</span>
+          </div>
+        `);
+      }
+      dump.innerHTML = `
+        <div class="hex-spacer" style="height:${totalRows * rowHeight}px">
+          <div class="hex-rows" style="transform:translateY(${firstRow * rowHeight}px)">
+            ${rows.join('')}
+          </div>
+        </div>
+      `;
+      state.hexChangeAnimationPending = false;
+    }
+
+    function encodingRowNames() {
+      return {
+        opcodes: state.opcodeRows.map((row) => row.name),
+        operandTags: state.operandTagRows.map((row) => row.name),
+        constantTags: state.constantTagRows.map((row) => row.name),
+      };
+    }
+
+    function validateSlotPermutation(slots, expectedLength) {
+      if (slots.length !== expectedLength) {
+        throw new Error(`extern slot count mismatch: expected ${expectedLength}, got ${slots.length}`);
+      }
+      const seen = new Set();
+      for (const slot of slots) {
+        if (!Number.isInteger(slot) || slot < 0 || slot >= expectedLength) {
+          throw new Error(`extern slot ${slot} is outside range`);
+        }
+        if (seen.has(slot)) {
+          throw new Error(`duplicate extern slot ${slot}`);
+        }
+        seen.add(slot);
+      }
+      return slots;
+    }
+
+    function currentExternPermutation() {
+      const slots = state.externRows.map((row) => row.slot);
+      validateSlotPermutation(slots, state.externRows.length);
+      return slots.map(encodeBase36Digit).join('');
+    }
+
+    function deterministicPermutationFromSeed(seed, length) {
+      if (length > 36) {
+        throw new Error('extern seed supports up to 36 slots');
+      }
+      const slots = Array.from({ length }, (_, index) => index);
+      let stateValue = 2166136261;
+      for (let index = 0; index < seed.length; index += 1) {
+        stateValue ^= seed.charCodeAt(index);
+        stateValue = Math.imul(stateValue, 16777619) >>> 0;
+      }
+      const next = () => {
+        stateValue ^= stateValue << 13;
+        stateValue ^= stateValue >>> 17;
+        stateValue ^= stateValue << 5;
+        return stateValue >>> 0;
+      };
+      for (let index = slots.length - 1; index > 0; index -= 1) {
+        const swapIndex = next() % (index + 1);
+        [slots[index], slots[swapIndex]] = [slots[swapIndex], slots[index]];
+      }
+      return slots;
+    }
+
+    function externSlotsFromSeed(seed, expectedLength) {
+      if (!expectedLength) return [];
+      const parsed = parseEncodingSeed(seed);
+      const externPermutation = parsed.sections[3];
+      if (externPermutation && externPermutation.length === expectedLength) {
+        return validateSlotPermutation(
+          Array.from(externPermutation, decodeBase36Digit),
+          expectedLength,
+        );
+      }
+      return deterministicPermutationFromSeed(seed, expectedLength);
+    }
+
+    function applyExternSlotsFromSeed(seed) {
+      const slots = externSlotsFromSeed(seed, state.externRows.length);
+      state.externRows = state.externRows.map((row, index) => ({
+        ...row,
+        slot: slots[index] ?? index,
+      }));
+      state.selectedExternRows = [];
+    }
+
+    function seedWithCurrentExternPermutation(seed, bytes = new Uint8Array()) {
+      const parsed = parseEncodingSeed(seed);
+      const sections = parsed.sections.slice(0, 3);
+      const externPermutation = currentExternPermutation();
+      if (externPermutation) {
+        sections.push(externPermutation);
+      }
+      return seedFromPermutation(sections.join('.'), bytes);
+    }
+
+    function seedFromCurrentRows(bytes = new Uint8Array()) {
+      const rows = encodingRowNames();
+      const seed = js_encoding_seed_from_rows(
+        rows.opcodes,
+        rows.operandTags,
+        rows.constantTags,
+        new Uint8Array(),
+      );
+      return seedWithCurrentExternPermutation(seed, bytes);
+    }
+
+    function rowsFromSeed(seed) {
+      const names = Array.from(js_encoding_rows_from_seed(seed));
+      const opcodeCount = defaultOpcodeRows.length;
+      const operandCount = defaultOperandTagRows.length;
+      const constantCount = defaultConstantTagRows.length;
+      const expected = opcodeCount + operandCount + constantCount;
+      if (names.length !== expected) {
+        throw new Error(`Seed restored ${names.length} rows, expected ${expected}`);
+      }
+      const opcodes = names.slice(0, opcodeCount);
+      const operandTags = names.slice(opcodeCount, opcodeCount + operandCount);
+      const constantTags = names.slice(opcodeCount + operandCount);
+      return {
+        opcodes: defaultOpcodeRows.map((row, index) => ({ code: row.code, name: opcodes[index] })),
+        operandTags: defaultOperandTagRows.map((row, index) => ({ code: row.code, name: operandTags[index] })),
+        constantTags: defaultConstantTagRows.map((row, index) => ({ code: row.code, name: constantTags[index] })),
+      };
+    }
+
+    function applyOpcodeSeed(options = {}) {
+      const quiet = options.quiet === true;
+      const seed = opcodeSeedInput.value.trim();
+      if (!seed) return false;
+      try {
+        const rows = rowsFromSeed(seed);
+        state.opcodeRows = rows.opcodes;
+        state.operandTagRows = rows.operandTags;
+        state.constantTagRows = rows.constantTags;
+        applyExternSlotsFromSeed(seed);
+        state.opcodeSeed = seed;
+        opcodeSeedInput.value = seed;
+        state.selectedOpcodeRows = [];
+        state.selectedOperandTagRows = [];
+        state.selectedConstantTagRows = [];
+        state.selectedExternRows = [];
+        renderOpcodeTable();
+        syncOpcodesToBytes();
+        if (!quiet) {
+          showToast('Seed applied');
+        }
+        return true;
+      } catch (err) {
+        if (!quiet) {
+          showToast('Invalid seed');
+          appendLog('error', `Seed Error\n${formatLogValue(err)}`);
+        }
+        return false;
+      }
+    }
+
+    function randomPermutationSection(length) {
+      if (length > 36) {
+        throw new Error('seed section supports up to 36 entries');
+      }
+      const values = Array.from({ length }, (_, index) => index);
+      const random = new Uint32Array(length);
+      crypto.getRandomValues(random);
+      for (let index = values.length - 1; index > 0; index -= 1) {
+        const swapIndex = random[index] % (index + 1);
+        [values[index], values[swapIndex]] = [values[swapIndex], values[index]];
+      }
+      return values.map(encodeBase36Digit).join('');
+    }
+
+    function randomObfuscationSeed() {
+      const sections = [
+        randomPermutationSection(defaultOpcodeRows.length),
+        randomPermutationSection(defaultOperandTagRows.length),
+        randomPermutationSection(defaultConstantTagRows.length),
+      ];
+      if (state.externRows.length) {
+        sections.push(randomPermutationSection(state.externRows.length));
+      }
+      return seedFromPermutation(sections.join('.'));
+    }
+
+    function syncSeedInputs(seed) {
+      state.opcodeSeed = seed;
+      opcodeSeedInput.value = seed;
+      opcodeSeedInput.title = seed;
+      bytesSeedInput.value = seed;
+      bytesSeedInput.title = seed;
+    }
+
+    function updateBytesSeedDisplay(seed) {
+      if (!state.byteTokens.length) return;
+      state.views.bytes = formatBytes(state.byteTokens);
+      state.bytesHtml = renderHexView(state.byteTokens, new Set());
+      if (state.activeView === 'bytes') {
+        setActiveView('bytes');
+      }
+    }
+
+    function rerunWithBytesSeed() {
+      if (!state.compiledBytes) return;
+      const seed = bytesSeedInput.value.trim();
+      updateBytesSeedDisplay(seed);
+      resetLogs();
+      appendLog('compile', 'Re-running bytecode with provided seed');
+      const started = performance.now();
+      const run = executeBytecode(state.compiledBytes, seed);
+      state.compileDuration = 0;
+      state.runDuration = run.duration || performance.now() - started;
+      timingInfo.textContent = 'Compile 0ms';
+      renderLogs();
+      setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Seed accepted' : 'Seed rejected');
+    }
+
+    function byteArrayLiteral(bytes) {
+      return Array.from(bytes, (byte) => byte.toString()).join(', ');
+    }
+
+    function runtimeRunnerModuleCode() {
+      const seed = bytesSeedInput.value.trim();
+      if (!state.compiledBytes || !seed) {
+        throw new Error('missing compiled bytecode or seed');
+      }
+      return `// JS VM runtime package:
+// Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
+// GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
+import init, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js';
+
+const bytes = new Uint8Array([${byteArrayLiteral(state.compiledBytes)}]);
+const seed = ${JSON.stringify(seed)};
+const encoding = seed.split('-').slice(2).join('-');
+
+await init('./pkg/executor/js_vm_runtime_bg.wasm');
+const result = js_execute_bytes_with_seed(bytes, seed);
+console.log('[js-vm]', { result, seed, encoding });`;
+    }
+
+    function downloadTextFile(filename, text) {
+      const blob = new Blob([text], { type: 'text/javascript;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+    }
+
+    async function downloadRemoteFile(url, filename) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200);
+      } catch (_err) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.rel = 'noopener';
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+    }
+
+    async function copyRunnerScript(script) {
+      try {
+        window.focus();
+        await navigator.clipboard.writeText(script);
+        return true;
+      } catch (_err) {
+        const textarea = document.createElement('textarea');
+        textarea.value = script;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        return ok;
+      }
+    }
+
+    async function downloadRuntimePackage() {
+      try {
+        const moduleCode = runtimeRunnerModuleCode();
+        const script = `<script type="module">\n${moduleCode}\n</` + 'script>';
+        const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
+        const copied = await copyRunnerScript(script);
+        await Promise.all([
+          downloadRemoteFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
+          downloadRemoteFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
+        ]);
+        downloadTextFile('js-vm-runner.js', moduleCode);
+        if (copied) {
+          appendLog('compile', 'Downloaded runtime pkg files and copied runner script to clipboard');
+          showToast('Runtime ready');
+        } else {
+          appendLog('error', 'Clipboard Error\nBrowser rejected clipboard write; js-vm-runner.js was downloaded instead');
+          showToast('Downloaded');
+        }
+      } catch (err) {
+        appendLog('error', `Download Error\n${formatLogValue(err)}`);
+        showToast('Download failed');
+      }
+    }
+
+    function renderDoubleColumnTable(tbody, rows, selectedIndexes) {
+      const selected = new Set(selectedIndexes);
+      const half = Math.ceil(rows.length / 2);
+      const htmlRows = [];
+      for (let index = 0; index < half; index += 1) {
+        const left = rows[index];
+        const rightIndex = index + half;
+        const right = rows[rightIndex];
+        htmlRows.push(`
+          <tr>
+            <td class="opcode-code opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}">${left.code}</td>
+            <td class="opcode-name opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}" title="${escapeHtml(left.name)}">${escapeHtml(left.name)}</td>
+            <td class="opcode-split"></td>
+            ${right ? `
+              <td class="opcode-code opcode-row ${selected.has(rightIndex) ? 'selected' : ''}" data-index="${rightIndex}">${right.code}</td>
+              <td class="opcode-name opcode-row ${selected.has(rightIndex) ? 'selected' : ''}" data-index="${rightIndex}" title="${escapeHtml(right.name)}">${escapeHtml(right.name)}</td>
+            ` : `
+              <td class="opcode-empty"></td>
+              <td class="opcode-empty"></td>
+            `}
+          </tr>
+        `);
+      }
+      tbody.innerHTML = htmlRows.join('');
+    }
+
+    function renderExternSlotTable() {
+      if (!state.externRows.length) {
+        externSlotTableBody.innerHTML = `
+          <tr>
+            <td class="opcode-name" colspan="2">(empty)</td>
+          </tr>
+        `;
+        return;
+      }
+      const selected = new Set(state.selectedExternRows);
+      externSlotTableBody.innerHTML = state.externRows.map((row, index) => `
+        <tr>
+          <td class="opcode-name" title="${escapeHtml(row.value)}">${escapeHtml(row.value)}</td>
+          <td class="opcode-name opcode-row ${selected.has(index) ? 'selected' : ''}" data-index="${index}" title="e${row.slot}">
+            e${row.slot}
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function renderOpcodeTable() {
+      renderExternSlotTable();
+      renderDoubleColumnTable(opcodeTableBody, state.opcodeRows, state.selectedOpcodeRows);
+      renderDoubleColumnTable(operandTagTableBody, state.operandTagRows, state.selectedOperandTagRows);
+      renderDoubleColumnTable(constantTagTableBody, state.constantTagRows, state.selectedConstantTagRows);
+      const changed = state.opcodeRows.filter((row, index) => row.name !== defaultOpcodeRows[index].name).length;
+      const operandChanged = state.operandTagRows.filter((row, index) => row.name !== defaultOperandTagRows[index].name).length;
+      const constantChanged = state.constantTagRows.filter((row, index) => row.name !== defaultConstantTagRows[index].name).length;
+      const externChanged = state.externRows.filter((row, index) => row.slot !== index).length;
+      opcodeStatus.textContent = (externChanged || changed || operandChanged || constantChanged)
+        ? `Obfuscated externs ${externChanged}, opcodes ${changed}, operand tags ${operandChanged}, constant tags ${constantChanged}`
+        : 'Extern values stay fixed; select two names or slots inside one table to swap';
+    }
+
+    function swapRowNames(rows, first, second) {
+      if (first === second) return;
+      const temp = rows[first].name;
+      rows[first].name = rows[second].name;
+      rows[second].name = temp;
+    }
+
+    function swapOpcodeNames(first, second) {
+      swapRowNames(state.opcodeRows, first, second);
+      state.selectedOpcodeRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapOperandTagNames(first, second) {
+      swapRowNames(state.operandTagRows, first, second);
+      state.selectedOperandTagRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapConstantTagNames(first, second) {
+      swapRowNames(state.constantTagRows, first, second);
+      state.selectedConstantTagRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function swapExternSlots(first, second) {
+      if (first === second) return;
+      const temp = state.externRows[first].slot;
+      state.externRows[first].slot = state.externRows[second].slot;
+      state.externRows[second].slot = temp;
+      state.selectedExternRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function resetOpcodeTable() {
+      state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
+      state.operandTagRows = defaultOperandTagRows.map((row) => ({ ...row }));
+      state.constantTagRows = defaultConstantTagRows.map((row) => ({ ...row }));
+      state.externRows = state.externRows.map((row, index) => ({ ...row, slot: index }));
+      state.selectedOpcodeRows = [];
+      state.selectedOperandTagRows = [];
+      state.selectedConstantTagRows = [];
+      state.selectedExternRows = [];
+      renderOpcodeTable();
+      syncOpcodesToBytes();
+    }
+
+    function shuffleOpcodeNames() {
+      try {
+        opcodeSeedInput.value = randomObfuscationSeed();
+        applyOpcodeSeed();
+      } catch (err) {
+        showToast('Randomize failed');
+        appendLog('error', `Seed Error\n${formatLogValue(err)}`);
+      }
+    }
+
+    function setActiveView(view) {
+      state.activeView = view;
+      document.querySelectorAll('.tab').forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.view === view);
+      });
+      outputWrap.classList.toggle('bytes-mode', view === 'bytes');
+      bytesSeedPanel.classList.toggle('active', view === 'bytes');
+      output.classList.remove('hidden');
+      output.classList.toggle('hex-output', view === 'bytes' && state.bytesHtml && !state.viewErrors[view]);
+      output.classList.toggle('error', state.viewErrors[view]);
+      if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
+        output.classList.remove('virtual-output');
+        output.innerHTML = state.bytesHtml;
+        renderHexRows();
+      } else {
+        output.classList.remove('hex-output');
+        if (!state.viewErrors[view]) {
+          setVirtualTextView(view, state.views[view] || '');
+        } else {
+          output.classList.remove('virtual-output');
+          output.textContent = state.views[view] || '';
+        }
+      }
+    }
+
+    function setVirtualTextView(view, text) {
+      state.virtualText.view = view;
+      state.virtualText.lines = text ? text.split('\n') : [''];
+      output.classList.add('virtual-output');
+      renderVirtualText();
+    }
+
+    function renderVirtualText() {
+      if (!output.classList.contains('virtual-output')) return;
+      const lines = state.virtualText.lines;
+      const lineHeight = lineHeightOf(output);
+      const first = Math.max(0, Math.floor(output.scrollTop / lineHeight) - VIRTUAL_BUFFER);
+      const visible = Math.ceil(output.clientHeight / lineHeight) + VIRTUAL_BUFFER * 2;
+      const last = Math.min(lines.length, first + visible);
+      const html = lines.slice(first, last).map(escapeHtml).join('\n') || ' ';
+      output.innerHTML = `
+        <div class="virtual-spacer" style="height:${lines.length * lineHeight + 28}px">
+          <div class="virtual-lines" style="transform:translateY(${first * lineHeight}px)">${html}</div>
+        </div>
+      `;
+    }
+
+    function selectHexByte(index) {
+      if (!Number.isInteger(index)) return;
+      if (index < 0 || index >= state.byteTokens.length) return;
+      state.hexSelectedIndex = index;
+      const dump = output.querySelector('.hex-dump');
+      if (dump) {
+        const rowHeight = 23;
+        const row = Math.floor(index / 16);
+        const rowTop = row * rowHeight;
+        const rowBottom = rowTop + rowHeight;
+        if (rowTop < dump.scrollTop) {
+          dump.scrollTop = rowTop;
+          renderHexRows();
+        } else if (rowBottom > dump.scrollTop + dump.clientHeight) {
+          dump.scrollTop = rowBottom - dump.clientHeight;
+          renderHexRows();
+        }
+      }
+      const rowStart = Math.floor(index / 16) * 16;
+      output.querySelectorAll('.hex-byte, .hex-char').forEach((cell) => {
+        const cellIndex = Number(cell.dataset.index);
+        const sameByte = cellIndex === index;
+        const sameRow = cellIndex >= rowStart && cellIndex < rowStart + 16;
+        cell.classList.toggle('selected', sameByte);
+        cell.classList.toggle('related', !sameByte && sameRow);
+      });
+      const selected = output.querySelector(`.hex-byte[data-index="${index}"]`);
+      selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function moveHexSelection(delta) {
+      if (state.activeView !== 'bytes' || state.hexSelectedIndex === null || !state.byteTokens.length) {
+        return false;
+      }
+      const next = Math.max(0, Math.min(state.byteTokens.length - 1, state.hexSelectedIndex + delta));
+      selectHexByte(next);
+      return true;
+    }
+
+    function setActiveConfigView(view) {
+      state.activeConfigView = view;
+      document.querySelectorAll('.config-tab').forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.configView === view);
+      });
+      editorShell.classList.toggle('active', view === 'javascript');
+      opcodePanel.classList.toggle('active', view === 'opcodes');
+      cursorInfo.style.visibility = view === 'javascript' ? 'visible' : 'hidden';
+      if (view === 'javascript') {
+        editor.focus();
+      } else {
+        hideCompletions();
+      }
+    }
+
+    function updateMetrics(bytes, externs) {
+      metricJavaScriptBytes.textContent = formatByteSize(byteLength(editor.value));
+      metricIr.textContent = `${lineCount(state.views.ir)} lines`;
+      metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
+      metricBytes.textContent = formatByteSize(bytes.length);
+      metricExterns.textContent = `${externs.length}`;
+    }
+
+    function syncExternRows(externs) {
+      const previous = new Map(state.externRows.map((row) => [row.value, row.slot]));
+      const usedSlots = new Set();
+      const nextFreeSlot = () => {
+        for (let index = 0; index < externs.length; index += 1) {
+          if (!usedSlots.has(index)) return index;
+        }
+        return usedSlots.size;
+      };
+      state.externRows = externs.map((value, index) => {
+        const previousSlot = previous.get(value);
+        let slot = Number.isInteger(previousSlot)
+          && previousSlot >= 0
+          && previousSlot < externs.length
+          && !usedSlots.has(previousSlot)
+          ? previousSlot
+          : nextFreeSlot();
+        usedSlots.add(slot);
+        return { value, slot };
+      });
+      if (state.opcodeSeed && state.opcodeSeed.startsWith('JSTKSEED2-')) {
+        try {
+          applyExternSlotsFromSeed(state.opcodeSeed);
+        } catch {
+          state.externRows = state.externRows.map((row, index) => ({ ...row, slot: index }));
+        }
+      }
+      state.selectedExternRows = [];
+      renderOpcodeTable();
+    }
+
+    function externSlotsForBytecode() {
+      const slots = new Array(state.externRows.length);
+      for (const row of state.externRows) {
+        slots[row.slot] = row.value;
+      }
+      return slots;
+    }
+
+    function formatLogValue(value) {
+      if (value instanceof Error) {
+        return value.stack || `${value.name}: ${value.message}`;
+      }
+      if (typeof value === 'string') return value;
+      if (value === undefined) return 'undefined';
+      if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (_err) {
+        return String(value);
+      }
+    }
+
+    function appendLog(type, values) {
+      const time = new Date().toLocaleTimeString();
+      const message = Array.isArray(values)
+        ? values.map(formatLogValue).join(' ')
+        : formatLogValue(values);
+      state.logs.push({ type, time, message });
+      renderLogs();
+    }
+
+    function flushHostLogs(hostLogs) {
+      for (const entry of hostLogs) {
+        appendLog(entry.level || 'log', entry.message);
+      }
+      hostLogs.length = 0;
+    }
+
+    function renderLogs() {
+      consoleLog.textContent = state.logs.length
+        ? state.logs.map((entry) => `[${entry.time}] ${entry.type.toUpperCase()} ${entry.message}`).join('\n')
+        : 'Console output will appear here.';
+      logInfo.textContent = `Run ${Math.round(state.runDuration)}ms · ${state.logs.length} logs`;
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    function resetLogs() {
+      state.logs = [];
+      renderLogs();
+    }
+
+    function requestInfo(input, init) {
+      if (input instanceof Request) {
+        return {
+          method: init?.method || input.method || 'GET',
+          url: input.url,
+        };
+      }
+      return {
+        method: init?.method || 'GET',
+        url: String(input),
+      };
+    }
+
+    function syncOpcodesToBytes() {
+      window.clearTimeout(state.timer);
+      state.activeView = 'bytes';
+      build();
+      if (!state.ready) {
+        setActiveView('bytes');
+      }
+    }
+
+    function disposeCompiler() {
+      if (state.compiler) {
+        state.compiler.free();
+        state.compiler = null;
+      }
+    }
+
+    function resetViewErrors() {
+      Object.keys(state.viewErrors).forEach((view) => {
+        state.viewErrors[view] = false;
+      });
+    }
+
+    function executeBytecode(bytes, seed) {
+      if (!bytes || !seed) {
+        appendLog('error', '(missing bytecode seed)');
+        return { ok: false, duration: 0 };
+      }
+
+      const started = performance.now();
+      const hostLogs = [];
+      const previousHostLog = window.__jsVmHostLog;
+      window.__jsVmHostLog = (level, message) => {
+        hostLogs.push({ level, message });
+      };
+      const originalFetch = window.fetch;
+      const originalXhrOpen = window.XMLHttpRequest?.prototype.open;
+      const originalXhrSend = window.XMLHttpRequest?.prototype.send;
+      if (typeof originalFetch === 'function') {
+        window.fetch = (...args) => {
+          const info = requestInfo(args[0], args[1]);
+          appendLog('network', `${info.method} ${info.url}`);
+          return originalFetch.apply(window, args)
+            .then((response) => {
+              appendLog('network', `${response.status} ${response.statusText} ${info.url}`);
+              return response;
+            })
+            .catch((err) => {
+              appendLog('network', `FAILED ${info.url}\n${formatLogValue(err)}`);
+              throw err;
+            });
+        };
+      }
+      if (originalXhrOpen && originalXhrSend) {
+        window.XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
+          this.__jsVmRequest = { method, url };
+          return originalXhrOpen.call(this, method, url, ...rest);
+        };
+        window.XMLHttpRequest.prototype.send = function send(...args) {
+          const info = this.__jsVmRequest || { method: 'GET', url: '(unknown)' };
+          appendLog('network', `${info.method} ${info.url}`);
+          this.addEventListener('loadend', () => {
+            appendLog('network', `${this.status} ${this.statusText || ''} ${info.url}`.trim());
+          }, { once: true });
+          return originalXhrSend.apply(this, args);
+        };
+      }
+
+      try {
+        const result = js_execute_bytes_with_seed(bytes, seed);
+        flushHostLogs(hostLogs);
+        appendLog('return', `=> ${result}`);
+        return {
+          ok: true,
+          duration: performance.now() - started,
+        };
+      } catch (err) {
+        flushHostLogs(hostLogs);
+        const bytePreview = bytes
+          ? Array.from(bytes.slice(0, 16), (byte) => byte.toString(16).padStart(2, '0')).join(' ')
+          : '';
+        appendLog('error', `Runtime Error\n${formatLogValue(err)}\nseed=${seed}\nbytes=${bytes?.length || 0} [${bytePreview}]`);
+        return {
+          ok: false,
+          duration: performance.now() - started,
+        };
+      } finally {
+        window.__jsVmHostLog = previousHostLog;
+        if (typeof originalFetch === 'function') {
+          window.fetch = originalFetch;
+        }
+        if (originalXhrOpen && originalXhrSend) {
+          window.XMLHttpRequest.prototype.open = originalXhrOpen;
+          window.XMLHttpRequest.prototype.send = originalXhrSend;
+        }
+      }
+    }
+
+    function build() {
+      if (!state.ready) return;
+
+      const compileStarted = performance.now();
+      disposeCompiler();
+      state.compileDuration = 0;
+      state.runDuration = 0;
+      resetLogs();
+
+      try {
+        resetViewErrors();
+        appendLog('compile', 'Compiling JavaScript to IR and bytecode');
+        const compiler = new Compiler(editor.value);
+        const externs = compiler.extern_slots();
+        syncExternRows(externs);
+        const externSlots = externSlotsForBytecode();
+        const configSeed = seedFromCurrentRows();
+        const artifact = compiler.to_bytecode_artifact(configSeed, externSlots);
+        const bytes = artifact.bytes();
+        const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
+        const nextByteTokens = Array.from(bytes);
+        const changedBytes = changedByteIndexes(state.byteTokens, nextByteTokens);
+        const compileDuration = performance.now() - compileStarted;
+        state.compiler = compiler;
+        state.views.ir = compiler.to_text();
+        state.views.bytecode = artifact.bytecode_text();
+        state.views.bytes = formatBytes(bytes);
+        state.bytesHtml = renderHexView(nextByteTokens, changedBytes);
+        state.byteTokens = nextByteTokens;
+        state.compiledBytes = bytes;
+        artifact.free();
+        syncSeedInputs(seed);
+
+        const run = executeBytecode(bytes, seed);
+        state.compileDuration = compileDuration;
+        state.runDuration = run.duration;
+        timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms`;
+        renderLogs();
+        updateMetrics(bytes, externs);
+        setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Auto built' : 'Runtime error');
+        setActiveView(state.activeView);
+      } catch (err) {
+        const message = `Compile Error\n${String(err)}`;
+        state.views.ir = message;
+        state.views.bytecode = message;
+        state.views.bytes = message;
+        state.bytesHtml = '';
+        state.byteTokens = [];
+        state.compiledBytes = null;
+        state.compileDuration = performance.now() - compileStarted;
+        state.runDuration = 0;
+        state.opcodeSeed = '';
+        opcodeSeedInput.value = '(build failed)';
+        opcodeSeedInput.title = '';
+        bytesSeedInput.value = '';
+        bytesSeedInput.title = '';
+        syncExternRows([]);
+        appendLog('error', message);
+        Object.keys(state.viewErrors).forEach((view) => {
+          state.viewErrors[view] = true;
+        });
+        timingInfo.textContent = 'Compile failed';
+        renderLogs();
+        setStatus('error', 'Compile error');
+        setActiveView(state.activeView);
+      }
+    }
+
+    function scheduleBuild() {
+      window.clearTimeout(state.timer);
+      setStatus('', 'Waiting for input');
+      state.timer = window.setTimeout(build, 360);
+    }
+
+    editor.addEventListener('input', () => {
+      updateEditorSelectionState();
+      updateEditorStats();
+      showCompletions(false);
+      scheduleBuild();
+    });
+
+    editor.addEventListener('scroll', syncScroll);
+    editor.addEventListener('click', () => {
+      updateEditorSelectionState();
+      updateEditorStats();
+      showCompletions(false);
+    });
+    editor.addEventListener('keyup', (event) => {
+      updateEditorSelectionState();
+      updateEditorStats();
+      if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+        showCompletions(false);
+      }
+    });
+    document.addEventListener('selectionchange', updateEditorSelectionState);
+
+    editor.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ' ') {
+        event.preventDefault();
+        showCompletions(true);
+        return;
+      }
+
+      if (state.completion.open) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          moveCompletion(1);
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          moveCompletion(-1);
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          acceptCompletion();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          hideCompletions();
+          return;
+        }
+      }
+
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        editor.setRangeText('  ', start, end, 'end');
+        updateEditorStats();
+        scheduleBuild();
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        build();
+      }
+    });
+
+    completionMenu.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      const item = event.target.closest('.completion-item');
+      if (!item) return;
+      acceptCompletion(Number(item.dataset.index));
+    });
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => setActiveView(tab.dataset.view));
+    });
+
+    document.querySelectorAll('.config-tab').forEach((tab) => {
+      tab.addEventListener('click', () => setActiveConfigView(tab.dataset.configView));
+    });
+
+    function bindSwapTable(tbody, selectionKey, swap) {
+      tbody.addEventListener('click', (event) => {
+        const row = event.target.closest('.opcode-row');
+        if (!row) return;
+        const index = Number(row.dataset.index);
+        if (state[selectionKey].includes(index)) {
+          state[selectionKey] = state[selectionKey].filter((value) => value !== index);
+          renderOpcodeTable();
+          return;
+        }
+        state[selectionKey].push(index);
+        if (state[selectionKey].length === 2) {
+          swap(state[selectionKey][0], state[selectionKey][1]);
+          return;
+        }
+        renderOpcodeTable();
+      });
+    }
+
+    bindSwapTable(opcodeTableBody, 'selectedOpcodeRows', swapOpcodeNames);
+    bindSwapTable(operandTagTableBody, 'selectedOperandTagRows', swapOperandTagNames);
+    bindSwapTable(constantTagTableBody, 'selectedConstantTagRows', swapConstantTagNames);
+    bindSwapTable(externSlotTableBody, 'selectedExternRows', swapExternSlots);
+
+    resetOpcodesBtn.addEventListener('click', resetOpcodeTable);
+    shuffleOpcodesBtn.addEventListener('click', shuffleOpcodeNames);
+    opcodeSeedInput.addEventListener('input', () => {
+      clearTimeout(seedInputTimer);
+      seedInputTimer = setTimeout(() => {
+        applyOpcodeSeed({ quiet: true });
+      }, 300);
+    });
+    opcodeSeedInput.addEventListener('change', applyOpcodeSeed);
+    opcodeSeedInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        clearTimeout(seedInputTimer);
+        applyOpcodeSeed();
+      }
+    });
+    bytesSeedInput.addEventListener('change', rerunWithBytesSeed);
+    bytesSeedInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        rerunWithBytesSeed();
+      }
+    });
+
+    output.addEventListener('click', (event) => {
+      const cell = event.target.closest('.hex-byte[data-index], .hex-char[data-index]');
+      if (!cell) return;
+      selectHexByte(Number(cell.dataset.index));
+      output.focus();
+    });
+
+    output.addEventListener('keydown', (event) => {
+      const deltas = {
+        ArrowLeft: -1,
+        ArrowRight: 1,
+        ArrowUp: -16,
+        ArrowDown: 16,
+      };
+      const delta = deltas[event.key];
+      if (delta === undefined) return;
+      if (moveHexSelection(delta)) {
+        event.preventDefault();
+      }
+    });
+
+    output.addEventListener('scroll', () => {
+      if (output.classList.contains('virtual-output')) {
+        renderVirtualText();
+      }
+    });
+
+    output.addEventListener('scroll', (event) => {
+      if (event.target?.classList?.contains('hex-dump')) {
+        renderHexRows();
+      }
+    }, true);
+
+    downloadPkgBtn.addEventListener('click', downloadRuntimePackage);
+
+    clearBtn.addEventListener('click', () => {
+      resetLogs();
+      showToast('Cleared');
+    });
+
+    exampleSelect.addEventListener('change', () => {
+      editor.value = examples[exampleSelect.value];
+      hideCompletions();
+      updateEditorStats();
+      build();
+      editor.focus();
+    });
+
+    window.addEventListener('beforeunload', disposeCompiler);
+
+    updateEditorStats();
+    renderLogs();
+    renderOpcodeTable();
+    setActiveConfigView('javascript');
+    setStatus('', 'Initializing');
+
+    try {
+      await Promise.all([
+        initCompiler('./pkg/compiler/js_vm_compiler_bg.wasm?v=fun-index'),
+        initExecutor('./pkg/executor/js_vm_runtime_bg.wasm?v=fun-index'),
+      ]);
+      state.ready = true;
+      wasmState.textContent = 'WASM ready';
+      setStatus('ready', 'Ready');
+      build();
+      editor.focus();
+    } catch (err) {
+      wasmState.textContent = 'WASM failed';
+      output.classList.add('error');
+      output.textContent = String(err);
+      setStatus('error', 'Initialization failed');
+    }
+  </script>
+</body>
+</html>
