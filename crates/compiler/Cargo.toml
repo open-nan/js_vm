@@ -13,6 +13,9 @@ swc_ecma_ast.workspace = true
 swc_ecma_parser.workspace = true
 swc_common.workspace = true
 
+[dev-dependencies]
+js_vm_runtime = { path = "../runtime" }
+
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

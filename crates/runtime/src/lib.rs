@@ -9,16 +9,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = log)]
-    fn wasm_console_log(value: &str);
-    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = info)]
-    fn wasm_console_info(value: &str);
-    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = warn)]
-    fn wasm_console_warn(value: &str);
-    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = error)]
-    fn wasm_console_error(value: &str);
-    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = console, js_name = debug)]
-    fn wasm_console_debug(value: &str);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = globalThis, js_name = __jsVmHostLog)]
+    fn wasm_host_log(level: &str, value: &str);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -38,7 +30,10 @@ pub struct Executor {
     labels: BTreeMap<String, usize>,
     last_value: Value,
     exports: BTreeMap<String, Value>,
+    call_depth: usize,
 }
+
+const MAX_CALL_DEPTH: usize = 1024;
 
 impl Executor {
     pub fn run(module: &BytecodeModule) -> Result<Value, ExecuteError> {
@@ -120,7 +115,7 @@ impl Executor {
                 }
                 BytecodeOp::Binary => {
                     let dst = register(instruction, 0)?;
-                    let op = self.read_constant_string(module, operand(instruction, 1)?)?;
+                    let op = self.read_operator(module, operand(instruction, 1)?)?;
                     let left = self.read_value(module, operand(instruction, 2)?)?;
                     let right = self.read_value(module, operand(instruction, 3)?)?;
                     let value = binary(&op, left, right)?;
@@ -129,7 +124,7 @@ impl Executor {
                 }
                 BytecodeOp::Unary => {
                     let dst = register(instruction, 0)?;
-                    let op = self.read_constant_string(module, operand(instruction, 1)?)?;
+                    let op = self.read_operator(module, operand(instruction, 1)?)?;
                     let arg = self.read_value(module, operand(instruction, 2)?)?;
                     let value = unary(&op, arg)?;
                     self.write_register(dst, value.clone());
@@ -205,7 +200,9 @@ impl Executor {
                 }
                 BytecodeOp::FunctionStart => {
                     let function = self.function_from_start(module, pc, false)?;
-                    let name = self.read_name(module, operand(instruction, 0)?)?;
+                    let name = function.name.clone().ok_or_else(|| {
+                        ExecuteError::Runtime("function declaration missing name".to_string())
+                    })?;
                     let end_pc = function.end_pc;
                     self.globals.insert(name, Value::Function(function));
                     pc = end_pc + 1;
@@ -220,7 +217,7 @@ impl Executor {
                     continue;
                 }
                 BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
-                    return Ok(Flow::Value(self.last_value.clone()));
+                    return Ok(Flow::Value(Value::Undefined));
                 }
                 BytecodeOp::Class => {
                     let value = self.class_from_instruction(module, instruction)?;
@@ -229,7 +226,7 @@ impl Executor {
                     }
                     if let BytecodeOperand::Name(index) = operand(instruction, 1)? {
                         self.globals
-                            .insert(constant_string(module, *index)?, value.clone());
+                            .insert(name_string(module, *index)?, value.clone());
                     }
                     self.last_value = value;
                 }
@@ -364,7 +361,18 @@ impl Executor {
             Value::Null | Value::Undefined => Err(ExecuteError::TypeError(format!(
                 "cannot construct {callee}"
             ))),
-            Value::Class(class) => Ok(Value::Object(class.static_props)),
+            Value::Class(class) => {
+                let mut this_value = Value::Object(class.instance_props.clone());
+                if let Some(constructor) = &class.constructor {
+                    let (result, globals) =
+                        self.call_function_frame(module, constructor, this_value.clone(), args)?;
+                    if !matches!(result, Value::Undefined) {
+                        return Ok(result);
+                    }
+                    this_value = globals.get("this").cloned().unwrap_or(this_value);
+                }
+                Ok(this_value)
+            }
             Value::Function(function) => {
                 let this_value = Value::Object(BTreeMap::new());
                 let result = self.call_function(module, &function, this_value.clone(), args)?;
@@ -390,12 +398,29 @@ impl Executor {
         this_value: Value,
         args: Vec<Value>,
     ) -> Result<Value, ExecuteError> {
+        let (value, _) = self.call_function_frame(module, function, this_value, args)?;
+        Ok(value)
+    }
+
+    fn call_function_frame(
+        &self,
+        module: &BytecodeModule,
+        function: &FunctionValue,
+        this_value: Value,
+        args: Vec<Value>,
+    ) -> Result<(Value, BTreeMap<String, Value>), ExecuteError> {
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(ExecuteError::Runtime(
+                "maximum call stack exceeded".to_string(),
+            ));
+        }
         let mut frame = Executor {
             registers: Vec::new(),
             globals: function.env.clone(),
             labels: collect_labels(module)?,
             last_value: Value::Undefined,
             exports: self.exports.clone(),
+            call_depth: self.call_depth + 1,
         };
         for (name, value) in &self.globals {
             frame
@@ -410,8 +435,11 @@ impl Executor {
                 args.get(index).cloned().unwrap_or(Value::Undefined),
             );
         }
-        match frame.execute_range(module, function.body_start, function.body_end)? {
-            Flow::Value(value) | Flow::Return(value) => Ok(value),
+        let flow = frame.execute_range(module, function.body_start, function.body_end)?;
+        let globals = frame.globals;
+        match flow {
+            Flow::Value(_) => Ok((Value::Undefined, globals)),
+            Flow::Return(value) => Ok((value, globals)),
             Flow::Throw(value) => Err(ExecuteError::Thrown(value)),
         }
     }
@@ -423,17 +451,24 @@ impl Executor {
         expr: bool,
     ) -> Result<FunctionValue, ExecuteError> {
         let instruction = &module.instructions[pc];
-        let (name_operand_index, param_count_index, param_start) =
-            if expr { (1, 2, 3) } else { (0, 1, 2) };
-        let name = match operand(instruction, name_operand_index)? {
-            BytecodeOperand::None => None,
-            operand => Some(self.read_name(module, operand)?),
+        let function_operand_index = if expr { 1 } else { 0 };
+        let function_index = match operand(instruction, function_operand_index)? {
+            BytecodeOperand::Function(index) => *index,
+            _ => return Err(ExecuteError::InvalidOperand("function")),
         };
-        let param_count = count_operand(instruction, param_count_index)? as usize;
-        let mut params = Vec::with_capacity(param_count);
-        for index in 0..param_count {
-            params.push(self.read_name(module, operand(instruction, param_start + index)?)?);
-        }
+        let function_meta = module
+            .functions
+            .get(function_index as usize)
+            .ok_or_else(|| ExecuteError::Runtime(format!("bad function index {function_index}")))?;
+        let name = function_meta
+            .name
+            .map(|index| name_string(module, index))
+            .transpose()?;
+        let params = function_meta
+            .params
+            .iter()
+            .map(|index| name_string(module, *index))
+            .collect::<Result<Vec<_>, _>>()?;
         let end_op = if expr {
             BytecodeOp::FunctionExprEnd
         } else {
@@ -447,6 +482,7 @@ impl Executor {
             body_end: end_pc,
             end_pc,
             env: self.globals.clone(),
+            has_return: function_meta.has_return,
         })
     }
 
@@ -459,13 +495,12 @@ impl Executor {
             BytecodeOperand::None => None,
             operand => Some(self.read_name(module, operand)?),
         };
-        let member_count = count_operand(instruction, 3)? as usize;
-        let mut static_props = BTreeMap::new();
-        for index in 0..member_count {
-            let member = self.read_constant_string(module, operand(instruction, 4 + index)?)?;
-            static_props.insert(member, Value::Undefined);
-        }
-        Ok(Value::Class(ClassValue { name, static_props }))
+        Ok(Value::Class(ClassValue {
+            name,
+            constructor: None,
+            static_props: BTreeMap::new(),
+            instance_props: BTreeMap::new(),
+        }))
     }
 
     fn read_value(
@@ -481,13 +516,19 @@ impl Executor {
                 .unwrap_or(Value::Undefined)),
             BytecodeOperand::Constant(index) => constant_value(module, *index),
             BytecodeOperand::Name(index) => {
-                let name = constant_string(module, *index)?;
+                let name = name_string(module, *index)?;
+                Ok(self.get_name(&name))
+            }
+            BytecodeOperand::External(index) => {
+                let name = external_string(module, *index)?;
                 Ok(self.get_name(&name))
             }
             BytecodeOperand::None => Ok(Value::Undefined),
-            BytecodeOperand::Label(_) | BytecodeOperand::Count(_) => {
-                Err(ExecuteError::InvalidOperand("value"))
-            }
+            BytecodeOperand::Label(_)
+            | BytecodeOperand::Operator(_)
+            | BytecodeOperand::DeclKind(_)
+            | BytecodeOperand::Function(_)
+            | BytecodeOperand::Count(_) => Err(ExecuteError::InvalidOperand("value")),
         }
     }
 
@@ -501,9 +542,9 @@ impl Executor {
         operand: &BytecodeOperand,
     ) -> Result<String, ExecuteError> {
         match operand {
-            BytecodeOperand::Name(index) | BytecodeOperand::Constant(index) => {
-                constant_string(module, *index)
-            }
+            BytecodeOperand::Name(index) => name_string(module, *index),
+            BytecodeOperand::External(index) => external_string(module, *index),
+            BytecodeOperand::Constant(index) => constant_string(module, *index),
             _ => Err(ExecuteError::InvalidOperand("name")),
         }
     }
@@ -514,10 +555,23 @@ impl Executor {
         operand: &BytecodeOperand,
     ) -> Result<String, ExecuteError> {
         match operand {
-            BytecodeOperand::Label(index) | BytecodeOperand::Constant(index) => {
-                constant_string(module, *index)
-            }
+            BytecodeOperand::Label(index) => Ok(index.to_string()),
+            BytecodeOperand::Constant(index) => constant_string(module, *index),
             _ => Err(ExecuteError::InvalidOperand("label")),
+        }
+    }
+
+    fn read_operator(
+        &self,
+        module: &BytecodeModule,
+        operand: &BytecodeOperand,
+    ) -> Result<String, ExecuteError> {
+        match operand {
+            BytecodeOperand::Operator(index) => operator_name(*index)
+                .map(str::to_string)
+                .ok_or_else(|| ExecuteError::Runtime(format!("unknown operator {index}"))),
+            BytecodeOperand::Constant(index) => constant_string(module, *index),
+            _ => Err(ExecuteError::InvalidOperand("operator")),
         }
     }
 
@@ -544,7 +598,11 @@ impl Executor {
                 Ok(())
             }
             BytecodeOperand::Name(index) => {
-                self.globals.insert(constant_string(module, *index)?, value);
+                self.globals.insert(name_string(module, *index)?, value);
+                Ok(())
+            }
+            BytecodeOperand::External(index) => {
+                self.globals.insert(external_string(module, *index)?, value);
                 Ok(())
             }
             _ => Err(ExecuteError::InvalidOperand("assignable object")),
@@ -588,6 +646,7 @@ pub enum Value {
 pub struct FunctionValue {
     pub name: Option<String>,
     pub params: Vec<String>,
+    pub has_return: bool,
     pub body_start: usize,
     pub body_end: usize,
     pub env: BTreeMap<String, Value>,
@@ -597,7 +656,9 @@ pub struct FunctionValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassValue {
     pub name: Option<String>,
+    pub constructor: Option<FunctionValue>,
     pub static_props: BTreeMap<String, Value>,
+    pub instance_props: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -746,9 +807,9 @@ fn find_try_parts(module: &BytecodeModule, try_start: usize) -> Result<TryParts,
     let catch_param = catch
         .map(|index| match operand(&module.instructions[index], 0)? {
             BytecodeOperand::None => Ok(None),
-            BytecodeOperand::Name(value) | BytecodeOperand::Constant(value) => {
-                constant_string(module, *value).map(Some)
-            }
+            BytecodeOperand::Name(value) => name_string(module, *value).map(Some),
+            BytecodeOperand::External(value) => external_string(module, *value).map(Some),
+            BytecodeOperand::Constant(value) => constant_string(module, *value).map(Some),
             _ => Err(ExecuteError::InvalidOperand("catch param")),
         })
         .transpose()?
@@ -794,9 +855,8 @@ fn collect_labels(module: &BytecodeModule) -> Result<BTreeMap<String, usize>, Ex
     for (index, instruction) in module.instructions.iter().enumerate() {
         if instruction.op == BytecodeOp::Label {
             let label = match operand(instruction, 0)? {
-                BytecodeOperand::Label(index) | BytecodeOperand::Constant(index) => {
-                    constant_string(module, *index)?
-                }
+                BytecodeOperand::Label(index) => index.to_string(),
+                BytecodeOperand::Constant(index) => constant_string(module, *index)?,
                 _ => return Err(ExecuteError::InvalidOperand("label")),
             };
             labels.insert(label, index + 1);
@@ -851,9 +911,69 @@ fn constant_string(module: &BytecodeModule, index: u32) -> Result<String, Execut
     }
 }
 
+fn name_string(module: &BytecodeModule, index: u32) -> Result<String, ExecuteError> {
+    module
+        .names
+        .get(index as usize)
+        .cloned()
+        .ok_or(ExecuteError::BadConstant(index))
+}
+
+fn external_string(module: &BytecodeModule, index: u32) -> Result<String, ExecuteError> {
+    module
+        .extern_slots
+        .get(index as usize)
+        .cloned()
+        .ok_or(ExecuteError::BadConstant(index))
+}
+
+fn operator_name(operator: u32) -> Option<&'static str> {
+    OPERATOR_NAMES.get(operator as usize).copied()
+}
+
+const OPERATOR_NAMES: &[&str] = &[
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "**",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "===",
+    "!=",
+    "!==",
+    "&&",
+    "||",
+    "??",
+    "&",
+    "|",
+    "^",
+    "<<",
+    ">>",
+    ">>>",
+    "!",
+    "~",
+    "typeof",
+    "void",
+    "delete",
+    "in",
+    "instanceof",
+];
+
 fn get_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
     match object {
         Value::Object(props) => match props.get(property).cloned() {
+            Some(Value::Function(function)) => {
+                Ok(Value::BoundFunction(function, Box::new(object.clone())))
+            }
+            Some(value) => Ok(value),
+            None => Ok(Value::Undefined),
+        },
+        Value::Class(class) => match class.static_props.get(property).cloned() {
             Some(Value::Function(function)) => {
                 Ok(Value::BoundFunction(function, Box::new(object.clone())))
             }
@@ -885,6 +1005,29 @@ fn set_member(object: &mut Value, property: &str, value: Value) -> Result<(), Ex
         Value::Object(props) => {
             props.insert(property.to_string(), value);
             Ok(())
+        }
+        Value::Class(class) => {
+            if property == "constructor" {
+                match value {
+                    Value::Function(function) => {
+                        class.constructor = Some(function);
+                        Ok(())
+                    }
+                    Value::Undefined => {
+                        class.constructor = None;
+                        Ok(())
+                    }
+                    value => Err(ExecuteError::Runtime(format!(
+                        "class constructor must be a function, got {value}"
+                    ))),
+                }
+            } else if let Some(property) = property.strip_prefix("prototype.") {
+                class.instance_props.insert(property.to_string(), value);
+                Ok(())
+            } else {
+                class.static_props.insert(property.to_string(), value);
+                Ok(())
+            }
         }
         Value::Array(items) => {
             let index = property
@@ -963,13 +1106,7 @@ impl HostBridge {
 
 #[cfg(target_arch = "wasm32")]
 fn host_console(level: &str, message: &str) {
-    match level {
-        "info" => wasm_console_info(message),
-        "warn" => wasm_console_warn(message),
-        "error" => wasm_console_error(message),
-        "debug" => wasm_console_debug(message),
-        _ => wasm_console_log(message),
-    }
+    wasm_host_log(level, message);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

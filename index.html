@@ -1142,8 +1142,8 @@
   <div id="toast" class="toast"></div>
 
   <script type="module">
-    import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=split-wasm';
-    import initExecutor, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js?v=split-wasm';
+    import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=fun-index';
+    import initExecutor, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js?v=fun-index';
 
     const {
       Compiler,
@@ -1289,6 +1289,10 @@ export default def;`,
     const textEncoder = new TextEncoder();
     const VIRTUAL_BUFFER = 24;
     let seedInputTimer = null;
+    window.__jsVmHostLog = (level, message) => {
+      const target = typeof console[level] === 'function' ? console[level] : console.log;
+      target.call(console, message);
+    };
 
     function byteLength(text) {
       return textEncoder.encode(text).length;
@@ -1459,9 +1463,11 @@ export default def;`,
       ['register', 0],
       ['constant', 1],
       ['name', 2],
-      ['label', 3],
-      ['count', 4],
-      ['none', 5],
+      ['extern', 3],
+      ['label', 4],
+      ['count', 5],
+      ['none', 6],
+      ['function', 7],
     ].map(([name, code]) => ({ name, code }));
 
     const defaultConstantTagRows = [
@@ -2609,6 +2615,13 @@ console.log('[js-vm]', { result, seed, encoding });`;
       renderLogs();
     }
 
+    function flushHostLogs(hostLogs) {
+      for (const entry of hostLogs) {
+        appendLog(entry.level || 'log', entry.message);
+      }
+      hostLogs.length = 0;
+    }
+
     function renderLogs() {
       consoleLog.textContent = state.logs.length
         ? state.logs.map((entry) => `[${entry.time}] ${entry.type.toUpperCase()} ${entry.message}`).join('\n')
@@ -2636,6 +2649,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
     }
 
     function syncOpcodesToBytes() {
+      window.clearTimeout(state.timer);
       state.activeView = 'bytes';
       build();
       if (!state.ready) {
@@ -2663,14 +2677,11 @@ console.log('[js-vm]', { result, seed, encoding });`;
       }
 
       const started = performance.now();
-      const originalConsole = {};
-      for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
-        originalConsole[level] = console[level];
-        console[level] = (...args) => {
-          appendLog(level, args);
-          originalConsole[level].apply(console, args);
-        };
-      }
+      const hostLogs = [];
+      const previousHostLog = window.__jsVmHostLog;
+      window.__jsVmHostLog = (level, message) => {
+        hostLogs.push({ level, message });
+      };
       const originalFetch = window.fetch;
       const originalXhrOpen = window.XMLHttpRequest?.prototype.open;
       const originalXhrSend = window.XMLHttpRequest?.prototype.send;
@@ -2706,21 +2717,24 @@ console.log('[js-vm]', { result, seed, encoding });`;
 
       try {
         const result = js_execute_bytes_with_seed(bytes, seed);
+        flushHostLogs(hostLogs);
         appendLog('return', `=> ${result}`);
         return {
           ok: true,
           duration: performance.now() - started,
         };
       } catch (err) {
-        appendLog('error', `Runtime Error\n${formatLogValue(err)}`);
+        flushHostLogs(hostLogs);
+        const bytePreview = bytes
+          ? Array.from(bytes.slice(0, 16), (byte) => byte.toString(16).padStart(2, '0')).join(' ')
+          : '';
+        appendLog('error', `Runtime Error\n${formatLogValue(err)}\nseed=${seed}\nbytes=${bytes?.length || 0} [${bytePreview}]`);
         return {
           ok: false,
           duration: performance.now() - started,
         };
       } finally {
-        for (const level of Object.keys(originalConsole)) {
-          console[level] = originalConsole[level];
-        }
+        window.__jsVmHostLog = previousHostLog;
         if (typeof originalFetch === 'function') {
           window.fetch = originalFetch;
         }
@@ -2764,7 +2778,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
         artifact.free();
         syncSeedInputs(seed);
 
-        const run = executeBytecode(bytes, bytesSeedInput.value.trim());
+        const run = executeBytecode(bytes, seed);
         state.compileDuration = compileDuration;
         state.runDuration = run.duration;
         timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms`;
@@ -2993,8 +3007,8 @@ console.log('[js-vm]', { result, seed, encoding });`;
 
     try {
       await Promise.all([
-        initCompiler('./pkg/compiler/js_vm_compiler_bg.wasm?v=split-wasm'),
-        initExecutor('./pkg/executor/js_vm_runtime_bg.wasm?v=split-wasm'),
+        initCompiler('./pkg/compiler/js_vm_compiler_bg.wasm?v=fun-index'),
+        initExecutor('./pkg/executor/js_vm_runtime_bg.wasm?v=fun-index'),
       ]);
       state.ready = true;
       wasmState.textContent = 'WASM ready';

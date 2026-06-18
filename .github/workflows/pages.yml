@@ -32,8 +32,8 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
-      - name: Build wasm package
-        run: sh scripts/build-wasm.sh
+      - name: Verify full test chain
+        run: sh scripts/verify.sh
 
       - name: Prepare site
         run: |
