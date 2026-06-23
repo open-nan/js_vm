@@ -69,7 +69,7 @@ pub enum IrInstruction {
         /// 目标对象
         object: IrValue,
         /// 目标属性名称
-        property: String,
+        property: IrValue,
         /// 要存储的源值
         src: IrValue,
     },
@@ -107,7 +107,7 @@ pub enum IrInstruction {
         /// 目标对象
         object: IrValue,
         /// 属性名称
-        property: String,
+        property: IrValue,
     },
     /// 数组创建指令，创建数组并将结果存储到目标寄存器
     Array {
@@ -207,6 +207,13 @@ pub enum IrInstruction {
         catch_body: Vec<IrInstruction>,
         /// finally块的指令列表
         finally_body: Vec<IrInstruction>,
+    },
+    /// 显式作用域指令，声明一段 block/catch/function 等词法作用域
+    Scope {
+        /// 作用域类型
+        kind: String,
+        /// 作用域内指令列表
+        body: Vec<IrInstruction>,
     },
     /// 返回指令，从函数返回值（可选，无返回值时为None）
     Return(Option<IrValue>),
@@ -430,6 +437,13 @@ impl IrInstruction {
                     let _ = writeln!(out, "{pad}}}");
                 }
             }
+            IrInstruction::Scope { kind, body } => {
+                let _ = writeln!(out, "{pad}scope {kind} {{");
+                for instruction in body {
+                    instruction.write_text(out, indent + 1);
+                }
+                let _ = writeln!(out, "{pad}}}");
+            }
             IrInstruction::Return(Some(value)) => {
                 let _ = writeln!(out, "{pad}return {value}");
             }
@@ -511,6 +525,8 @@ pub enum BytecodeOp {
     LoadConstConst = 33,
     PopReg = 34,
     CallOne = 35,
+    EnterScope = 36,
+    LeaveScope = 37,
 }
 
 impl BytecodeOp {
@@ -552,6 +568,8 @@ impl BytecodeOp {
             BytecodeOp::LoadConstConst,
             BytecodeOp::PopReg,
             BytecodeOp::CallOne,
+            BytecodeOp::EnterScope,
+            BytecodeOp::LeaveScope,
         ]
     }
 
@@ -593,6 +611,8 @@ impl BytecodeOp {
             BytecodeOp::LoadConstConst => "LOAD_CONST_CONST",
             BytecodeOp::PopReg => "POP_REG",
             BytecodeOp::CallOne => "CALL_1",
+            BytecodeOp::EnterScope => "ENTER_SCOPE",
+            BytecodeOp::LeaveScope => "LEAVE_SCOPE",
         }
     }
 
@@ -809,47 +829,11 @@ const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
 
 impl Default for EncodingConfig {
     fn default() -> Self {
-        let opcodes = [
-            (BytecodeOp::Marker, 0),
-            (BytecodeOp::Label, 1),
-            (BytecodeOp::Declare, 2),
-            (BytecodeOp::LoadConst, 3),
-            (BytecodeOp::LoadName, 4),
-            (BytecodeOp::StoreName, 5),
-            (BytecodeOp::StoreMember, 6),
-            (BytecodeOp::Move, 7),
-            (BytecodeOp::Binary, 8),
-            (BytecodeOp::Unary, 9),
-            (BytecodeOp::Member, 10),
-            (BytecodeOp::Array, 11),
-            (BytecodeOp::Object, 12),
-            (BytecodeOp::Call, 13),
-            (BytecodeOp::New, 14),
-            (BytecodeOp::Template, 15),
-            (BytecodeOp::FunctionStart, 16),
-            (BytecodeOp::FunctionEnd, 17),
-            (BytecodeOp::FunctionExprStart, 18),
-            (BytecodeOp::FunctionExprEnd, 19),
-            (BytecodeOp::Class, 20),
-            (BytecodeOp::Import, 21),
-            (BytecodeOp::Export, 22),
-            (BytecodeOp::Throw, 23),
-            (BytecodeOp::TryStart, 24),
-            (BytecodeOp::CatchStart, 25),
-            (BytecodeOp::FinallyStart, 26),
-            (BytecodeOp::TryEnd, 27),
-            (BytecodeOp::Return, 28),
-            (BytecodeOp::Pop, 29),
-            (BytecodeOp::Jump, 30),
-            (BytecodeOp::JumpIfFalse, 31),
-            (BytecodeOp::Unsupported, 32),
-            (BytecodeOp::LoadConstConst, 33),
-            (BytecodeOp::PopReg, 34),
-            (BytecodeOp::CallOne, 35),
-        ]
-        .into_iter()
-        .map(|(op, code)| (op.mnemonic().to_string(), code))
-        .collect();
+        let opcodes = BytecodeOp::all()
+            .iter()
+            .enumerate()
+            .map(|(code, op)| (op.mnemonic().to_string(), code as u8))
+            .collect();
 
         let operand_tags = [
             ("register", 0),
@@ -1147,6 +1131,7 @@ pub enum BytecodeOperand {
     Label(u32),
     Operator(u32),
     DeclKind(u32),
+    ScopeKind(u32),
     Count(u32),
     None,
 }
@@ -1161,6 +1146,7 @@ enum OperandKind {
     Label,
     Operator,
     DeclKind,
+    ScopeKind,
     Count,
     Value,
     OptionalRegister,
@@ -1180,6 +1166,7 @@ impl BytecodeOperand {
             BytecodeOperand::Operator(_) => encoding.operand_tag("count"),
             BytecodeOperand::Count(_) => encoding.operand_tag("count"),
             BytecodeOperand::DeclKind(_) => encoding.operand_tag("count"),
+            BytecodeOperand::ScopeKind(_) => encoding.operand_tag("count"),
             BytecodeOperand::None => encoding.operand_tag("none"),
         }
     }
@@ -1194,6 +1181,7 @@ impl BytecodeOperand {
             | BytecodeOperand::Label(value)
             | BytecodeOperand::Operator(value)
             | BytecodeOperand::DeclKind(value)
+            | BytecodeOperand::ScopeKind(value)
             | BytecodeOperand::Count(value) => *value,
             BytecodeOperand::None => 0,
         }
@@ -1464,6 +1452,9 @@ impl BytecodeModule {
             BytecodeOperand::DeclKind(value) => decl_kind_name(*value)
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("decl#{value}")),
+            BytecodeOperand::ScopeKind(value) => scope_kind_name(*value)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("scope#{value}")),
             BytecodeOperand::Count(value) => format!("#{value}"),
             BytecodeOperand::None => "none".to_string(),
         }
@@ -1953,18 +1944,20 @@ fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
         BytecodeOp::LoadConstConst => &[Register, Constant],
         BytecodeOp::LoadName => &[Register, NameRef],
         BytecodeOp::StoreName => &[NameRef, Value],
-        BytecodeOp::StoreMember => &[Value, Constant, Value],
+        BytecodeOp::StoreMember => &[Value, Value, Value],
         BytecodeOp::Move => &[Register, Value],
         BytecodeOp::Binary => &[Register, Operator, Value, Value],
         BytecodeOp::Unary => &[Register, Operator, Value],
-        BytecodeOp::Member => &[Register, Value, Constant],
+        BytecodeOp::Member => &[Register, Value, Value],
         BytecodeOp::FunctionStart => &[Function],
         BytecodeOp::FunctionExprStart => &[Register, Function],
         BytecodeOp::FunctionEnd
         | BytecodeOp::FunctionExprEnd
         | BytecodeOp::TryStart
         | BytecodeOp::FinallyStart
-        | BytecodeOp::TryEnd => &[],
+        | BytecodeOp::TryEnd
+        | BytecodeOp::LeaveScope => &[],
+        BytecodeOp::EnterScope => &[ScopeKind],
         BytecodeOp::CatchStart => &[OptionalName],
         BytecodeOp::Throw => &[Value],
         BytecodeOp::Return => &[OptionalValue],
@@ -2060,6 +2053,7 @@ fn read_operand(
         OperandKind::Label => Ok(BytecodeOperand::Label(cursor.read_u32()?)),
         OperandKind::Operator => Ok(BytecodeOperand::Operator(cursor.read_u32()?)),
         OperandKind::DeclKind => Ok(BytecodeOperand::DeclKind(cursor.read_u32()?)),
+        OperandKind::ScopeKind => Ok(BytecodeOperand::ScopeKind(cursor.read_u32()?)),
         OperandKind::Count => Ok(BytecodeOperand::Count(cursor.read_u32()?)),
         OperandKind::Value
         | OperandKind::OptionalRegister
@@ -2084,6 +2078,7 @@ fn ensure_operand_kind(operand: &BytecodeOperand, kind: OperandKind) -> Result<(
             | (OperandKind::Label, BytecodeOperand::Label(_))
             | (OperandKind::Operator, BytecodeOperand::Operator(_))
             | (OperandKind::DeclKind, BytecodeOperand::DeclKind(_))
+            | (OperandKind::ScopeKind, BytecodeOperand::ScopeKind(_))
             | (OperandKind::Count, BytecodeOperand::Count(_))
     );
     if valid {
@@ -2253,7 +2248,7 @@ impl BytecodeBuilder {
                 src,
             } => {
                 let object = self.value_operand(object);
-                let property = self.string_constant_operand(property);
+                let property = self.value_operand(property);
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::StoreMember, vec![object, property, src]);
             }
@@ -2287,7 +2282,7 @@ impl BytecodeBuilder {
             } => {
                 let dst = self.register_operand(dst);
                 let object = self.value_operand(object);
-                let property = self.string_constant_operand(property);
+                let property = self.value_operand(property);
                 self.emit(BytecodeOp::Member, vec![dst, object, property]);
             }
             IrInstruction::Array { dst, items } => {
@@ -2440,6 +2435,17 @@ impl BytecodeBuilder {
                     self.compile_instructions(finally_body);
                 }
                 self.emit(BytecodeOp::TryEnd, Vec::new());
+            }
+            IrInstruction::Scope { kind, body } => {
+                let scope = self.block_scope(body);
+                self.emit(
+                    BytecodeOp::EnterScope,
+                    vec![BytecodeOperand::ScopeKind(scope_kind_id(kind))],
+                );
+                self.scopes.push(scope);
+                self.compile_instructions(body);
+                self.scopes.pop();
+                self.emit(BytecodeOp::LeaveScope, Vec::new());
             }
             IrInstruction::Return(value) => {
                 let value = value
@@ -2614,6 +2620,19 @@ impl BytecodeBuilder {
         scope
     }
 
+    fn block_scope(&mut self, body: &[IrInstruction]) -> NameScope {
+        let mut names = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut scope = NameScope::default();
+        collect_local_scope_names(body, &mut names, &mut seen);
+        for name in names {
+            let encoded = compact_local_name(self.local_name_id);
+            self.local_name_id += 1;
+            scope.names.insert(name, encoded);
+        }
+        scope
+    }
+
     fn scoped_name_if_local(&self, name: &str) -> Option<String> {
         for scope in self.scopes.iter().rev() {
             if let Some(name) = scope.names.get(name) {
@@ -2668,6 +2687,7 @@ fn collect_local_scope_names(
                 collect_local_scope_names(catch_body, names, seen);
                 collect_local_scope_names(finally_body, names, seen);
             }
+            IrInstruction::Scope { .. } => {}
             IrInstruction::FunctionExpr { .. } => {}
             _ => {}
         }
@@ -2691,6 +2711,7 @@ fn instruction_has_return_value(instruction: &IrInstruction) -> bool {
                 || instructions_have_return_value(catch_body)
                 || instructions_have_return_value(finally_body)
         }
+        IrInstruction::Scope { body, .. } => instructions_have_return_value(body),
         IrInstruction::Function { .. } | IrInstruction::FunctionExpr { .. } => false,
         _ => false,
     }
@@ -2740,6 +2761,25 @@ fn decl_kind_name(kind: u32) -> Option<&'static str> {
         1 => Some("let"),
         2 => Some("const"),
         3 => Some("decl"),
+        _ => None,
+    }
+}
+
+fn scope_kind_id(kind: &str) -> u32 {
+    match kind {
+        "block" => 0,
+        "function" => 1,
+        "catch" => 2,
+        _ => 3,
+    }
+}
+
+fn scope_kind_name(kind: u32) -> Option<&'static str> {
+    match kind {
+        0 => Some("block"),
+        1 => Some("function"),
+        2 => Some("catch"),
+        3 => Some("scope"),
         _ => None,
     }
 }
@@ -3055,9 +3095,10 @@ fn seed_permutation_to_indexes(permutation: &str, kind: &str) -> Result<Vec<u8>,
 }
 
 fn validate_slot_permutation(indexes: &[u8], kind: &str) -> Result<(), EncodingError> {
-    if indexes.len() > 36 {
+    if indexes.len() > SEED_DIGITS.len() {
         return Err(EncodingError::Seed(format!(
-            "{kind} permutation supports at most 36 entries"
+            "{kind} permutation supports at most {} entries",
+            SEED_DIGITS.len()
         )));
     }
     let mut seen = vec![false; indexes.len()];
@@ -3104,26 +3145,22 @@ fn validate_seed_permutation(permutation: &str) -> Result<(), EncodingError> {
 }
 
 fn encode_base36_digit(value: u8) -> Result<char, EncodingError> {
-    match value {
-        0..=9 => Ok(char::from(b'0' + value)),
-        10..=35 => Ok(char::from(b'A' + value - 10)),
-        _ => Err(EncodingError::Seed(format!(
-            "seed index {value} is outside base36 range"
-        ))),
-    }
+    SEED_DIGITS
+        .get(value as usize)
+        .map(|digit| char::from(*digit))
+        .ok_or_else(|| EncodingError::Seed(format!("seed index {value} is outside seed range")))
 }
 
 fn decode_base36_digit(value: u8) -> Result<u8, EncodingError> {
-    match value {
-        b'0'..=b'9' => Ok(value - b'0'),
-        b'a'..=b'z' => Ok(value - b'a' + 10),
-        b'A'..=b'Z' => Ok(value - b'A' + 10),
-        _ => Err(EncodingError::Seed(format!(
-            "invalid base36 digit {:?}",
-            char::from(value)
-        ))),
-    }
+    let value = value.to_ascii_uppercase();
+    SEED_DIGITS
+        .iter()
+        .position(|digit| *digit == value)
+        .map(|index| index as u8)
+        .ok_or_else(|| EncodingError::Seed(format!("invalid seed digit {:?}", char::from(value))))
 }
+
+const SEED_DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_~";
 
 fn seed_fingerprint(permutation: &str, bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
@@ -3601,6 +3638,41 @@ mod tests {
         assert!(text.contains("FUNCTION_START fun#0"), "{text}");
         assert!(!text.contains("FUNCTION_START fun#0("), "{text}");
         assert!(!text.contains("FUNCTION_START name#"), "{text}");
+        assert_eq!(restored, bytecode);
+    }
+
+    #[test]
+    fn scope_ir_emits_explicit_scope_opcodes() {
+        let module = IrModule {
+            extern_slots: Vec::new(),
+            instructions: vec![IrInstruction::Scope {
+                kind: "block".to_string(),
+                body: vec![
+                    IrInstruction::Declare {
+                        kind: "let".to_string(),
+                        name: "value".to_string(),
+                    },
+                    IrInstruction::StoreName {
+                        name: "value".to_string(),
+                        src: IrValue::Number(1.0),
+                    },
+                ],
+            }],
+        };
+
+        let bytecode = module.to_bytecode();
+        let text = bytecode.to_text();
+        let restored = super::BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap();
+
+        assert_eq!(
+            bytecode.instructions.first().unwrap().op,
+            super::BytecodeOp::EnterScope
+        );
+        assert_eq!(
+            bytecode.instructions.last().unwrap().op,
+            super::BytecodeOp::LeaveScope
+        );
+        assert!(text.contains("ENTER_SCOPE block"), "{text}");
         assert_eq!(restored, bytecode);
     }
 

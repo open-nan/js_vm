@@ -1,4 +1,10 @@
 target/
+artifacts/
+dist/
+.vendor/
+tests/.vendor/
+tests/.issues/
+tests/db/
 .DS_Store
 **/.DS_Store
 .vscode/

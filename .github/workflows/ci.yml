@@ -40,4 +40,7 @@ jobs:
         run: cargo install wasm-pack --locked
 
       - name: Verify
-        run: sh scripts/verify.sh
+        run: npm run verify
+
+      - name: Fuzz smoke
+        run: npm run fuzz:quick

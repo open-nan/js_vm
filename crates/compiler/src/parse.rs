@@ -8,10 +8,13 @@ pub struct LoweringContext {
     instructions: Vec<IrInstruction>,
     temp_id: usize,
     label_id: usize,
+    child_id: usize,
+    label_prefix: String,
     break_stack: Vec<String>,
     continue_stack: Vec<String>,
     extern_slots: BTreeMap<String, usize>,
     locals: BTreeSet<String>,
+    yield_array: Option<String>,
 }
 
 impl LoweringContext {
@@ -20,6 +23,8 @@ impl LoweringContext {
             instructions: Vec::new(),
             temp_id: 0,
             label_id: 0,
+            child_id: 0,
+            label_prefix: "c0".to_string(),
             break_stack: Vec::new(),
             continue_stack: Vec::new(),
             extern_slots: externs
@@ -28,6 +33,7 @@ impl LoweringContext {
                 .map(|(index, name)| (name.clone(), index))
                 .collect(),
             locals: BTreeSet::new(),
+            yield_array: None,
         }
     }
 
@@ -42,15 +48,20 @@ impl LoweringContext {
         }
     }
 
-    fn child(&self) -> Self {
+    fn child(&mut self) -> Self {
+        let child_id = self.child_id;
+        self.child_id += 1;
         Self {
             instructions: Vec::new(),
             temp_id: 0,
             label_id: 0,
+            child_id: 0,
+            label_prefix: format!("{}_{}", self.label_prefix, child_id),
             break_stack: Vec::new(),
             continue_stack: Vec::new(),
             extern_slots: BTreeMap::new(),
             locals: self.locals.clone(),
+            yield_array: None,
         }
     }
 
@@ -78,7 +89,7 @@ impl LoweringContext {
     }
 
     fn label(&mut self, prefix: &str) -> String {
-        let label = format!("{prefix}_{}", self.label_id);
+        let label = format!("{}_{}_{}", self.label_prefix, prefix, self.label_id);
         self.label_id += 1;
         label
     }
@@ -233,7 +244,7 @@ impl LoweringContext {
 
     pub fn lower_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Block(block) => self.lower_block(block),
+            Stmt::Block(block) => self.lower_block_scope(block),
             Stmt::Return(stmt) => self.lower_return(stmt),
             Stmt::Decl(decl) => self.lower_decl(decl),
             Stmt::Expr(stmt) => self.lower_expr_stmt(stmt),
@@ -326,6 +337,19 @@ impl LoweringContext {
         }
     }
 
+    fn lower_block_scope(&mut self, block: &BlockStmt) {
+        self.predeclare_block(block);
+        let start = self.instructions.len();
+        for stmt in &block.stmts {
+            self.lower_stmt(stmt);
+        }
+        let body = self.instructions.split_off(start);
+        self.emit(IrInstruction::Scope {
+            kind: "block".to_string(),
+            body,
+        });
+    }
+
     fn lower_return(&mut self, stmt: &ReturnStmt) {
         let value = stmt.arg.as_ref().map(|expr| self.lower_expr(expr));
         self.emit(IrInstruction::Return(value));
@@ -387,24 +411,115 @@ impl LoweringContext {
         }
     }
 
+    fn lower_param_defaults(&mut self, params: &[Param]) {
+        for param in params {
+            self.lower_pat_default(&param.pat);
+        }
+    }
+
+    fn lower_arrow_param_defaults(&mut self, params: &[Pat]) {
+        for param in params {
+            self.lower_pat_default(param);
+        }
+    }
+
+    fn lower_constructor_param_defaults(&mut self, params: &[ParamOrTsParamProp]) {
+        for param in params {
+            if let ParamOrTsParamProp::Param(param) = param {
+                self.lower_pat_default(&param.pat);
+            }
+        }
+    }
+
+    fn start_generator_body(&mut self, is_generator: bool) {
+        if !is_generator {
+            return;
+        }
+        let name = "__yield".to_string();
+        self.declare_local(name.clone());
+        self.yield_array = Some(name.clone());
+        self.emit(IrInstruction::Declare {
+            kind: "let".to_string(),
+            name: name.clone(),
+        });
+        let array = self.temp();
+        self.emit(IrInstruction::Array {
+            dst: array.clone(),
+            items: Vec::new(),
+        });
+        self.emit(IrInstruction::StoreName {
+            name,
+            src: IrValue::Register(array),
+        });
+    }
+
+    fn finish_generator_body(&mut self) {
+        if let Some(name) = &self.yield_array {
+            self.emit(IrInstruction::Return(Some(IrValue::Name(name.clone()))));
+        }
+    }
+
+    fn lower_pat_default(&mut self, pat: &Pat) {
+        match pat {
+            Pat::Assign(assign) => {
+                if let Some(name) = pat_name(&assign.left) {
+                    let current = self.temp();
+                    self.emit(IrInstruction::LoadName {
+                        dst: current.clone(),
+                        name: name.clone(),
+                    });
+                    let is_undefined = self.temp();
+                    let end = self.label("param_default_end");
+                    self.emit(IrInstruction::Binary {
+                        dst: is_undefined.clone(),
+                        op: "==".to_string(),
+                        left: IrValue::Register(current),
+                        right: IrValue::Undefined,
+                    });
+                    self.emit(IrInstruction::JumpIfFalse {
+                        test: IrValue::Register(is_undefined),
+                        label: end.clone(),
+                    });
+                    let value = self.lower_expr(&assign.right);
+                    self.emit(IrInstruction::StoreName { name, src: value });
+                    self.emit(IrInstruction::Label(end));
+                }
+            }
+            Pat::Array(array) => {
+                for elem in array.elems.iter().flatten() {
+                    self.lower_pat_default(elem);
+                }
+            }
+            Pat::Object(object) => {
+                for prop in &object.props {
+                    match prop {
+                        ObjectPatProp::KeyValue(prop) => self.lower_pat_default(&prop.value),
+                        ObjectPatProp::Rest(rest) => self.lower_pat_default(&rest.arg),
+                        ObjectPatProp::Assign(_) => {}
+                    }
+                }
+            }
+            Pat::Rest(rest) => self.lower_pat_default(&rest.arg),
+            _ => {}
+        }
+    }
+
     fn lower_fn_decl(&mut self, decl: &FnDecl) {
         let name = ident_name(&decl.ident);
         self.declare_local(name.clone());
-        let params = decl
-            .function
-            .params
-            .iter()
-            .map(|param| pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string()))
-            .collect::<Vec<_>>();
+        let params = function_param_names(&decl.function.params);
 
         let mut body_ctx = self.child();
         body_ctx.declare_local(name.clone());
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
+        body_ctx.start_generator_body(decl.function.is_generator);
+        body_ctx.lower_param_defaults(&decl.function.params);
         if let Some(body) = &decl.function.body {
             body_ctx.lower_block(body);
         }
+        body_ctx.finish_generator_body();
         self.merge_child_externs(&body_ctx);
 
         self.emit(IrInstruction::Function {
@@ -488,21 +603,111 @@ impl LoweringContext {
     }
 
     fn lower_for_each(&mut self, kind: &str, left: &ForHead, right: &Expr, body: &Stmt) {
-        let iterated = self.lower_expr(right);
+        let iterated = if kind == "for_in" {
+            let object = self.lower_expr(right);
+            self.mark_extern("Object");
+            let object_reg = self.temp();
+            self.emit(IrInstruction::LoadName {
+                dst: object_reg.clone(),
+                name: "Object".to_string(),
+            });
+            let keys_reg = self.temp();
+            self.emit(IrInstruction::Member {
+                dst: keys_reg.clone(),
+                object: IrValue::Register(object_reg),
+                property: IrValue::String("keys".to_string()),
+            });
+            let values_reg = self.temp();
+            self.emit(IrInstruction::Call {
+                dst: values_reg.clone(),
+                callee: IrValue::Register(keys_reg),
+                args: vec![object],
+            });
+            IrValue::Register(values_reg)
+        } else {
+            self.lower_expr(right)
+        };
         let start_label = self.label(kind);
+        let update_label = self.label(&format!("{kind}_update"));
         let end_label = self.label(&format!("{kind}_end"));
+        let not_null_label = self.label(&format!("{kind}_not_null"));
+        let not_undefined_label = self.label(&format!("{kind}_not_undefined"));
+        let is_null = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: is_null.clone(),
+            op: "==".to_string(),
+            left: iterated.clone(),
+            right: IrValue::Null,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(is_null),
+            label: not_null_label.clone(),
+        });
+        self.emit(IrInstruction::Jump(end_label.clone()));
+        self.emit(IrInstruction::Label(not_null_label));
+        let is_undefined = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: is_undefined.clone(),
+            op: "==".to_string(),
+            left: iterated.clone(),
+            right: IrValue::Undefined,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(is_undefined),
+            label: not_undefined_label.clone(),
+        });
+        self.emit(IrInstruction::Jump(end_label.clone()));
+        self.emit(IrInstruction::Label(not_undefined_label));
+        let index = self.temp();
+        self.emit(IrInstruction::LoadConst {
+            dst: index.clone(),
+            value: IrValue::Number(0.0),
+        });
+        let length = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: length.clone(),
+            object: iterated.clone(),
+            property: IrValue::String("length".to_string()),
+        });
         self.emit(IrInstruction::Marker(format!("{kind} {iterated}")));
         self.emit(IrInstruction::Label(start_label.clone()));
+        let test = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: test.clone(),
+            op: "<".to_string(),
+            left: IrValue::Register(index.clone()),
+            right: IrValue::Register(length),
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(test),
+            label: end_label.clone(),
+        });
         let item = IrValue::Register(self.temp());
-        self.emit(IrInstruction::Marker(format!(
-            "iterator_next {iterated}, {item}"
-        )));
+        if let IrValue::Register(item_reg) = &item {
+            self.emit(IrInstruction::Member {
+                dst: item_reg.clone(),
+                object: iterated.clone(),
+                property: IrValue::Register(index.clone()),
+            });
+        }
         self.lower_for_head_binding(left, item);
         self.break_stack.push(end_label.clone());
-        self.continue_stack.push(start_label.clone());
+        self.continue_stack.push(update_label.clone());
         self.lower_stmt(body);
         self.continue_stack.pop();
         self.break_stack.pop();
+        self.emit(IrInstruction::Label(update_label));
+        let next = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: next.clone(),
+            op: "+".to_string(),
+            left: IrValue::Register(index.clone()),
+            right: IrValue::Number(1.0),
+        });
+        self.emit(IrInstruction::Move {
+            dst: index,
+            src: IrValue::Register(next),
+        });
         self.emit(IrInstruction::Jump(start_label));
         self.emit(IrInstruction::Label(end_label));
     }
@@ -564,7 +769,7 @@ impl LoweringContext {
 
     fn lower_try(&mut self, stmt: &TryStmt) {
         let mut body_ctx = self.child();
-        body_ctx.lower_block(&stmt.block);
+        body_ctx.lower_block_scope(&stmt.block);
         self.merge_child_externs(&body_ctx);
 
         let (catch_param, catch_body) = if let Some(handler) = &stmt.handler {
@@ -572,7 +777,7 @@ impl LoweringContext {
             if let Some(param) = handler.param.as_ref().and_then(pat_name) {
                 catch_ctx.declare_local(param);
             }
-            catch_ctx.lower_block(&handler.body);
+            catch_ctx.lower_block_scope(&handler.body);
             self.merge_child_externs(&catch_ctx);
             (
                 handler.param.as_ref().and_then(pat_name),
@@ -584,7 +789,7 @@ impl LoweringContext {
 
         let finally_body = if let Some(finalizer) = &stmt.finalizer {
             let mut finally_ctx = self.child();
-            finally_ctx.lower_block(finalizer);
+            finally_ctx.lower_block_scope(finalizer);
             self.merge_child_externs(&finally_ctx);
             finally_ctx.instructions
         } else {
@@ -688,15 +893,12 @@ impl LoweringContext {
             Expr::Fn(expr) => self.lower_fn_expr(expr),
             Expr::Arrow(expr) => {
                 let dst = self.temp();
-                let params = expr
-                    .params
-                    .iter()
-                    .map(|param| pat_name(param).unwrap_or_else(|| "<unsupported>".to_string()))
-                    .collect::<Vec<_>>();
+                let params = pat_list_names(&expr.params);
                 let mut body_ctx = self.child();
                 for param in &params {
                     body_ctx.declare_local(param.clone());
                 }
+                body_ctx.lower_arrow_param_defaults(&expr.params);
                 match &*expr.body {
                     BlockStmtOrExpr::BlockStmt(block) => body_ctx.lower_block(block),
                     BlockStmtOrExpr::Expr(expr) => {
@@ -759,10 +961,28 @@ impl LoweringContext {
                     .map(|arg| self.lower_expr(arg))
                     .unwrap_or(IrValue::Undefined);
                 let dst = self.temp();
-                self.emit(IrInstruction::Marker(format!(
-                    "%{dst} = {} {arg}",
-                    if expr.delegate { "yield*" } else { "yield" }
-                )));
+                if let Some(array_name) = self.yield_array.clone() {
+                    let push = self.temp();
+                    self.emit(IrInstruction::Member {
+                        dst: push.clone(),
+                        object: IrValue::Name(array_name),
+                        property: IrValue::String("push".to_string()),
+                    });
+                    self.emit(IrInstruction::Call {
+                        dst: dst.clone(),
+                        callee: IrValue::Register(push),
+                        args: vec![arg.clone()],
+                    });
+                    self.emit(IrInstruction::Marker(format!(
+                        "%{dst} = collect {} {arg}",
+                        if expr.delegate { "yield*" } else { "yield" }
+                    )));
+                } else {
+                    self.emit(IrInstruction::Marker(format!(
+                        "%{dst} = {} {arg}",
+                        if expr.delegate { "yield*" } else { "yield" }
+                    )));
+                }
                 IrValue::Register(dst)
             }
             Expr::Await(expr) => {
@@ -829,6 +1049,12 @@ impl LoweringContext {
     }
 
     fn lower_binary(&mut self, expr: &BinExpr) -> IrValue {
+        match expr.op {
+            BinaryOp::LogicalAnd => return self.lower_logical_and(expr),
+            BinaryOp::LogicalOr => return self.lower_logical_or(expr),
+            BinaryOp::NullishCoalescing => return self.lower_nullish_coalescing(expr),
+            _ => {}
+        }
         let left = self.lower_expr(&expr.left);
         let right = self.lower_expr(&expr.right);
         let dst = self.temp();
@@ -838,6 +1064,95 @@ impl LoweringContext {
             left,
             right,
         });
+        IrValue::Register(dst)
+    }
+
+    fn lower_logical_and(&mut self, expr: &BinExpr) -> IrValue {
+        let left = self.lower_expr(&expr.left);
+        let dst = self.temp();
+        let end = self.label("logical_and_end");
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: left.clone(),
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: left,
+            label: end.clone(),
+        });
+        let right = self.lower_expr(&expr.right);
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: right,
+        });
+        self.emit(IrInstruction::Label(end));
+        IrValue::Register(dst)
+    }
+
+    fn lower_logical_or(&mut self, expr: &BinExpr) -> IrValue {
+        let left = self.lower_expr(&expr.left);
+        let dst = self.temp();
+        let rhs = self.label("logical_or_rhs");
+        let end = self.label("logical_or_end");
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: left.clone(),
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: left,
+            label: rhs.clone(),
+        });
+        self.emit(IrInstruction::Jump(end.clone()));
+        self.emit(IrInstruction::Label(rhs));
+        let right = self.lower_expr(&expr.right);
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: right,
+        });
+        self.emit(IrInstruction::Label(end));
+        IrValue::Register(dst)
+    }
+
+    fn lower_nullish_coalescing(&mut self, expr: &BinExpr) -> IrValue {
+        let left = self.lower_expr(&expr.left);
+        let dst = self.temp();
+        let check_undefined = self.label("nullish_check_undefined");
+        let rhs = self.label("nullish_rhs");
+        let end = self.label("nullish_end");
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: left.clone(),
+        });
+        let is_null = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: is_null.clone(),
+            op: "==".to_string(),
+            left: left.clone(),
+            right: IrValue::Null,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(is_null),
+            label: check_undefined.clone(),
+        });
+        self.emit(IrInstruction::Jump(rhs.clone()));
+        self.emit(IrInstruction::Label(check_undefined));
+        let is_undefined = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: is_undefined.clone(),
+            op: "==".to_string(),
+            left,
+            right: IrValue::Undefined,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(is_undefined),
+            label: end.clone(),
+        });
+        self.emit(IrInstruction::Label(rhs));
+        let right = self.lower_expr(&expr.right);
+        self.emit(IrInstruction::Move {
+            dst: dst.clone(),
+            src: right,
+        });
+        self.emit(IrInstruction::Label(end));
         IrValue::Register(dst)
     }
 
@@ -878,21 +1193,17 @@ impl LoweringContext {
                     Prop::Method(prop) => {
                         let key = prop_name(&prop.key);
                         let dst = self.temp();
-                        let params = prop
-                            .function
-                            .params
-                            .iter()
-                            .map(|param| {
-                                pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string())
-                            })
-                            .collect::<Vec<_>>();
+                        let params = function_param_names(&prop.function.params);
                         let mut body_ctx = self.child();
                         for param in &params {
                             body_ctx.declare_local(param.clone());
                         }
+                        body_ctx.start_generator_body(prop.function.is_generator);
+                        body_ctx.lower_param_defaults(&prop.function.params);
                         if let Some(body) = &prop.function.body {
                             body_ctx.lower_block(body);
                         }
+                        body_ctx.finish_generator_body();
                         self.merge_child_externs(&body_ctx);
                         self.emit(IrInstruction::FunctionExpr {
                             dst: dst.clone(),
@@ -924,12 +1235,7 @@ impl LoweringContext {
     fn lower_fn_expr(&mut self, expr: &FnExpr) -> IrValue {
         let dst = self.temp();
         let name = expr.ident.as_ref().map(ident_name);
-        let params = expr
-            .function
-            .params
-            .iter()
-            .map(|param| pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string()))
-            .collect::<Vec<_>>();
+        let params = function_param_names(&expr.function.params);
         let mut body_ctx = self.child();
         if let Some(name) = &name {
             body_ctx.declare_local(name.clone());
@@ -937,9 +1243,12 @@ impl LoweringContext {
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
+        body_ctx.start_generator_body(expr.function.is_generator);
+        body_ctx.lower_param_defaults(&expr.function.params);
         if let Some(body) = &expr.function.body {
             body_ctx.lower_block(body);
         }
+        body_ctx.finish_generator_body();
         self.merge_child_externs(&body_ctx);
         self.emit(IrInstruction::FunctionExpr {
             dst: dst.clone(),
@@ -1022,7 +1331,7 @@ impl LoweringContext {
                     let value = self.lower_constructor_function(constructor);
                     self.emit(IrInstruction::StoreMember {
                         object: class_value.clone(),
-                        property: "constructor".to_string(),
+                        property: IrValue::String("constructor".to_string()),
                         src: value,
                     });
                 }
@@ -1031,11 +1340,11 @@ impl LoweringContext {
                     let value = self.lower_function_value(Some(key.clone()), &method.function);
                     self.emit(IrInstruction::StoreMember {
                         object: class_value.clone(),
-                        property: if method.is_static {
+                        property: IrValue::String(if method.is_static {
                             key
                         } else {
                             format!("prototype.{key}")
-                        },
+                        }),
                         src: value,
                     });
                 }
@@ -1057,11 +1366,11 @@ impl LoweringContext {
                         let value = self.lower_expr(value);
                         self.emit(IrInstruction::StoreMember {
                             object: class_value.clone(),
-                            property: if prop.is_static {
+                            property: IrValue::String(if prop.is_static {
                                 prop_name(&prop.key)
                             } else {
                                 format!("prototype.{}", prop_name(&prop.key))
-                            },
+                            }),
                             src: value,
                         });
                     }
@@ -1073,18 +1382,17 @@ impl LoweringContext {
 
     fn lower_function_value(&mut self, name: Option<String>, function: &Function) -> IrValue {
         let dst = self.temp();
-        let params = function
-            .params
-            .iter()
-            .map(|param| pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string()))
-            .collect::<Vec<_>>();
+        let params = function_param_names(&function.params);
         let mut body_ctx = self.child();
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
+        body_ctx.start_generator_body(function.is_generator);
+        body_ctx.lower_param_defaults(&function.params);
         if let Some(body) = &function.body {
             body_ctx.lower_block(body);
         }
+        body_ctx.finish_generator_body();
         self.merge_child_externs(&body_ctx);
         self.emit(IrInstruction::FunctionExpr {
             dst: dst.clone(),
@@ -1097,15 +1405,12 @@ impl LoweringContext {
 
     fn lower_constructor_function(&mut self, constructor: &Constructor) -> IrValue {
         let dst = self.temp();
-        let params = constructor
-            .params
-            .iter()
-            .map(constructor_param_name)
-            .collect::<Vec<_>>();
+        let params = constructor_param_names(&constructor.params);
         let mut body_ctx = self.child();
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
+        body_ctx.lower_constructor_param_defaults(&constructor.params);
         if let Some(body) = &constructor.body {
             body_ctx.lower_block(body);
         }
@@ -1196,15 +1501,16 @@ impl LoweringContext {
         IrValue::Register(dst)
     }
 
-    fn lower_member_property(&mut self, prop: &MemberProp) -> String {
+    fn lower_member_property(&mut self, prop: &MemberProp) -> IrValue {
         match prop {
-            MemberProp::Ident(ident) => ident.sym.to_string(),
-            MemberProp::PrivateName(name) => format!("#{}", name.name),
+            MemberProp::Ident(ident) => IrValue::String(ident.sym.to_string()),
+            MemberProp::PrivateName(name) => IrValue::String(format!("#{}", name.name)),
             MemberProp::Computed(prop) => match &*prop.expr {
-                Expr::Lit(Lit::Str(value)) => value.value.to_string(),
-                Expr::Lit(Lit::Num(value)) => value.value.to_string(),
-                Expr::Lit(Lit::Bool(value)) => value.value.to_string(),
-                _ => self.lower_expr(&prop.expr).to_string(),
+                Expr::Lit(Lit::Str(value)) => IrValue::String(value.value.to_string()),
+                Expr::Lit(Lit::Num(value)) => IrValue::Number(value.value),
+                Expr::Lit(Lit::Bool(value)) => IrValue::Bool(value.value),
+                Expr::Lit(Lit::Null(_)) => IrValue::Null,
+                _ => self.lower_expr(&prop.expr),
             },
         }
     }
@@ -1258,7 +1564,7 @@ impl LoweringContext {
                         self.emit(IrInstruction::Member {
                             dst: item.clone(),
                             object: value.clone(),
-                            property: index.to_string(),
+                            property: IrValue::Number(index as f64),
                         });
                         self.lower_pat_binding(elem, IrValue::Register(item), kind);
                     }
@@ -1273,7 +1579,7 @@ impl LoweringContext {
                             self.emit(IrInstruction::Member {
                                 dst: item.clone(),
                                 object: value.clone(),
-                                property: key,
+                                property: IrValue::String(key),
                             });
                             self.lower_pat_binding(&prop.value, IrValue::Register(item), kind);
                         }
@@ -1284,7 +1590,7 @@ impl LoweringContext {
                             self.emit(IrInstruction::Member {
                                 dst: item.clone(),
                                 object: value.clone(),
-                                property: key.clone(),
+                                property: IrValue::String(key.clone()),
                             });
                             self.emit(IrInstruction::Declare {
                                 kind: kind.to_string(),
@@ -1532,6 +1838,8 @@ fn module_decl_name(decl: &ModuleDecl) -> &'static str {
 fn pat_name(pat: &Pat) -> Option<String> {
     match pat {
         Pat::Ident(ident) => Some(ident_name(&ident.id)),
+        Pat::Assign(assign) => pat_name(&assign.left),
+        Pat::Rest(rest) => pat_name(&rest.arg),
         Pat::Expr(expr) => match &**expr {
             Expr::Ident(ident) => Some(ident_name(ident)),
             _ => None,
@@ -1540,13 +1848,30 @@ fn pat_name(pat: &Pat) -> Option<String> {
     }
 }
 
-fn constructor_param_name(param: &ParamOrTsParamProp) -> String {
-    match param {
-        ParamOrTsParamProp::Param(param) => {
-            pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string())
-        }
-        ParamOrTsParamProp::TsParamProp(_) => "<unsupported>".to_string(),
-    }
+fn function_param_names(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .map(|param| pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string()))
+        .collect()
+}
+
+fn pat_list_names(params: &[Pat]) -> Vec<String> {
+    params
+        .iter()
+        .map(|param| pat_name(param).unwrap_or_else(|| "<unsupported>".to_string()))
+        .collect()
+}
+
+fn constructor_param_names(params: &[ParamOrTsParamProp]) -> Vec<String> {
+    params
+        .iter()
+        .map(|param| match param {
+            ParamOrTsParamProp::Param(param) => {
+                pat_name(&param.pat).unwrap_or_else(|| "<unsupported>".to_string())
+            }
+            ParamOrTsParamProp::TsParamProp(_) => "<unsupported>".to_string(),
+        })
+        .collect()
 }
 
 fn ident_name(ident: &Ident) -> String {
