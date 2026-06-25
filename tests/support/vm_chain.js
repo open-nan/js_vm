@@ -58,6 +58,21 @@ const OPERAND_TAGS = [
 
 const CONSTANT_TAGS = ['number', 'string', 'bool', 'null', 'undefined'];
 
+class JsVmAdapter {
+  constructor(packages) {
+    Object.assign(this, packages);
+  }
+
+  static async load() {
+    const packages = await loadVmPackages();
+    return new JsVmAdapter(packages);
+  }
+
+  runSource(source, options = {}) {
+    return runVmSource(this, source, options);
+  }
+}
+
 function relative(file) {
   return path.relative(ROOT, file);
 }
@@ -106,6 +121,10 @@ function externSlotsForIteration(externs, iteration, baseSeed = 1337) {
 }
 
 async function loadVm() {
+  return JsVmAdapter.load();
+}
+
+async function loadVmPackages() {
   const compilerPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler.js');
   const compilerWasmPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler_bg.wasm');
   const runtimePath = path.join(ROOT, 'pkg/executor/js_vm_runtime.js');
@@ -133,6 +152,13 @@ async function loadVm() {
 }
 
 function runVmSource(vm, source, options = {}) {
+  if (vm instanceof JsVmAdapter) {
+    return runVmSourceWithPackages(vm, source, options);
+  }
+  return runVmSourceWithPackages(vm, source, options);
+}
+
+function runVmSourceWithPackages(vm, source, options = {}) {
   const seeds = options.seeds ?? 2;
   const baseSeed = options.baseSeed ?? 1337;
   const iterations = Math.max(1, seeds + 1);
@@ -158,10 +184,16 @@ function runVmSource(vm, source, options = {}) {
           collectBytecodeCoverage(coverage, artifact.bytecode_text(), bytes.length);
         }
         const seed = vm.js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
-        const logs = [];
+        const logEntries = [];
         const previousHostLog = globalThis.__jsVmHostLog;
         if (options.captureLogs) {
-          globalThis.__jsVmHostLog = (message) => logs.push(String(message));
+          globalThis.__jsVmHostLog = (level, message) => {
+            if (message === undefined) {
+              logEntries.push({ level: 'log', message: String(level) });
+            } else {
+              logEntries.push({ level: String(level), message: String(message) });
+            }
+          };
         }
         let result;
         try {
@@ -171,7 +203,13 @@ function runVmSource(vm, source, options = {}) {
             globalThis.__jsVmHostLog = previousHostLog || (() => {});
           }
         }
-        results.push({ result, seed, label: rows.label, logs });
+        results.push({
+          result,
+          seed,
+          label: rows.label,
+          logs: logEntries.map((entry) => entry.message),
+          logEntries,
+        });
 
         if (options.expect !== undefined && result !== options.expect) {
           throw new Error(
@@ -193,6 +231,7 @@ function runVmSource(vm, source, options = {}) {
     results,
     lastResult: results.at(-1)?.result,
     logs: results.at(-1)?.logs || [],
+    logEntries: results.at(-1)?.logEntries || [],
     coverage: finalizeCoverage(coverage),
   };
 }
@@ -212,9 +251,26 @@ function collectBytecodeCoverage(coverage, text, byteLength) {
   for (const line of text.split(/\r?\n/)) {
     const section = line.match(/^\.(\w+)/);
     if (section) coverage.sections.add(section[1]);
-    const op = line.match(/^\d+\s+([A-Z][A-Z0-9_]*)\b/);
-    if (op) coverage.opcodes.add(op[1]);
+    const op = line.match(/^\d+\s+([A-Z][A-Z0-9_]*)\b(?:\s+(.*))?$/);
+    if (!op) continue;
+    coverage.opcodes.add(op[1]);
+    for (const specialized of specializedCoverageOpcodes(op[1], op[2] || '')) {
+      coverage.opcodes.add(specialized);
+    }
   }
+}
+
+function specializedCoverageOpcodes(op, operands) {
+  if (op === 'LOAD_CONST' && /^r\d+,\s+c\d+\(/.test(operands)) {
+    return ['LOAD_CONST_CONST'];
+  }
+  if (op === 'POP' && /^r\d+\b/.test(operands)) {
+    return ['POP_REG'];
+  }
+  if (op === 'CALL' && /,\s+#1,/.test(operands)) {
+    return ['CALL_1'];
+  }
+  return [];
 }
 
 function finalizeCoverage(coverage) {
@@ -236,6 +292,7 @@ module.exports = {
   shuffled,
   seedRows,
   externSlotsForIteration,
+  JsVmAdapter,
   loadVm,
   runVmSource,
 };

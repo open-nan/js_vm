@@ -87,7 +87,7 @@ function findLastExpressionLine(lines) {
 
 function observablePrelude(host) {
   const consoleShim =
-    host === 'd8'
+    host === 'v8'
       ? `
 if (typeof console === "undefined") {
   globalThis.console = { log: (...args) => print(args.map(__vmFormat).join(" ")) };

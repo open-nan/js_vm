@@ -11,6 +11,12 @@ const {
   relative,
   runVmSource,
 } = require('./support/vm_chain.js');
+const {
+  requireJsvuV8Path,
+  resolveJsvuV8Path,
+  v8EvalArgs,
+  v8ReferencePrelude,
+} = require('./support/reference_engine.js');
 const { CORPUS_ROOT, readCorpusFiles, readCorpusCase } = require('./support/corpus.js');
 
 const DEFAULT_FAILURE_DIR = path.join(__dirname, '..', 'artifacts/js_fuzzer/failures');
@@ -21,14 +27,21 @@ const DB_COVERAGE_MANIFEST = 'coverage.json';
 const FUZZ_PROGRESS_INTERVAL_MS = 1000;
 const ISSUE_LEVELS = {
   internalFailures: 1,
+  runtimeTimeouts: 1,
+  vmFailures: 1,
   compileErrors: 2,
   runtimeErrors: 3,
+  differentialFailures: 3,
   expectedRuntimeErrors: 4,
+  timeouts: 5,
   skipped: 5,
 };
 const ERROR_STATUSES = [
+  'runtimeTimeouts',
+  'vmFailures',
   'compileErrors',
   'runtimeErrors',
+  'differentialFailures',
   'expectedRuntimeErrors',
   'internalFailures',
 ];
@@ -72,6 +85,13 @@ if (isMainThread) {
       error: err?.stack || String(err),
     });
   });
+} else if (workerData?.mode === 'vmCaseRunner') {
+  runVmCaseRunner(workerData).catch((err) => {
+    parentPort.postMessage({
+      type: 'error',
+      error: err?.stack || String(err),
+    });
+  });
 } else {
   runFuzzWorker(workerData).then(() => {
     parentPort.postMessage({ type: 'done', workerId: workerData.workerId });
@@ -91,10 +111,13 @@ async function main(args, issueRecorder) {
   }
 
   const corpusSeeds = args.corpusSeeds ? loadCorpusSeeds() : [];
+  if (args.differential) {
+    args.referenceEnginePath = requireJsvuV8Path(args.referenceEnginePath);
+  }
   const jsFuzzer = args.jsFuzzer ? createJsFuzzerAdapter(args) : disabledJsFuzzer();
   const totalCases = args.timeMs > 0 ? null : fuzzCaseCount(args, corpusSeeds);
   log.step(
-    `Running js_fuzzer ${describeRunPlan(args, totalCases)}, threads=${args.threads}, caseLog=${args.caseLogMode}, seeds=${args.seeds}, baseSeed=${args.baseSeed}, maxBytes=${args.maxBytes}, errorLimit=${args.errorLimit || 'off'}, workerIdleCheck=${log.formatDuration(args.workerIdleCheckMs)}, workerStuck=${args.workerStuckMs ? log.formatDuration(args.workerStuckMs) : 'off'}, corpusSeeds=${corpusSeeds.length}, jsFuzzer=${jsFuzzer.available ? 'on' : 'off'}`,
+    `Running js_fuzzer ${describeRunPlan(args, totalCases)}, threads=${args.threads}, caseLog=${args.caseLogMode}, seeds=${args.seeds}, baseSeed=${args.baseSeed}, maxBytes=${args.maxBytes}, errorLimit=${args.errorLimit || 'off'}, vmTimeout=${log.formatDuration(args.vmTimeoutMs)}, hostTimeout=${log.formatDuration(args.hostTimeoutMs)}, workerIdleCheck=${log.formatDuration(args.workerIdleCheckMs)}, workerStuck=${args.workerStuckMs ? log.formatDuration(args.workerStuckMs) : 'off'}, corpusSeeds=${corpusSeeds.length}, jsFuzzer=${jsFuzzer.available ? 'on' : 'off'}, differential=${args.differential ? `v8/${args.differentialStderr}` : 'off'}`,
   );
   if (!jsFuzzer.available) {
     log.warn(`V8 js_fuzzer disabled: ${jsFuzzer.reason}`);
@@ -109,6 +132,9 @@ async function main(args, issueRecorder) {
 
   if (isErrorLimitReached(args, stats)) return 1;
   if (stats.internalFailures > 0) return 1;
+  if (stats.runtimeTimeouts > 0) return 1;
+  if (stats.vmFailures > 0) return 1;
+  if (stats.differentialFailures > 0) return 1;
   if (args.failOnCompileError && stats.compileErrors > 0) return 1;
   if (args.strictRuntime && stats.runtimeErrors > 0) return 1;
   return 0;
@@ -116,7 +142,7 @@ async function main(args, issueRecorder) {
 
 async function runSingleThreadFuzz(args, issueRecorder, corpusSeeds, jsFuzzer, totalCases) {
   log.step(`Loading JS VM wasm packages`);
-  const vm = await loadVm();
+  const vm = args.differential ? await createVmCaseRunner(args) : await loadVm();
   log.ok(`Loaded JS VM wasm packages`);
 
   const stats = createStats();
@@ -126,14 +152,32 @@ async function runSingleThreadFuzz(args, issueRecorder, corpusSeeds, jsFuzzer, t
   const progressReporter = createProgressReporter();
   let checkedCases = 0;
 
-  for (let index = 0; shouldRunNextCase(index, totalCases, deadlineAt); index += 1) {
-    const generated = generateTask(index, args, corpusSeeds, jsFuzzer);
-    const started = Date.now();
-    const progress = fuzzProgressText(index + 1, totalCases, fuzzStartedAt, deadlineAt);
+  try {
+    for (let index = 0; shouldRunNextCase(index, totalCases, deadlineAt); index += 1) {
+      const generated = generateTask(index, args, corpusSeeds, jsFuzzer);
+      const started = Date.now();
+      const progress = fuzzProgressText(index + 1, totalCases, fuzzStartedAt, deadlineAt);
 
-    if (generated.bytes > args.maxBytes) {
-      const reason = `skipped: ${generated.bytes} exceeds ${args.maxBytes} bytes`;
-      const result = failure('skipped', reason);
+      if (generated.bytes > args.maxBytes) {
+        const reason = `skipped: ${generated.bytes} exceeds ${args.maxBytes} bytes`;
+        const result = failure('skipped', reason);
+        recordFuzzResult({
+          args,
+          issueRecorder,
+          stats,
+          coverageSeen,
+          generated,
+          result,
+          progress,
+          durationMs: Date.now() - started,
+        });
+        checkedCases += 1;
+        maybeLogAggregateProgress(progressReporter, args, checkedCases, fuzzStartedAt, deadlineAt);
+        if (tripErrorLimit(args, stats)) break;
+        continue;
+      }
+
+      const result = await runGeneratedSource(vm, generated, args);
       recordFuzzResult({
         args,
         issueRecorder,
@@ -147,23 +191,9 @@ async function runSingleThreadFuzz(args, issueRecorder, corpusSeeds, jsFuzzer, t
       checkedCases += 1;
       maybeLogAggregateProgress(progressReporter, args, checkedCases, fuzzStartedAt, deadlineAt);
       if (tripErrorLimit(args, stats)) break;
-      continue;
     }
-
-    const result = runGeneratedSource(vm, generated, args);
-    recordFuzzResult({
-      args,
-      issueRecorder,
-      stats,
-      coverageSeen,
-      generated,
-      result,
-      progress,
-      durationMs: Date.now() - started,
-    });
-    checkedCases += 1;
-    maybeLogAggregateProgress(progressReporter, args, checkedCases, fuzzStartedAt, deadlineAt);
-    if (tripErrorLimit(args, stats)) break;
+  } finally {
+    if (args.differential) await vm.close();
   }
 
   return {
@@ -214,6 +244,9 @@ async function replayIssueRun(args, mainStartedAt) {
   printReplaySummary(args, stats, coverageSeen, cases.length, replayStartedAt, mainStartedAt);
 
   if (stats.internalFailures > 0) return 1;
+  if (stats.runtimeTimeouts > 0) return 1;
+  if (stats.vmFailures > 0) return 1;
+  if (stats.differentialFailures > 0) return 1;
   if (args.failOnCompileError && stats.compileErrors > 0) return 1;
   if (args.strictRuntime && stats.runtimeErrors > 0) return 1;
   return 0;
@@ -549,52 +582,60 @@ async function runParallelFuzz(args, issueRecorder, corpusSeeds, jsFuzzer, total
 async function runFuzzWorker(data) {
   const args = data.args;
   const jsFuzzer = args.jsFuzzer ? createJsFuzzerAdapter(args) : disabledJsFuzzer();
-  const vm = await loadVm();
+  const vm = args.differential ? await createVmCaseRunner(args) : await loadVm();
   const stopFlag = data.stopBuffer ? new Int32Array(data.stopBuffer) : null;
   parentPort.postMessage({ type: 'ready', workerId: data.workerId });
   const runMessage = await waitForWorkerRunMessage();
 
-  for (
-    let index = data.workerId;
-    shouldRunNextCase(index, data.totalCases, runMessage.deadlineAt) && !isStopRequested(stopFlag);
-    index += data.threads
-  ) {
-    const generated = generateTask(index, args, data.corpusSeeds, jsFuzzer);
-    const started = Date.now();
-    parentPort.postMessage({
-      type: 'caseStart',
-      workerId: data.workerId,
-      generated: taskSummary(generated),
-      startedAt: started,
-    });
+  try {
+    for (
+      let index = data.workerId;
+      shouldRunNextCase(index, data.totalCases, runMessage.deadlineAt) && !isStopRequested(stopFlag);
+      index += data.threads
+    ) {
+      const generated = generateTask(index, args, data.corpusSeeds, jsFuzzer);
+      const started = Date.now();
+      parentPort.postMessage({
+        type: 'caseStart',
+        workerId: data.workerId,
+        generated: taskSummary(generated),
+        startedAt: started,
+      });
 
-    let result;
-    if (generated.bytes > args.maxBytes) {
-      result = failure('skipped', `skipped: ${generated.bytes} exceeds ${args.maxBytes} bytes`);
-    } else {
-      result = runGeneratedSource(vm, generated, args);
+      let result;
+      if (generated.bytes > args.maxBytes) {
+        result = failure('skipped', `skipped: ${generated.bytes} exceeds ${args.maxBytes} bytes`);
+      } else {
+        result = await runGeneratedSource(vm, generated, args);
+      }
+
+      parentPort.postMessage({
+        type: 'case',
+        workerId: data.workerId,
+        generated: shouldSendSourceForResult(result.status, args) ? generated : taskSummary(generated),
+        result,
+        durationMs: Date.now() - started,
+      });
     }
-
-    parentPort.postMessage({
-      type: 'case',
-      workerId: data.workerId,
-      generated: shouldSendSourceForResult(result.status, args) ? generated : taskSummary(generated),
-      result,
-      durationMs: Date.now() - started,
-    });
+  } finally {
+    if (args.differential) await vm.close();
   }
 }
 
 async function runReplayCaseWorker(data) {
   const args = data.args;
   const task = data.task;
-  const vm = await loadVm();
+  const vm = args.differential ? await createVmCaseRunner(args) : await loadVm();
   const started = Date.now();
-  const result = runGeneratedSource(vm, task, args);
-  return {
-    result,
-    durationMs: Date.now() - started,
-  };
+  try {
+    const result = await runGeneratedSource(vm, task, args);
+    return {
+      result,
+      durationMs: Date.now() - started,
+    };
+  } finally {
+    if (args.differential) await vm.close();
+  }
 }
 
 function waitForWorkerRunMessage() {
@@ -605,17 +646,211 @@ function waitForWorkerRunMessage() {
   });
 }
 
+async function runVmCaseRunner() {
+  const vm = await loadVm();
+  parentPort.postMessage({ type: 'ready' });
+  parentPort.on('message', (message) => {
+    if (message?.type === 'close') {
+      parentPort.close();
+      return;
+    }
+    if (message?.type !== 'runVmCase') return;
+
+    const started = Date.now();
+    const result = runVmExecutionResultLoaded(vm, message.task, message.args);
+    parentPort.postMessage({
+      type: 'result',
+      requestId: message.requestId,
+      result,
+      durationMs: Date.now() - started,
+    });
+  });
+}
+
+async function createVmCaseRunner(args) {
+  let worker = null;
+  let readyPromise = null;
+  let pending = null;
+  let nextRequestId = 1;
+  let closed = false;
+
+  async function ensureWorker() {
+    if (closed) throw new Error('VM case runner is closed');
+    if (worker) {
+      await readyPromise;
+      return worker;
+    }
+
+    const nextWorker = new Worker(__filename, {
+      workerData: {
+        mode: 'vmCaseRunner',
+      },
+    });
+    worker = nextWorker;
+
+    readyPromise = new Promise((resolve, reject) => {
+      let ready = false;
+
+      function failPending(error) {
+        if (!pending) return;
+        const active = pending;
+        pending = null;
+        if (active.timer) clearTimeout(active.timer);
+        active.resolve(makeVmRunnerInternalFailure(active.task, error, active.startedAt));
+      }
+
+      nextWorker.on('message', (message) => {
+        if (message?.type === 'ready') {
+          ready = true;
+          resolve();
+          return;
+        }
+        if (message?.type === 'error') {
+          const error = message.error || 'VM case runner failed';
+          if (!ready) reject(new Error(error));
+          failPending(error);
+          return;
+        }
+        if (message?.type !== 'result') return;
+        if (!pending || message.requestId !== pending.requestId) return;
+        const active = pending;
+        pending = null;
+        if (active.timer) clearTimeout(active.timer);
+        active.resolve(message.result);
+      });
+
+      nextWorker.on('error', (err) => {
+        if (!ready) reject(err);
+        failPending(errorText(err));
+      });
+
+      nextWorker.on('exit', (code) => {
+        if (worker === nextWorker) {
+          worker = null;
+          readyPromise = null;
+        }
+        if (pending) {
+          failPending(`VM case runner exited with code ${code}`);
+          return;
+        }
+        if (!ready && code !== 0) {
+          reject(new Error(`VM case runner exited with code ${code}`));
+        }
+      });
+    });
+
+    await readyPromise;
+    return nextWorker;
+  }
+
+  const runner = {
+    async run(task) {
+      const activeWorker = await ensureWorker();
+      const startedAt = Date.now();
+      const requestId = nextRequestId;
+      nextRequestId += 1;
+
+      return new Promise((resolve) => {
+        const timeoutMs = args.vmTimeoutMs;
+        const timer = setTimeout(() => {
+          if (!pending || pending.requestId !== requestId) return;
+          pending = null;
+          const timedOutWorker = worker;
+          worker = null;
+          readyPromise = null;
+          timedOutWorker?.terminate().catch((err) => {
+            log.error(`failed to terminate VM case runner for ${task.id}: ${errorText(err)}`);
+          });
+          resolve(makeVmTimeoutExecution(task, args, startedAt));
+        }, timeoutMs);
+        timer.unref?.();
+
+        pending = {
+          requestId,
+          task,
+          startedAt,
+          timer,
+          resolve,
+        };
+
+        activeWorker.postMessage({
+          type: 'runVmCase',
+          requestId,
+          task,
+          args,
+        });
+      });
+    },
+
+    async close() {
+      closed = true;
+      if (pending?.timer) clearTimeout(pending.timer);
+      pending = null;
+      const activeWorker = worker;
+      worker = null;
+      readyPromise = null;
+      if (!activeWorker) return;
+      activeWorker.postMessage({ type: 'close' });
+      await activeWorker.terminate().catch(() => {});
+    },
+  };
+
+  await ensureWorker();
+  return runner;
+}
+
+function makeVmTimeoutExecution(task, args, startedAt) {
+  const timeoutText = log.formatDuration(args.vmTimeoutMs);
+  const error = `VM runtime timeout after ${timeoutText}: ${task.id}`;
+  return {
+    kind: 'runtimeTimeouts',
+    error,
+    coverage: emptyCoverage(),
+    execution: {
+      engine: 'js-vm',
+      stdout: '',
+      stderr: normalizeProcessText(`TimeoutError: ${error}`),
+      exitCode: null,
+      signal: 'SIGTERM',
+      timeout: true,
+      durationMs: Date.now() - startedAt,
+    },
+  };
+}
+
+function makeVmRunnerInternalFailure(task, error, startedAt) {
+  const text = errorText(error);
+  return {
+    kind: 'internalFailures',
+    error: text,
+    coverage: emptyCoverage(),
+    execution: {
+      engine: 'js-vm',
+      stdout: '',
+      stderr: normalizeProcessText(text),
+      exitCode: 1,
+      signal: null,
+      timeout: false,
+      durationMs: Date.now() - startedAt,
+    },
+  };
+}
+
 function printFuzzSummary(args, jsFuzzer, stats, coverageSeen, checkedCases, fuzzStartedAt, mainStartedAt) {
   const summaryRows = [
     [
       'Fuzz Cases',
-      `${stats.ok + stats.expectedRuntimeErrors} passed, ${stats.internalFailures} failed, ${stats.skipped} skipped, ${checkedCases} total`,
+      `${stats.ok + stats.expectedRuntimeErrors} passed, ${fuzzFailureCount(stats)} failed, ${stats.skipped} skipped, ${stats.timeouts} timeout, ${checkedCases} total`,
     ],
     ['Compile', `${stats.compileErrors} compile errors`],
+    ['VM Failures', `${stats.vmFailures} vm-only failures`],
     [
       'Runtime',
       `${stats.runtimeErrors} unexpected, ${stats.expectedRuntimeErrors} expected JS errors`,
     ],
+    ['VM Timeout', `${stats.runtimeTimeouts} runtime timeouts`],
+    ['Differential', `${stats.differentialFailures} mismatches`],
+    ['Both Timeout', `${stats.timeouts} both engines timed out`],
     ['Coverage', `${coverageSeen.size}/${OPCODES.length} opcodes`],
     ['Duplicates', duplicateSummary(stats, checkedCases)],
     ['Workers', workerSummary(stats)],
@@ -638,10 +873,14 @@ function printFuzzSummary(args, jsFuzzer, stats, coverageSeen, checkedCases, fuz
   log.finish(
     `${checkedCases} js_fuzzer programs checked: ` +
       `${stats.ok} ok, ` +
+      `${stats.vmFailures} vm-only failures, ` +
       `${stats.compileErrors} compile errors, ` +
       `${stats.runtimeErrors} runtime errors, ` +
+      `${stats.runtimeTimeouts} runtime timeouts, ` +
+      `${stats.differentialFailures} differential mismatches, ` +
       `${stats.expectedRuntimeErrors} expected runtime errors, ` +
       `${stats.internalFailures} internal failures, ` +
+      `${stats.timeouts} timeouts, ` +
       `${stats.skipped} skipped, ` +
       `duplicates ${formatPercent(duplicateRate(stats, checkedCases))}`,
   );
@@ -651,13 +890,17 @@ function printReplaySummary(args, stats, coverageSeen, checkedCases, replayStart
   log.summary([
     [
       'Replay Cases',
-      `${stats.ok + stats.expectedRuntimeErrors} passed, ${stats.internalFailures} failed, ${stats.skipped} skipped, ${checkedCases} total`,
+      `${stats.ok + stats.expectedRuntimeErrors} passed, ${fuzzFailureCount(stats)} failed, ${stats.skipped} skipped, ${stats.timeouts} timeout, ${checkedCases} total`,
     ],
     ['Compile', `${stats.compileErrors} compile errors`],
+    ['VM Failures', `${stats.vmFailures} vm-only failures`],
     [
       'Runtime',
       `${stats.runtimeErrors} unexpected, ${stats.expectedRuntimeErrors} expected JS errors`,
     ],
+    ['VM Timeout', `${stats.runtimeTimeouts} runtime timeouts`],
+    ['Differential', `${stats.differentialFailures} mismatches`],
+    ['Both Timeout', `${stats.timeouts} both engines timed out`],
     ['Coverage', `${coverageSeen.size}/${OPCODES.length} opcodes`],
     ['Duplicates', duplicateSummary(stats, checkedCases)],
     ['Workers', workerSummary(stats)],
@@ -667,10 +910,14 @@ function printReplaySummary(args, stats, coverageSeen, checkedCases, replayStart
   log.finish(
     `${checkedCases} issue case(s) replayed: ` +
       `${stats.ok} ok, ` +
+      `${stats.vmFailures} vm-only failures, ` +
       `${stats.compileErrors} compile errors, ` +
       `${stats.runtimeErrors} runtime errors, ` +
+      `${stats.runtimeTimeouts} runtime timeouts, ` +
+      `${stats.differentialFailures} differential mismatches, ` +
       `${stats.expectedRuntimeErrors} expected runtime errors, ` +
       `${stats.internalFailures} internal failures, ` +
+      `${stats.timeouts} timeouts, ` +
       `${stats.skipped} skipped, ` +
       `duplicates ${formatPercent(duplicateRate(stats, checkedCases))}`,
   );
@@ -679,15 +926,28 @@ function printReplaySummary(args, stats, coverageSeen, checkedCases, replayStart
 function createStats() {
   return {
     ok: 0,
+    vmFailures: 0,
     compileErrors: 0,
     runtimeErrors: 0,
+    differentialFailures: 0,
     expectedRuntimeErrors: 0,
     internalFailures: 0,
+    runtimeTimeouts: 0,
+    timeouts: 0,
     skipped: 0,
     sourceHashes: new Set(),
     duplicateCases: 0,
     workerCounts: new Map(),
   };
+}
+
+function fuzzFailureCount(stats) {
+  return (
+    stats.internalFailures +
+    stats.runtimeTimeouts +
+    stats.vmFailures +
+    stats.differentialFailures
+  );
 }
 
 function recordWorkerCase(stats, workerId) {
@@ -828,6 +1088,7 @@ function taskSummary(task) {
     origin: task.origin,
     seed: task.seed,
     expected: task.expected,
+    referenceExpected: task.referenceExpected,
   };
 }
 
@@ -1090,6 +1351,7 @@ function issueFileToReplayCase(file, index) {
     origin: meta.origin || relative(file),
     seed: Number.isFinite(meta.seed) ? meta.seed : 0,
     expected: meta.expected,
+    referenceExpected: meta.referenceExpected || meta.expectedResult,
     issueStatus: meta.status || path.basename(path.dirname(file)),
     issueFile: file,
   };
@@ -1550,7 +1812,11 @@ function generateTask(index, args, corpusSeeds, jsFuzzer) {
   };
 }
 
-function runGeneratedSource(vm, task, args) {
+async function runGeneratedSource(vm, task, args) {
+  if (args.differential || task.referenceExpected) {
+    return runDifferentialGeneratedSource(vm, task, args);
+  }
+
   try {
     const run = runVmSource(vm, task.source, {
       seeds: args.seeds,
@@ -1580,6 +1846,339 @@ function runGeneratedSource(vm, task, args) {
     }
     return failure('runtimeErrors', error);
   }
+}
+
+async function runDifferentialGeneratedSource(vm, task, args) {
+  const actual = await runVmExecutionResult(vm, task, args);
+  const expected = task.referenceExpected || runReferenceExecutionResult(task.source, args);
+  if (expected.unavailable) {
+    return failure('skipped', expected.unavailable);
+  }
+  if (actual.kind === 'internalFailures') {
+    return executionFailure('internalFailures', actual.error, expected, actual.execution, actual.coverage);
+  }
+  const skipReason = differentialSkipReason(task.source, expected, args);
+  if (skipReason) {
+    return {
+      ...failure('skipped', skipReason),
+      referenceExpected: expected,
+    };
+  }
+  if (actual.execution.timeout) {
+    return classifyVmTimeoutResult(task, actual, expected, args);
+  }
+  if (expected.timeout) {
+    const comparison = compareExecutionResults(expected, actual.execution, args);
+    const observable = observableForResults(expected, actual.execution, args);
+    return {
+      ...failure(
+        'differentialFailures',
+        formatDifferentialError(task, comparison, expected, actual.execution),
+      ),
+      coverage: actual.coverage,
+      observable,
+      observableHash: log.md5Text(observable).slice(0, 12),
+      referenceExpected: expected,
+      actualResult: actual.execution,
+      comparison,
+    };
+  }
+  if (isVmFailureAgainstPassingReference(actual, expected)) {
+    const observable = observableForResults(expected, actual.execution, args);
+    return {
+      ...failure('vmFailures', formatVmFailureError(task, actual, expected)),
+      coverage: actual.coverage,
+      observable,
+      observableHash: log.md5Text(observable).slice(0, 12),
+      referenceExpected: expected,
+      actualResult: actual.execution,
+    };
+  }
+
+  const comparison = compareExecutionResults(expected, actual.execution, args);
+  const observable = observableForResults(expected, actual.execution, args);
+
+  if (!comparison.ok) {
+    return {
+      ...failure('differentialFailures', formatDifferentialError(task, comparison, expected, actual.execution)),
+      coverage: actual.coverage,
+      observable,
+      observableHash: log.md5Text(observable).slice(0, 12),
+      referenceExpected: expected,
+      actualResult: actual.execution,
+      comparison,
+    };
+  }
+
+  return {
+    status: actual.kind === 'runtimeErrors' ? 'expectedRuntimeErrors' : 'ok',
+    error: '',
+    coverage: actual.coverage,
+    observable,
+    observableHash: log.md5Text(observable).slice(0, 12),
+    referenceExpected: expected,
+    actualResult: actual.execution,
+    comparison,
+  };
+}
+
+async function runVmExecutionResult(vm, task, args) {
+  if (typeof vm.run === 'function') return vm.run(task);
+  return runVmExecutionResultLoaded(vm, task, args);
+}
+
+function runVmExecutionResultLoaded(vm, task, args) {
+  const started = Date.now();
+  try {
+    const run = runVmSource(vm, task.source, {
+      seeds: args.seeds,
+      baseSeed: task.seed,
+      id: task.id,
+      coverage: true,
+      captureLogs: true,
+    });
+    return {
+      kind: 'ok',
+      error: '',
+      coverage: run.coverage,
+      execution: {
+        engine: 'js-vm',
+        stdout: processStdoutFromVmLogs(run.logEntries),
+        stderr: processStderrFromVmLogs(run.logEntries),
+        exitCode: 0,
+        signal: null,
+        timeout: false,
+        durationMs: Date.now() - started,
+      },
+    };
+  } catch (err) {
+    const error = errorText(err);
+    const kind = isInternalError(error)
+      ? 'internalFailures'
+      : isCompileError(error)
+        ? 'compileErrors'
+        : 'runtimeErrors';
+    return {
+      kind,
+      error,
+      coverage: emptyCoverage(),
+      execution: {
+        engine: 'js-vm',
+        stdout: '',
+        stderr: normalizeProcessText(error),
+        exitCode: 1,
+        signal: null,
+        timeout: false,
+        durationMs: Date.now() - started,
+      },
+    };
+  }
+}
+
+function emptyCoverage() {
+  return { opcodes: [], sections: [], maxByteLength: 0, artifacts: 0 };
+}
+
+function classifyVmTimeoutResult(task, actual, expected, args) {
+  const observable = observableForResults(expected, actual.execution, args);
+  if (expected.timeout) {
+    return {
+      ...failure(
+        'timeouts',
+        `TIMEOUT: VM and reference engine ${expected.engine} both exceeded their timeout budgets`,
+      ),
+      coverage: actual.coverage,
+      observable: 'TIMEOUT',
+      observableHash: log.md5Text('TIMEOUT').slice(0, 12),
+      referenceExpected: expected,
+      actualResult: actual.execution,
+    };
+  }
+  return {
+    ...failure('runtimeTimeouts', formatRuntimeTimeoutError(task, actual, expected, args)),
+    coverage: actual.coverage,
+    observable,
+    observableHash: log.md5Text(observable).slice(0, 12),
+    referenceExpected: expected,
+    actualResult: actual.execution,
+  };
+}
+
+function runReferenceExecutionResult(source, args) {
+  const engine = 'v8';
+  const command = args.referenceEnginePath || resolveJsvuV8Path();
+  if (!command) {
+    return {
+      unavailable: `jsvu V8 reference engine is not available`,
+    };
+  }
+
+  const started = Date.now();
+  const result = spawnSync(command, v8EvalArgs(v8ReferencePrelude() + source, command), {
+    encoding: 'utf8',
+    timeout: args.hostTimeoutMs,
+    maxBuffer: 1024 * 1024,
+  });
+  const timedOut = result.error?.code === 'ETIMEDOUT';
+  return {
+    engine,
+    command,
+    stdout: normalizeProcessText(result.stdout || ''),
+    stderr: normalizeProcessText(result.stderr || referenceExecutionError(result, timedOut)),
+    exitCode: Number.isInteger(result.status) ? result.status : timedOut ? null : 1,
+    signal: result.signal || null,
+    timeout: timedOut,
+    durationMs: Date.now() - started,
+  };
+}
+
+function differentialSkipReason(source, expected, args) {
+  if (/\b(?:import|export)\b/.test(source)) {
+    return `module syntax is skipped in jsvu V8 shell differential mode`;
+  }
+  if (isReferenceSyntaxUnsupported(expected)) {
+    return `reference engine ${expected.engine} cannot parse this generated source`;
+  }
+  if (usesNonPortableHostExternals(source)) {
+    return `source uses non-portable host externals`;
+  }
+  return '';
+}
+
+function isReferenceSyntaxUnsupported(expected) {
+  if (expected.exitCode === 0 || expected.timeout) return false;
+  return /^SyntaxError:/.test(stderrSummary(`${expected.stderr || ''}\n${expected.stdout || ''}`));
+}
+
+function usesNonPortableHostExternals(source) {
+  return /\b(?:fetch|document|localStorage|sessionStorage|XMLHttpRequest|navigator|location)\b/.test(source);
+}
+
+function referenceExecutionError(result, timedOut) {
+  if (!result.error) return '';
+  if (timedOut) return `TimeoutError: reference engine timed out`;
+  return `${result.error.name || 'Error'}: ${result.error.message}`;
+}
+
+function processStdoutFromVmLogs(entries) {
+  return processTextFromVmLogs(entries, (level) => level !== 'warn' && level !== 'error');
+}
+
+function processStderrFromVmLogs(entries) {
+  return processTextFromVmLogs(entries, (level) => level === 'warn' || level === 'error');
+}
+
+function processTextFromVmLogs(entries, include) {
+  const lines = [];
+  for (const entry of entries || []) {
+    const level = String(entry.level || 'log');
+    if (include(level)) lines.push(String(entry.message));
+  }
+  return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+function normalizeProcessText(value) {
+  return String(value || '').replace(/\r\n/g, '\n');
+}
+
+function compareExecutionResults(expected, actual, args) {
+  const expectedComparable = comparableExecutionResult(expected, args);
+  const actualComparable = comparableExecutionResult(actual, args);
+  const differences = [];
+  for (const key of ['stdout', 'stderr', 'exitCode', 'signal', 'timeout']) {
+    if (expectedComparable[key] !== actualComparable[key]) {
+      differences.push({
+        field: key,
+        expected: expectedComparable[key],
+        actual: actualComparable[key],
+      });
+    }
+  }
+  return {
+    ok: differences.length === 0,
+    stderrMode: args.differentialStderr,
+    differences,
+  };
+}
+
+function observableForResults(expected, actual, args) {
+  return JSON.stringify(
+    {
+      expected: comparableExecutionResult(expected, args),
+      actual: comparableExecutionResult(actual, args),
+    },
+    null,
+    0,
+  );
+}
+
+function isVmFailureAgainstPassingReference(actual, expected) {
+  return ['compileErrors', 'runtimeErrors'].includes(actual.kind) && isSuccessfulExecution(expected);
+}
+
+function isSuccessfulExecution(result) {
+  return !result.timeout && result.exitCode === 0 && !result.signal;
+}
+
+function formatRuntimeTimeoutError(task, actual, expected, args) {
+  return [
+    `VM runtime timeout: ${task.id}`,
+    `vm exceeded ${log.formatDuration(args.vmTimeoutMs)} but reference=${expected.engine} completed in ${log.formatDuration(expected.durationMs || 0)}`,
+    `vm=${JSON.stringify(comparableExecutionResult(actual.execution, args))}`,
+    `reference=${JSON.stringify(comparableExecutionResult(expected, args))}`,
+  ].join('\n');
+}
+
+function formatVmFailureError(task, actual, expected) {
+  return [
+    `VM failed while reference passed: ${task.id}`,
+    `vm-kind=${actual.kind} reference=${expected.engine}`,
+    firstLine(actual.error),
+  ].join('\n');
+}
+
+function comparableExecutionResult(result, args) {
+  return {
+    stdout: result.stdout,
+    stderr: comparableStderr(result.stderr, args.differentialStderr),
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timeout: Boolean(result.timeout),
+  };
+}
+
+function comparableStderr(stderr, mode) {
+  const text = normalizeProcessText(stderr).trimEnd();
+  if (mode === 'ignore') return '';
+  if (mode === 'exact') return text;
+  return stderrSummary(text);
+}
+
+function stderrSummary(stderr) {
+  if (!stderr) return '';
+  const match = stderr.match(/\b(?:TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError|Error):[^\n]*/);
+  if (match) return match[0];
+  return firstLine(stderr);
+}
+
+function formatDifferentialError(task, comparison, expected, actual) {
+  const diffText = comparison.differences
+    .map((diff) => `${diff.field}: expected=${JSON.stringify(diff.expected)} actual=${JSON.stringify(diff.actual)}`)
+    .join('; ');
+  return [
+    `Differential mismatch: ${task.id}`,
+    `reference=${expected.engine} vm=${actual.engine} stderr=${comparison.stderrMode}`,
+    diffText,
+  ].join('\n');
+}
+
+function executionFailure(status, error, expected, actual, coverage) {
+  return {
+    ...failure(status, error),
+    coverage,
+    referenceExpected: expected,
+    actualResult: actual,
+  };
 }
 
 function failure(status, error) {
@@ -1780,6 +2379,9 @@ function mergeCoverage(seen, coverage) {
 
 function shouldSave(status, args) {
   if (status === 'internalFailures') return true;
+  if (status === 'runtimeTimeouts') return true;
+  if (status === 'vmFailures') return true;
+  if (status === 'differentialFailures') return true;
   if (status === 'compileErrors') return args.saveCompileErrors;
   if (status === 'runtimeErrors') return args.saveRuntimeErrors || args.strictRuntime;
   return false;
@@ -1894,6 +2496,9 @@ function saveIssue(task, result, outputDir, context, errorFile) {
         durationMs: context.durationMs,
         observable: result.observable,
         observableHash: result.observableHash,
+        referenceExpected: result.referenceExpected,
+        actualResult: result.actualResult,
+        comparison: result.comparison,
         coverage: result.coverage,
         error: result.error,
         savedAt: new Date().toISOString(),
@@ -1902,6 +2507,18 @@ function saveIssue(task, result, outputDir, context, errorFile) {
       2,
     )}\n`,
   );
+  if (result.referenceExpected) {
+    fs.writeFileSync(
+      `${issueFile}.expected.json`,
+      `${JSON.stringify(result.referenceExpected, null, 2)}\n`,
+    );
+  }
+  if (result.actualResult) {
+    fs.writeFileSync(
+      `${issueFile}.actual.json`,
+      `${JSON.stringify(result.actualResult, null, 2)}\n`,
+    );
+  }
 
   if (errorFile) {
     fs.appendFileSync(
@@ -1956,6 +2573,9 @@ function saveFailure(task, result, outputDir = DEFAULT_FAILURE_DIR) {
         template: task.template,
         origin: task.origin,
         expected: task.expected,
+        referenceExpected: result.referenceExpected,
+        actualResult: result.actualResult,
+        comparison: result.comparison,
         observable: result.observable,
         observableHash: result.observableHash,
         coverage: result.coverage,
@@ -1966,14 +2586,30 @@ function saveFailure(task, result, outputDir = DEFAULT_FAILURE_DIR) {
       2,
     )}\n`,
   );
+  if (result.referenceExpected) {
+    fs.writeFileSync(
+      `${failureFile}.expected.json`,
+      `${JSON.stringify(result.referenceExpected, null, 2)}\n`,
+    );
+  }
+  if (result.actualResult) {
+    fs.writeFileSync(
+      `${failureFile}.actual.json`,
+      `${JSON.stringify(result.actualResult, null, 2)}\n`,
+    );
+  }
   return failureFile;
 }
 
 function statusLabel(status, args) {
   if (status === 'ok') return 'PASS';
   if (status === 'expectedRuntimeErrors') return 'PASS';
+  if (status === 'runtimeTimeouts') return 'TIMEOUT';
+  if (status === 'timeouts') return 'TIMEOUT';
   if (status === 'skipped') return 'SKIP';
   if (status === 'internalFailures') return 'FAIL';
+  if (status === 'vmFailures') return 'FAIL';
+  if (status === 'differentialFailures') return 'FAIL';
   if (status === 'compileErrors') return args.failOnCompileError ? 'FAIL' : 'WARN';
   if (status === 'runtimeErrors') return args.strictRuntime ? 'FAIL' : 'WARN';
   return 'DONE';
@@ -2001,6 +2637,11 @@ function parseArgs(argv) {
     saveRuntimeErrors: false,
     strictRuntime: false,
     hostTimeoutMs: numberEnv('JS_VM_FUZZ_HOST_TIMEOUT_MS', 1000),
+    vmTimeoutMs: nullableNumberEnv('JS_VM_FUZZ_VM_TIMEOUT_MS'),
+    differential: boolEnv('JS_VM_FUZZ_DIFFERENTIAL', false),
+    referenceEngine: stringEnv('JS_VM_FUZZ_REFERENCE_ENGINE', 'v8'),
+    referenceEnginePath: stringEnv('JSVU_V8_PATH', stringEnv('JSVU_V8', '')),
+    differentialStderr: stringEnv('JS_VM_FUZZ_DIFFERENTIAL_STDERR', 'summary'),
     workerIdleCheckMs: numberEnv(
       'JS_VM_FUZZ_WORKER_IDLE_CHECK_MS',
       numberEnv('JS_VM_FUZZ_WORKER_GRACE_MS', 5000),
@@ -2059,6 +2700,16 @@ function parseArgs(argv) {
     else if (arg.startsWith('--base-seed=')) parsed.baseSeed = Number.parseInt(arg.slice(12), 10);
     else if (arg === '--host-timeout-ms') parsed.hostTimeoutMs = Number.parseInt(argv[++index], 10);
     else if (arg.startsWith('--host-timeout-ms=')) parsed.hostTimeoutMs = Number.parseInt(arg.slice(18), 10);
+    else if (arg === '--vm-timeout-ms') parsed.vmTimeoutMs = Number.parseInt(argv[++index], 10);
+    else if (arg.startsWith('--vm-timeout-ms=')) parsed.vmTimeoutMs = Number.parseInt(arg.slice(16), 10);
+    else if (arg === '--differential') parsed.differential = true;
+    else if (arg === '--no-differential') parsed.differential = false;
+    else if (arg === '--reference-engine') parsed.referenceEngine = String(argv[++index] || '');
+    else if (arg.startsWith('--reference-engine=')) parsed.referenceEngine = arg.slice(19);
+    else if (arg === '--v8-path') parsed.referenceEnginePath = String(argv[++index] || '');
+    else if (arg.startsWith('--v8-path=')) parsed.referenceEnginePath = arg.slice(10);
+    else if (arg === '--differential-stderr') parsed.differentialStderr = String(argv[++index] || '');
+    else if (arg.startsWith('--differential-stderr=')) parsed.differentialStderr = arg.slice(22);
     else if (arg === '--worker-idle-check-ms' || arg === '--worker-grace-ms') {
       parsed.workerIdleCheckMs = Number.parseInt(argv[++index], 10);
     } else if (arg.startsWith('--worker-idle-check-ms=')) {
@@ -2099,6 +2750,16 @@ function parseArgs(argv) {
   if (!Number.isFinite(parsed.replayTimeoutMs) || parsed.replayTimeoutMs < 1) {
     throw new Error('--replay-timeout-ms must be a positive integer');
   }
+  if (parsed.vmTimeoutMs === null) parsed.vmTimeoutMs = parsed.hostTimeoutMs;
+  if (!Number.isFinite(parsed.vmTimeoutMs) || parsed.vmTimeoutMs < 1) {
+    throw new Error('--vm-timeout-ms must be a positive integer');
+  }
+  if (parsed.referenceEngine !== 'v8') {
+    throw new Error('--reference-engine has been replaced by jsvu V8; use --reference-engine=v8 or --v8-path <file>');
+  }
+  if (!['summary', 'exact', 'ignore'].includes(parsed.differentialStderr)) {
+    throw new Error('--differential-stderr must be summary, exact, or ignore');
+  }
   parsed.caseLogMode = resolveCaseLogMode(parsed);
   parsed.errorLevel = parseErrorLevel(parsed.errorLevel);
   parsed.errorLimit = parseErrorLimit(parsed.errorLimit);
@@ -2122,6 +2783,22 @@ function resolveCaseLogMode(args) {
 
 function numberEnv(name, fallback) {
   return Number.parseInt(process.env[name] || String(fallback), 10);
+}
+
+function nullableNumberEnv(name) {
+  const value = process.env[name];
+  if (value === undefined || value === '') return null;
+  return Number.parseInt(value, 10);
+}
+
+function stringEnv(name, fallback) {
+  return process.env[name] || fallback;
+}
+
+function boolEnv(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  return /^(?:1|true|yes|on)$/i.test(value);
 }
 
 function durationEnv(name, fallback) {
@@ -2203,7 +2880,9 @@ function isExpectedVmRuntimeError(error) {
 }
 
 function isExpectedHostRuntimeError(source, args) {
-  const result = spawnSync(process.execPath, ['--eval', source], {
+  const v8Path = args.referenceEnginePath || resolveJsvuV8Path();
+  if (!v8Path) return false;
+  const result = spawnSync(v8Path, v8EvalArgs(v8ReferencePrelude() + source, v8Path), {
     encoding: 'utf8',
     timeout: args.hostTimeoutMs,
     maxBuffer: 1024 * 1024,
@@ -2235,7 +2914,12 @@ Options:
                              Accepts 500ms, 30s, 2m, 1h. Bare numbers are seconds.
   --seeds <n>                Randomized encoding seeds per program. Default: 2
   --base-seed <n>            Deterministic generator seed. Default: 1337
-  --host-timeout-ms <n>      Node comparison timeout for JS runtime errors. Default: 1000
+  --host-timeout-ms <n>      jsvu V8 reference timeout for JS runtime errors. Default: 1000
+  --vm-timeout-ms <n>        JS VM per-case timeout. Default: same as --host-timeout-ms
+  --differential             Run reference engine first, save expected process result, and compare VM stdout/stderr/exitCode/signal/timeout.
+  --reference-engine <name>  Compatibility option; only v8 is supported.
+  --v8-path <file>           jsvu V8 binary path. Default: $JSVU_V8_PATH, $JSVU_V8, ~/.jsvu/bin/v8
+  --differential-stderr <m>  Stderr comparison mode: summary, exact, ignore. Default: summary
   --worker-idle-check-ms <n> Check worker liveness after no messages for n ms while stopping. Default: 5000
   --worker-grace-ms <n>      Alias of --worker-idle-check-ms.
   --worker-stuck-ms <n>      Archive and terminate a worker if one case runs longer than n ms. 0=off. Default: 30000
@@ -2265,6 +2949,10 @@ Options:
 The fuzzer generates JS in memory and runs Source -> IR -> Bytecode -> bytes -> seed -> Runtime.
 It uses V8 js_fuzzer when tests/.vendor/js_fuzzer is available, derives seeds from tests/corpus,
 records observable VM output hashes, and reports opcode coverage feedback.
+With --differential, each generated source is executed by the JS VM first, then by jsvu V8.
+VM timeout + V8 timeout becomes TIMEOUT and is not compared; VM timeout/error + V8 success is
+archived as a highest-level VM failure. Archived mismatches include .expected.json and
+.actual.json next to the source for replay/debugging.
 By default only internal VM failures are persisted to artifacts/js_fuzzer/failures. Use --error to
 archive categorized compile/runtime/internal/skipped issues under tests/.issues/<YY-MM-DD:HH:mm:ss>.
 Use --clear-issues to reset old issue archives, and --error-limit to stop early when errors pile up.`);

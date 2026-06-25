@@ -21,6 +21,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,8 +37,14 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
-      - name: Verify full test chain
-        run: npm run verify
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Install V8 via jsvu
+        run: npx jsvu --os=linux64 --engines=v8
+
+      - name: Test
+        run: npm test
 
       - name: Prepare site
         run: npm run pages:prepare

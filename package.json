@@ -5,15 +5,17 @@
   "type": "commonjs",
   "scripts": {
     "build:wasm": "node scripts/build-wasm.js",
-    "verify": "node tests/verify.js",
-    "test": "node tests/E2E.js",
-    "differential": "node tests/Differential.js",
-    "fuzz": "node tests/Fuzz.js",
-    "fuzz:quick": "node tests/Fuzz.js --r=1 --seeds=1",
-    "precommit": "node tests/precommit.js",
+    "test": "node tests/index.js",
+    "test:unit": "node tests/index.js unit",
+    "test:diff": "node tests/index.js diff",
+    "test:fuzz": "node tests/index.js fuzz",
+    "precommit": "node tests/index.js precommit",
     "hooks:install": "git config core.hooksPath .githooks",
-    "update:js-fuzzer": "node tests/update-js-fuzzer.js",
+    "update:js-fuzzer": "node tests/index.js update-js-fuzzer",
     "pages:prepare": "node scripts/prepare-pages.js",
     "pages:verify": "node scripts/prepare-pages.js --verify"
+  },
+  "dependencies": {
+    "jsvu": "^3.0.4"
   }
 }

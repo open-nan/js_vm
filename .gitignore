@@ -9,6 +9,7 @@ tests/db/
 **/.DS_Store
 .vscode/
 .commit.md
+**/node_modules/
 ./**.copy
 .bin
 .executor

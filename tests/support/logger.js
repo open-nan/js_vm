@@ -24,6 +24,7 @@ const levelColors = {
   FAIL: 'red',
   ERROR: 'red',
   WARN: 'yellow',
+  TIMEOUT: 'yellow',
   SKIP: 'yellow',
   RUN: 'cyan',
   CASE: 'cyan',
