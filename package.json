@@ -1,0 +1,21 @@
+{
+  "name": "js-vm-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.js",
+    "test": "node tests/index.js",
+    "test:unit": "node tests/index.js unit",
+    "test:diff": "node tests/index.js diff",
+    "test:fuzz": "node tests/index.js fuzz",
+    "precommit": "node tests/index.js precommit",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "update:js-fuzzer": "node tests/index.js update-js-fuzzer",
+    "pages:prepare": "node scripts/prepare-pages.js",
+    "pages:verify": "node scripts/prepare-pages.js --verify"
+  },
+  "dependencies": {
+    "jsvu": "^3.0.4"
+  }
+}
