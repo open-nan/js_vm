@@ -158,7 +158,7 @@ mod tests {
     use js_vm_runtime::Executor;
 
     const MULTIPLE_FUNCTIONS_FIB_ADD: &str =
-        include_str!("../../../tests/regressions/multiple-functions-fib-add.test.js");
+        include_str!("../../../tests/corpus/regressions/multiple-functions-fib-add.test.js");
 
     fn run_source(source: &str) -> Result<String, String> {
         let ir = compile_to_ir(source)?;
@@ -275,6 +275,48 @@ mod tests {
             ("let x = 1; x = x + 4; x;", "5"),
             ("const s = `a${1 + 2}`; s;", "a3"),
             ("try { throw 6; } catch (err) { err + 1; }", "7"),
+            ("this.answer = 4; this.answer;", "4"),
+            ("try { null.value; } catch (err) { 9; }", "9"),
+            ("try { this.alert = console.log; } catch (err) { 99; } 7;", "7"),
+            ("const frozen = Object.freeze({ value: 6 }); frozen.value;", "6"),
+            ("Object.getOwnPropertyNames({ a: 1, b: 2 }).length;", "2"),
+            ("Object.keys({ a: 1, b: 2 }).length;", "2"),
+            ("Object.values({ a: 1, b: 2 })[1];", "2"),
+            ("Object.entries({ a: 1 })[0][0];", "a"),
+            ("Object.hasOwn({ a: 1 }, 'a');", "true"),
+            ("const merged = Object.assign({ a: 1 }, { b: 2 }); merged.b;", "2"),
+            ("Object.defineProperty({}, 'a', { value: 3 }).a;", "3"),
+            ("const array = []; Object.defineProperty(array, 'x', { value: 3 }); array.length;", "0"),
+            ("const sym = Symbol('foo'); typeof sym;", "symbol"),
+            ("Number('4') + new Number(5);", "9"),
+            ("Array(3).length;", "3"),
+            ("Array(1, 2, 3)[2];", "3"),
+            ("Array.isArray(Array(1));", "true"),
+            ("const pushed = []; pushed.push(1); pushed.push(2); pushed.length;", "2"),
+            ("const names = []; Object.getOwnPropertyNames({ a: 1 }).forEach(name => names.push(name)); names.length;", "1"),
+            ("const xs = [1, 2, 3]; let total = 0; for (const x of xs) { total = total + x; } total;", "6"),
+            ("const keys = Object.keys({ a: 1, b: 2 }); let text = ''; for (const key of keys) { text = text + key; } text;", "ab"),
+            ("const key = 'value'; const obj = { value: 7 }; obj[key];", "7"),
+            ("const xs = [4, 5]; const index = 1; xs[index];", "5"),
+            ("const obj = { a: 1, b: 2 }; let total = 0; for (const key in obj) { total = total + obj[key]; } total;", "3"),
+            ("function pick(value = 7) { return value; } pick() + pick(3);", "10"),
+            ("let guarded; let out = 7; guarded != null && guarded.value; out;", "7"),
+            ("function* gen() { yield 1; yield 2; } let sum = 0; for (const item of gen()) { sum = sum + item; } sum;", "3"),
+            ("function readThis() { return this.WScript != null; } readThis();", "true"),
+            ("console.log.extra = 1; console.log.length = 3; 7;", "7"),
+            ("Object(null).missing;", "undefined"),
+            ("let text = 'build'; text.x = 1; text;", "build"),
+            ("'build'[0];", "b"),
+            (
+                "function t() { try { return t(); } catch (err) { return 7; } } t();",
+                "7",
+            ),
+            ("try { const value = 12; value(); } catch (err) { 4; }", "4"),
+            ("function fn() { return 1; } fn.label = 'x'; fn();", "1"),
+            ("gc(); 1;", "1"),
+            ("const p = new Proxy(function () { return 8; }, {}); p();", "8"),
+            ("delete ({ value: 1 }).value;", "true"),
+            ("~0;", "-1"),
         ];
 
         for (source, expected) in cases {

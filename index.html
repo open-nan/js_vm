@@ -1288,6 +1288,7 @@ export default def;`,
 
     const textEncoder = new TextEncoder();
     const VIRTUAL_BUFFER = 24;
+    const SEED_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_~';
     let seedInputTimer = null;
     window.__jsVmHostLog = (level, message) => {
       const target = typeof console[level] === 'function' ? console[level] : console.log;
@@ -1310,17 +1311,15 @@ export default def;`,
     }
 
     function encodeBase36Digit(value) {
-      if (value < 0 || value >= 36) {
-        throw new Error(`seed index ${value} is outside base36 range`);
+      if (value < 0 || value >= SEED_DIGITS.length) {
+        throw new Error(`seed index ${value} is outside seed range`);
       }
-      return value.toString(36).toUpperCase();
+      return SEED_DIGITS[value];
     }
 
     function decodeBase36Digit(value) {
-      const code = value.charCodeAt(0);
-      if (code >= 48 && code <= 57) return code - 48;
-      if (code >= 65 && code <= 90) return code - 65 + 10;
-      if (code >= 97 && code <= 122) return code - 97 + 10;
+      const index = SEED_DIGITS.indexOf(value.toUpperCase());
+      if (index >= 0) return index;
       throw new Error(`invalid seed digit ${value}`);
     }
 
@@ -1455,6 +1454,8 @@ export default def;`,
       ['LOAD_CONST_CONST', 33],
       ['POP_REG', 34],
       ['CALL_1', 35],
+      ['ENTER_SCOPE', 36],
+      ['LEAVE_SCOPE', 37],
     ].map(([name, code]) => ({ name, code }));
 
     state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
