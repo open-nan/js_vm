@@ -19,7 +19,6 @@ const {
 } = require('./support/reference_engine.js');
 const { CORPUS_ROOT, readCorpusFiles, readCorpusCase } = require('./support/corpus.js');
 
-const DEFAULT_FAILURE_DIR = path.join(__dirname, '..', 'artifacts/js_fuzzer/failures');
 const DEFAULT_ISSUE_DIR = path.join(__dirname, '.issues');
 const JS_FUZZER_VENDOR_ROOT = path.join(__dirname, '.vendor/js_fuzzer');
 const DEFAULT_JS_FUZZER_DB_DIR = path.join(__dirname, 'db');
@@ -234,7 +233,6 @@ async function replayIssueRun(args, mainStartedAt) {
       progress,
       durationMs,
       workerId: 0,
-      saveArtifacts: false,
     });
     if (timedOut) {
       log.warn(`${replayCase.id} timed out after ${log.formatDuration(args.replayTimeoutMs)}`);
@@ -1103,7 +1101,6 @@ function recordFuzzResult({
   progress,
   durationMs,
   workerId = null,
-  saveArtifacts = true,
   countWorker = true,
 }) {
   if (countWorker) recordWorkerCase(stats, workerId);
@@ -1125,7 +1122,6 @@ function recordFuzzResult({
           workerId,
           newOpcodes,
           coverageSize: coverageSeen.size,
-          saveArtifacts,
         });
       });
     }
@@ -1133,19 +1129,16 @@ function recordFuzzResult({
   }
 
   const shouldPrintCase = shouldPrintCaseLog(args, result.status);
-  let saved = '';
+  const saved = issueRecorder.record(generated, result, {
+    progress,
+    durationMs,
+  });
 
-  if (saveArtifacts && shouldSave(result.status, args)) {
-    saved = saveFailure(generated, result, args.saveFailures);
+  if (saved && result.error && !shouldPrintCase) {
     log.error(result.error);
   } else if (result.status !== 'ok' && args.verbose && !shouldPrintCase) {
     log.info(`${result.status} ${generated.id}: ${firstLine(result.error)}`);
   }
-
-  issueRecorder.record(generated, result, {
-    progress,
-    durationMs,
-  });
 
   if (shouldPrintCase) {
     const savedText = saved ? ` saved=${relative(saved)}` : '';
@@ -1169,15 +1162,9 @@ function writeIssueResultLog({
   workerId = null,
   newOpcodes = [],
   coverageSize = 0,
-  saveArtifacts = true,
 }) {
   const thread = workerId === null ? '' : ` worker#${workerId}`;
-  let saved = '';
-  if (saveArtifacts && shouldSave(result.status, args)) {
-    saved = saveFailure(generated, result, args.saveFailures);
-  }
-
-  issueRecorder.record(generated, result, {
+  const saved = issueRecorder.record(generated, result, {
     progress,
     durationMs,
   });
@@ -1206,7 +1193,7 @@ function shouldQueueIssueLog(status, args) {
 }
 
 function shouldSendSourceForResult(status, args) {
-  return shouldSave(status, args) || shouldArchiveIssue(status, args.errorLevel);
+  return shouldArchiveIssue(status, args.errorLevel);
 }
 
 function createProgressReporter() {
@@ -1976,7 +1963,7 @@ function runVmExecutionResultLoaded(vm, task, args) {
 }
 
 function emptyCoverage() {
-  return { opcodes: [], sections: [], maxByteLength: 0, artifacts: 0 };
+  return { opcodes: [], sections: [], maxByteLength: 0, bytecodeCount: 0 };
 }
 
 function classifyVmTimeoutResult(task, actual, expected, args) {
@@ -2185,7 +2172,7 @@ function failure(status, error) {
   return {
     status,
     error,
-    coverage: { opcodes: [], sections: [], maxByteLength: 0, artifacts: 0 },
+    coverage: { opcodes: [], sections: [], maxByteLength: 0, bytecodeCount: 0 },
     observable: '',
     observableHash: '',
   };
@@ -2377,16 +2364,6 @@ function mergeCoverage(seen, coverage) {
   return next;
 }
 
-function shouldSave(status, args) {
-  if (status === 'internalFailures') return true;
-  if (status === 'runtimeTimeouts') return true;
-  if (status === 'vmFailures') return true;
-  if (status === 'differentialFailures') return true;
-  if (status === 'compileErrors') return args.saveCompileErrors;
-  if (status === 'runtimeErrors') return args.saveRuntimeErrors || args.strictRuntime;
-  return false;
-}
-
 function clearIssueHistoryIfRequested(args) {
   if (!args.clearIssues) return;
 
@@ -2421,28 +2398,50 @@ function createIssueRecorder(args) {
   const enabled = args.log || args.errorLevel > 0;
   if (!enabled) {
     return {
-      record() {},
+      record() {
+        return null;
+      },
       close() {},
     };
   }
 
-  const runIssueDir = path.join(args.issueDir, issueRunDirectoryName());
-  fs.mkdirSync(runIssueDir, { recursive: true });
-  const logFile = path.join(runIssueDir, 'log.txt');
-  const errorFile = path.join(runIssueDir, 'errors.log');
+  let runIssueDir = '';
+  let logFile = '';
+  let errorFile = '';
+  let logInitialized = false;
+  let errorInitialized = false;
 
-  if (args.log) fs.writeFileSync(logFile, '');
-  if (args.errorLevel > 0) fs.writeFileSync(errorFile, '');
+  function ensureRunIssueDir() {
+    if (!runIssueDir) {
+      runIssueDir = path.join(args.issueDir, issueRunDirectoryName());
+      fs.mkdirSync(runIssueDir, { recursive: true });
+      logFile = path.join(runIssueDir, 'log.txt');
+      errorFile = path.join(runIssueDir, 'errors.log');
+    }
+    if (args.log && !logInitialized) {
+      fs.writeFileSync(logFile, '');
+      logInitialized = true;
+    }
+    if (args.errorLevel > 0 && !errorInitialized) {
+      fs.writeFileSync(errorFile, '');
+      errorInitialized = true;
+    }
+    return runIssueDir;
+  }
+
+  if (args.log) ensureRunIssueDir();
 
   const originalLog = console.log.bind(console);
   const originalError = console.error.bind(console);
 
   if (args.log) {
     console.log = (...parts) => {
+      ensureRunIssueDir();
       appendLogLine(logFile, parts);
       originalLog(...parts);
     };
     console.error = (...parts) => {
+      ensureRunIssueDir();
       appendLogLine(logFile, parts);
       originalError(...parts);
     };
@@ -2451,7 +2450,7 @@ function createIssueRecorder(args) {
   return {
     record(task, result, context = {}) {
       if (!shouldArchiveIssue(result.status, args.errorLevel)) return null;
-      return saveIssue(task, result, runIssueDir, context, errorFile);
+      return saveIssue(task, result, ensureRunIssueDir(), context, errorFile);
     },
     close() {
       console.log = originalLog;
@@ -2462,7 +2461,9 @@ function createIssueRecorder(args) {
 
 function createNoopIssueRecorder() {
   return {
-    record() {},
+    record() {
+      return null;
+    },
     close() {},
   };
 }
@@ -2555,52 +2556,6 @@ function logTimestamp(date = new Date()) {
   return date.toTimeString().slice(0, 8);
 }
 
-function saveFailure(task, result, outputDir = DEFAULT_FAILURE_DIR) {
-  const hash = task.md5.slice(0, 12);
-  const base = path.basename(task.id || 'generated.js').replace(/[^a-zA-Z0-9_.-]/g, '_');
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  const failureFile = path.join(outputDir, `${hash}-${base}`);
-  const metaFile = `${failureFile}.json`;
-  fs.writeFileSync(failureFile, task.source);
-  fs.writeFileSync(
-    metaFile,
-    `${JSON.stringify(
-      {
-        source: task.id,
-        md5: task.md5,
-        seed: task.seed,
-        template: task.template,
-        origin: task.origin,
-        expected: task.expected,
-        referenceExpected: result.referenceExpected,
-        actualResult: result.actualResult,
-        comparison: result.comparison,
-        observable: result.observable,
-        observableHash: result.observableHash,
-        coverage: result.coverage,
-        error: result.error,
-        savedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  if (result.referenceExpected) {
-    fs.writeFileSync(
-      `${failureFile}.expected.json`,
-      `${JSON.stringify(result.referenceExpected, null, 2)}\n`,
-    );
-  }
-  if (result.actualResult) {
-    fs.writeFileSync(
-      `${failureFile}.actual.json`,
-      `${JSON.stringify(result.actualResult, null, 2)}\n`,
-    );
-  }
-  return failureFile;
-}
-
 function statusLabel(status, args) {
   if (status === 'ok') return 'PASS';
   if (status === 'expectedRuntimeErrors') return 'PASS';
@@ -2623,7 +2578,6 @@ function parseArgs(argv) {
     baseSeed: numberEnv('JS_VM_RANDOM_BASE_SEED', 1337),
     timeMs: durationEnv('JS_VM_FUZZ_TIME', 0),
     maxBytes: numberEnv('JS_VM_FUZZ_MAX_BYTES', 8192),
-    saveFailures: DEFAULT_FAILURE_DIR,
     issueDir: DEFAULT_ISSUE_DIR,
     replayIssues: '',
     replayTimeoutMs: numberEnv('JS_VM_FUZZ_REPLAY_TIMEOUT_MS', 30000),
@@ -2631,10 +2585,8 @@ function parseArgs(argv) {
     clearIssues: false,
     caseLog: 'auto',
     caseLogMode: 'all',
-    errorLevel: numberEnv('JS_VM_FUZZ_ERROR_LEVEL', 0),
+    errorLevel: numberEnv('JS_VM_FUZZ_ERROR_LEVEL', 1),
     errorLimit: numberEnv('JS_VM_FUZZ_ERROR_LIMIT', 0),
-    saveCompileErrors: false,
-    saveRuntimeErrors: false,
     strictRuntime: false,
     hostTimeoutMs: numberEnv('JS_VM_FUZZ_HOST_TIMEOUT_MS', 1000),
     vmTimeoutMs: nullableNumberEnv('JS_VM_FUZZ_VM_TIMEOUT_MS'),
@@ -2663,8 +2615,8 @@ function parseArgs(argv) {
     else if (arg === '--verbose') parsed.verbose = true;
     else if (arg === '--strict-runtime') parsed.strictRuntime = true;
     else if (arg === '--fail-on-compile-error') parsed.failOnCompileError = true;
-    else if (arg === '--save-compile-errors') parsed.saveCompileErrors = true;
-    else if (arg === '--save-runtime-errors') parsed.saveRuntimeErrors = true;
+    else if (arg === '--save-compile-errors') parsed.errorLevel = Math.max(parsed.errorLevel, 2);
+    else if (arg === '--save-runtime-errors') parsed.errorLevel = Math.max(parsed.errorLevel, 3);
     else if (arg === '--log') parsed.log = true;
     else if (arg === '--clear-issues') parsed.clearIssues = true;
     else if (arg === '--case-log') parsed.caseLog = parseCaseLogMode(argv[++index]);
@@ -2722,9 +2674,7 @@ function parseArgs(argv) {
     } else if (arg.startsWith('--max-bytes=')) parsed.maxBytes = Number.parseInt(arg.slice(12), 10);
     else if (arg.startsWith('--max-generated-bytes=')) {
       parsed.maxBytes = Number.parseInt(arg.slice(22), 10);
-    } else if (arg === '--save-failures') parsed.saveFailures = path.resolve(argv[++index]);
-    else if (arg.startsWith('--save-failures=')) parsed.saveFailures = path.resolve(arg.slice(16));
-    else if (arg === '--issue-dir') parsed.issueDir = path.resolve(argv[++index]);
+    } else if (arg === '--issue-dir') parsed.issueDir = path.resolve(argv[++index]);
     else if (arg.startsWith('--issue-dir=')) parsed.issueDir = path.resolve(arg.slice(12));
     else if (arg === '--replay-issues') parsed.replayIssues = argv[++index];
     else if (arg.startsWith('--replay-issues=')) parsed.replayIssues = arg.slice(16);
@@ -2927,16 +2877,15 @@ Options:
   --max-generated-bytes <n>  Alias of --max-bytes.
   --log                      Write full console output to tests/.issues/<YY-MM-DD:HH:mm:ss>/log.txt.
   --error <0-5>              Archive issue cases to tests/.issues/<YY-MM-DD:HH:mm:ss>. 0=off, 1=internal, 2=+compile,
-                             3=+runtime, 4=+expected JS runtime, 5=+skipped. Bare --error means 5.
+                             3=+runtime, 4=+expected JS runtime, 5=+skipped. Default: 1. Bare --error means 5.
   --clear-issues             Clear all historical issue archives under --issue-dir before this run.
   --error-limit <n>          Stop fuzzing once compile/runtime/expected-runtime/internal errors reach n. 0=off.
   --max-errors <n>           Alias of --error-limit.
   --issue-dir <dir>          Issue archive root directory. Default: tests/.issues.
   --replay-issues <time|dir> Replay archived issue sources from tests/.issues/<time> or a directory.
   --replay-timeout-ms <n>    Timeout for each replay case. Default: 30000
-  --save-failures <dir>      Save failing sources. Default: artifacts/js_fuzzer/failures
-  --save-compile-errors      Also save parser/compiler failures.
-  --save-runtime-errors      Also save JS runtime failures.
+  --save-compile-errors      Compatibility alias for --error=2.
+  --save-runtime-errors      Compatibility alias for --error=3.
   --strict-runtime           Treat runtime JS errors as process failures.
   --fail-on-compile-error    Treat parser/compiler errors as process failures.
   --no-corpus-seeds          Do not derive fuzz seeds from tests/corpus.
@@ -2953,7 +2902,7 @@ With --differential, each generated source is executed by the JS VM first, then 
 VM timeout + V8 timeout becomes TIMEOUT and is not compared; VM timeout/error + V8 success is
 archived as a highest-level VM failure. Archived mismatches include .expected.json and
 .actual.json next to the source for replay/debugging.
-By default only internal VM failures are persisted to artifacts/js_fuzzer/failures. Use --error to
-archive categorized compile/runtime/internal/skipped issues under tests/.issues/<YY-MM-DD:HH:mm:ss>.
+By default level-1 VM/internal failures are archived lazily under tests/.issues/<YY-MM-DD:HH:mm:ss>.
+Use --error=0 to disable issue archiving, or --error to archive all categorized issues.
 Use --clear-issues to reset old issue archives, and --error-limit to stop early when errors pile up.`);
 }

@@ -80,13 +80,13 @@ npm run test:fuzz -- --threads=4 --time=2m
 
 多线程模式只打印周期进度；异常结果进入异步日志队列后再输出和归档，避免 console I/O 限制并发吞吐。`--case-log` 只用于单线程调试输出。
 
-只有内部 VM 失败会默认写入 `artifacts/js_fuzzer/failures`。调试时可以追加：
+默认只会在出现一级 VM/internal 异常时按需写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>`；没有异常不会创建空归档目录。调试时可以追加：
 
 ```bash
 npm run test:fuzz -- --log --error=5
 ```
 
-`--log` 会把完整终端输出写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/log.txt`；`--error=0..5` 用来控制异常归档范围：`1` 只归档 internal failures / VM runtime timeouts / VM-only failures，`2` 增加 compile errors，`3` 增加 runtime errors / differential mismatches，`4` 增加 expected JS runtime errors，`5` 再增加 both-engine timeout / skipped。归档结果按状态写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/<status>/`，摘要写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/errors.log`。
+`--log` 会把完整终端输出写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/log.txt`；`--error=0..5` 用来控制异常归档范围：`0` 关闭异常归档，`1` 只归档 internal failures / VM runtime timeouts / VM-only failures，`2` 增加 compile errors，`3` 增加 runtime errors / differential mismatches，`4` 增加 expected JS runtime errors，`5` 再增加 both-engine timeout / skipped。归档结果按状态写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/<status>/`，摘要写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/errors.log`。
 
 需要清理历史归档或让错误过多时提前停止，可以追加：
 
@@ -153,6 +153,48 @@ Release 构建开启了 `opt-level = "z"`、LTO、单 codegen unit、`panic = "a
 
 ```text
 https://open-nan.github.io/js_vm/
+```
+
+```mermaid
+flowchart TD
+subgraph Fuzz["Fuzz 测试流程 tests/Fuzz.js"]
+    direction TB
+    A["执行测试用例"] --> B{检查错误级别}
+    B -->|errorLevel=0| C["跳过归档"]
+    B -->|errorLevel>=1| D["issueRecorder.record()"]
+    D --> E{是否首次错误?}
+    E -->|是| F["ensureRunIssueDir() - 懒创建目录"]
+    E -->|否| G["直接归档到已有目录"]
+    F --> H["saveIssue() - 写入 tests/.issues/<timestamp>/"]
+    G --> H
+    H --> I["返回归档路径"]
+    
+    style B fill:#fff3e0,color:#e65100
+    style F fill:#c8e6c9,color:#1a5e20
+    style H fill:#bbdefb,color:#0d47a1
+end
+
+subgraph Browser["浏览器下载流程 index.html"]
+    direction TB
+    J["用户点击下载运行时包"] --> K["Promise.all 并行下载"]
+    K --> L["js_vm_runtime.js"]
+    K --> M["js_vm_runtime_bg.wasm"]
+    K --> N["生成 index.html"]
+    L --> O["JSZip 打包"]
+    M --> O
+    N --> O
+    O --> P["下载 runtime_pkg.zip"]
+    
+    style O fill:#c8e6c9,color:#1a5e20
+    style P fill:#bbdefb,color:#0d47a1
+end
+
+subgraph Coverage["覆盖率统计 vm_chain.js"]
+    Q["collectBytecodeCoverage()"] --> R["bytecodeCount++"]
+    R --> S["maxByteLength = max(...)"]
+    
+    style R fill:#f3e5f5,color:#7b1fa2
+end
 ```
 
 

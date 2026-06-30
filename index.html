@@ -1140,7 +1140,7 @@
     </footer>
   </div>
   <div id="toast" class="toast"></div>
-
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script type="module">
     import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=fun-index';
     import initExecutor, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js?v=fun-index';
@@ -1245,6 +1245,7 @@ export default def;`,
       runDuration: 0,
       opcodeSeed: '',
       compiledBytes: null,
+      compiledExternSlots: [],
     };
 
     const editor = document.getElementById('editor');
@@ -2044,8 +2045,8 @@ export default def;`,
     }
 
     function deterministicPermutationFromSeed(seed, length) {
-      if (length > 36) {
-        throw new Error('extern seed supports up to 36 slots');
+      if (length > SEED_DIGITS.length) {
+        throw new Error(`extern seed supports up to ${SEED_DIGITS.length} slots`);
       }
       const slots = Array.from({ length }, (_, index) => index);
       let stateValue = 2166136261;
@@ -2160,8 +2161,8 @@ export default def;`,
     }
 
     function randomPermutationSection(length) {
-      if (length > 36) {
-        throw new Error('seed section supports up to 36 entries');
+      if (length > SEED_DIGITS.length) {
+        throw new Error(`seed section supports up to ${SEED_DIGITS.length} entries`);
       }
       const values = Array.from({ length }, (_, index) => index);
       const random = new Uint32Array(length);
@@ -2209,7 +2210,7 @@ export default def;`,
       resetLogs();
       appendLog('compile', 'Re-running bytecode with provided seed');
       const started = performance.now();
-      const run = executeBytecode(state.compiledBytes, seed);
+      const run = executeBytecode(state.compiledBytes, seed, state.compiledExternSlots);
       state.compileDuration = 0;
       state.runDuration = run.duration || performance.now() - started;
       timingInfo.textContent = 'Compile 0ms';
@@ -2226,30 +2227,59 @@ export default def;`,
       if (!state.compiledBytes || !seed) {
         throw new Error('missing compiled bytecode or seed');
       }
-      return `// JS VM runtime package:
-// Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
-// GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
-import init, { js_execute_bytes_with_seed } from './pkg/executor/js_vm_runtime.js';
-
-const bytes = new Uint8Array([${byteArrayLiteral(state.compiledBytes)}]);
-const seed = ${JSON.stringify(seed)};
-const encoding = seed.split('-').slice(2).join('-');
-
-await init('./pkg/executor/js_vm_runtime_bg.wasm');
-const result = js_execute_bytes_with_seed(bytes, seed);
-console.log('[js-vm]', { result, seed, encoding });`;
+      const externSlots = state.compiledExternSlots.length
+        ? state.compiledExternSlots
+        : externSlotsForBytecode();
+      return `\<!DOCTYPE html\>
+\<html lang="en"\>
+\<head\>
+    \<meta charset="UTF-8"\>
+    \<meta name="viewport" content="width=device-width, initial-scale=1.0"\>
+    \<title\>Document\</title\>
+\</head\>
+\<body\>
+    
+\</body\>
+\<script type="module"\>
+    // JS VM runtime package:
+    // Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
+    // GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
+    import init, { js_execute_bytes_with_seed } from './js_vm_runtime.js';
+    const seed = ${JSON.stringify(seed)};
+    const externNames = ${JSON.stringify(externSlots)};
+    const encoding = seed.split('-').slice(2).join('-');
+    async function loadBin(url) {
+        const res = await fetch(url)
+        if (!res.ok) {
+            throw new Error('err:' + res.status + res.statusText)
+        }
+        const buffer = await res.arrayBuffer()
+        return new Uint8Array(buffer)
+    }
+    function resolveExternal(name) {
+        const parts = String(name).split('.')
+        let current = globalThis
+        for (const part of parts) {
+            if (current == null) return undefined
+            current = current[part]
+        }
+        return current
+    }
+    const [bytes] = await Promise.all([
+        loadBin('./code.bin'),
+        init('./js_vm_runtime_bg.wasm')
+    ])
+    const externs = externNames.map(resolveExternal)
+    const result = js_execute_bytes_with_seed(bytes, seed, externs);
+    console.log('[js-vm]', { result, seed, encoding });
+\</script\>
+\</html\>`;
     }
 
-    function downloadTextFile(filename, text) {
+    async function downloadTextFile(filename, text) {
       const blob = new Blob([text], { type: 'text/javascript;charset=utf-8' });
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+      return getRemoteFileContent(url);
     }
 
     async function downloadRemoteFile(url, filename) {
@@ -2260,13 +2290,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
         }
         const blob = await response.blob();
         const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = objectUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200);
+        return getRemoteFileContent(objectUrl);
       } catch (_err) {
         const link = document.createElement('a');
         link.href = url;
@@ -2277,6 +2301,17 @@ console.log('[js-vm]', { result, seed, encoding });`;
         link.click();
         link.remove();
       }
+    }
+
+    async function getRemoteFileContent(url) {
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      const content = await response;
+      return content;
     }
 
     async function copyRunnerScript(script) {
@@ -2306,11 +2341,33 @@ console.log('[js-vm]', { result, seed, encoding });`;
         const script = `<script type="module">\n${moduleCode}\n</` + 'script>';
         const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
         const copied = await copyRunnerScript(script);
-        await Promise.all([
+        const [jsVmRuntime, jsVmRuntimeBg, jsVmRunner] = await Promise.all([
           downloadRemoteFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
           downloadRemoteFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
+          downloadTextFile('index.html', moduleCode)
         ]);
-        downloadTextFile('js-vm-runner.js', moduleCode);
+        const zip = new JSZip()
+        zip.file('js_vm_runtime.js', jsVmRuntime.text())
+        zip.file('js_vm_runtime_bg.wasm', jsVmRuntimeBg.arrayBuffer())
+        zip.file('index.html', jsVmRunner.text())
+        zip.file('code.bin', state.compiledBytes)
+        // 创建下载链接
+        const zipBlob = await zip.generateAsync({
+          type: 'blob',
+          compression: 'DEFLATE',
+          compressionOptions: {
+            level: 6
+          }
+        })
+        const url = URL.createObjectURL(zipBlob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'runtime_pkg.zip'
+        document.body.appendChild(a)
+        a.click()
+        // 清理
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
         if (copied) {
           appendLog('compile', 'Downloaded runtime pkg files and copied runner script to clipboard');
           showToast('Runtime ready');
@@ -2593,6 +2650,79 @@ console.log('[js-vm]', { result, seed, encoding });`;
       return slots;
     }
 
+    function createHostConsole(hostLogs) {
+      const emit = (level, values) => {
+        hostLogs.push({ level, message: values.map(formatLogValue).join(' ') });
+      };
+      return {
+        log: (...values) => emit('log', values),
+        info: (...values) => emit('info', values),
+        warn: (...values) => emit('warn', values),
+        error: (...values) => emit('error', values),
+        debug: (...values) => emit('debug', values),
+        assert: () => undefined,
+        clear: () => undefined,
+        count: () => undefined,
+        countReset: () => undefined,
+        dir: (...values) => emit('log', values),
+        dirxml: (...values) => emit('log', values),
+        group: () => undefined,
+        groupCollapsed: () => undefined,
+        groupEnd: () => undefined,
+        profile: () => undefined,
+        profileEnd: () => undefined,
+        table: (...values) => emit('log', values),
+        time: () => undefined,
+        timeEnd: () => undefined,
+        timeLog: () => undefined,
+        trace: (...values) => emit('log', values),
+      };
+    }
+
+    function createHostEnvironment(hostLogs) {
+      const hostConsole = createHostConsole(hostLogs);
+      let hostGlobal;
+      hostGlobal = new Proxy(window, {
+        get(target, property, receiver) {
+          if (property === 'console') return hostConsole;
+          if (property === 'window' || property === 'globalThis' || property === 'self') {
+            return hostGlobal;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      return {
+        console: hostConsole,
+        window: hostGlobal,
+        globalThis: hostGlobal,
+        self: hostGlobal,
+      };
+    }
+
+    function resolveExternalValue(name, environment) {
+      if (Object.prototype.hasOwnProperty.call(environment, name)) {
+        return environment[name];
+      }
+      const parts = String(name).split('.');
+      let current = environment;
+      for (const part of parts) {
+        if (current == null) break;
+        current = current[part];
+      }
+      if (current !== undefined) return current;
+      current = window;
+      for (const part of parts) {
+        if (current == null) return undefined;
+        current = current[part];
+      }
+      return current;
+    }
+
+    function externValuesForSlots(externSlots, hostLogs) {
+      const environment = createHostEnvironment(hostLogs);
+      return externSlots.map((name) => resolveExternalValue(name, environment));
+    }
+
     function formatLogValue(value) {
       if (value instanceof Error) {
         return value.stack || `${value.name}: ${value.message}`;
@@ -2671,7 +2801,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
       });
     }
 
-    function executeBytecode(bytes, seed) {
+    function executeBytecode(bytes, seed, externSlots = state.compiledExternSlots) {
       if (!bytes || !seed) {
         appendLog('error', '(missing bytecode seed)');
         return { ok: false, duration: 0 };
@@ -2717,7 +2847,11 @@ console.log('[js-vm]', { result, seed, encoding });`;
       }
 
       try {
-        const result = js_execute_bytes_with_seed(bytes, seed);
+        const result = js_execute_bytes_with_seed(
+          bytes,
+          seed,
+          externValuesForSlots(externSlots || [], hostLogs),
+        );
         flushHostLogs(hostLogs);
         appendLog('return', `=> ${result}`);
         return {
@@ -2776,10 +2910,11 @@ console.log('[js-vm]', { result, seed, encoding });`;
         state.bytesHtml = renderHexView(nextByteTokens, changedBytes);
         state.byteTokens = nextByteTokens;
         state.compiledBytes = bytes;
+        state.compiledExternSlots = externSlots;
         artifact.free();
         syncSeedInputs(seed);
 
-        const run = executeBytecode(bytes, seed);
+        const run = executeBytecode(bytes, seed, externSlots);
         state.compileDuration = compileDuration;
         state.runDuration = run.duration;
         timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms`;
@@ -2795,6 +2930,7 @@ console.log('[js-vm]', { result, seed, encoding });`;
         state.bytesHtml = '';
         state.byteTokens = [];
         state.compiledBytes = null;
+        state.compiledExternSlots = [];
         state.compileDuration = performance.now() - compileStarted;
         state.runDuration = 0;
         state.opcodeSeed = '';
