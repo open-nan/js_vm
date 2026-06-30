@@ -1,0 +1,15 @@
+{
+  "name": "js_vm_runtime",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "js_vm_runtime_bg.wasm",
+    "js_vm_runtime.js",
+    "js_vm_runtime.d.ts"
+  ],
+  "main": "js_vm_runtime.js",
+  "types": "js_vm_runtime.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

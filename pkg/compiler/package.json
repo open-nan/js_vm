@@ -1,0 +1,15 @@
+{
+  "name": "js_vm_compiler",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "js_vm_compiler_bg.wasm",
+    "js_vm_compiler.js",
+    "js_vm_compiler.d.ts"
+  ],
+  "main": "js_vm_compiler.js",
+  "types": "js_vm_compiler.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
