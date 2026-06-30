@@ -1,5 +1,4 @@
 target/
-artifacts/
 dist/
 .vendor/
 tests/.vendor/

@@ -4,8 +4,11 @@ use std::{
     fmt::{self, Write},
 };
 
+pub mod ir;
+pub use ir::*;
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrValue {
+enum LowerValue {
     Register(String),
     Name(String),
     Number(f64),
@@ -15,454 +18,134 @@ pub enum IrValue {
     Undefined,
 }
 
-impl fmt::Display for IrValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IrValue::Register(value) => write!(f, "%{value}"),
-            IrValue::Name(value) => write!(f, "{value}"),
-            IrValue::Number(value) => write!(f, "{value}"),
-            IrValue::String(value) => write!(f, "{value:?}"),
-            IrValue::Bool(value) => write!(f, "{value}"),
-            IrValue::Null => write!(f, "null"),
-            IrValue::Undefined => write!(f, "undefined"),
-        }
-    }
-}
-
-/// 中间表示(IR)指令枚举，定义了编译器中间表示的各种操作指令
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrInstruction {
-    /// 标记指令，用于代码生成过程中的调试或临时标记
+enum LowerInstruction {
     Marker(String),
-    /// 标签指令，用于跳转目标位置的标记
     Label(String),
-    /// 声明指令，用于声明变量、函数等
     Declare {
-        /// 声明类型（如"var"、"let"、"const"等）
         kind: String,
-        /// 声明的名称
         name: String,
     },
-    /// 加载常量指令，将常量值加载到目标寄存器
     LoadConst {
-        /// 目标寄存器名称
         dst: String,
-        /// 要加载的常量值
-        value: IrValue,
+        value: LowerValue,
     },
-    /// 加载变量指令，从变量名加载值到目标寄存器
     LoadName {
-        /// 目标寄存器名称
         dst: String,
-        /// 要加载的变量名称
         name: String,
     },
-    /// 存储变量指令，将源值存储到指定变量名
     StoreName {
-        /// 目标变量名称
         name: String,
-        /// 要存储的源值
-        src: IrValue,
+        src: LowerValue,
     },
-    /// 存储成员指令，将源值存储到对象的指定属性
     StoreMember {
-        /// 目标对象
-        object: IrValue,
-        /// 目标属性名称
-        property: IrValue,
-        /// 要存储的源值
-        src: IrValue,
+        object: LowerValue,
+        property: LowerValue,
+        src: LowerValue,
     },
-    /// 移动指令，将源值移动到目标寄存器
     Move {
-        /// 目标寄存器名称
         dst: String,
-        /// 要移动的源值
-        src: IrValue,
+        src: LowerValue,
     },
-    /// 二元运算指令，执行二元运算并将结果存储到目标寄存器
     Binary {
-        /// 目标寄存器名称
         dst: String,
-        /// 运算操作符（如"+"、"-"、"*"、"/"等）
         op: String,
-        /// 左操作数
-        left: IrValue,
-        /// 右操作数
-        right: IrValue,
+        left: LowerValue,
+        right: LowerValue,
     },
-    /// 一元运算指令，执行一元运算并将结果存储到目标寄存器
     Unary {
-        /// 目标寄存器名称
         dst: String,
-        /// 运算操作符（如"!"、"-"、"typeof"等）
         op: String,
-        /// 操作数
-        arg: IrValue,
+        arg: LowerValue,
     },
-    /// 成员访问指令，获取对象属性值并存储到目标寄存器
     Member {
-        /// 目标寄存器名称
         dst: String,
-        /// 目标对象
-        object: IrValue,
-        /// 属性名称
-        property: IrValue,
+        object: LowerValue,
+        property: LowerValue,
     },
-    /// 数组创建指令，创建数组并将结果存储到目标寄存器
     Array {
-        /// 目标寄存器名称
         dst: String,
-        /// 数组元素列表
-        items: Vec<IrValue>,
+        items: Vec<LowerValue>,
     },
-    /// 对象创建指令，创建对象并将结果存储到目标寄存器
     Object {
-        /// 目标寄存器名称
         dst: String,
-        /// 对象属性列表（键值对）
-        props: Vec<(String, IrValue)>,
+        props: Vec<(String, LowerValue)>,
     },
-    /// 函数调用指令，调用函数并将返回值存储到目标寄存器
     Call {
-        /// 目标寄存器名称
         dst: String,
-        /// 被调用的函数
-        callee: IrValue,
-        /// 函数参数列表
-        args: Vec<IrValue>,
+        callee: LowerValue,
+        args: Vec<LowerValue>,
     },
-    /// 构造函数调用指令，使用new关键字调用构造函数并将实例存储到目标寄存器
     New {
-        /// 目标寄存器名称
         dst: String,
-        /// 被调用的构造函数
-        callee: IrValue,
-        /// 构造函数参数列表
-        args: Vec<IrValue>,
+        callee: LowerValue,
+        args: Vec<LowerValue>,
     },
-    /// 模板字符串指令，处理模板字符串并将结果存储到目标寄存器
     Template {
-        /// 目标寄存器名称
         dst: String,
-        /// 模板字符串的静态部分
         quasis: Vec<String>,
-        /// 模板字符串中的表达式部分
-        exprs: Vec<IrValue>,
+        exprs: Vec<LowerValue>,
     },
-    /// 函数定义指令，定义命名函数
     Function {
-        /// 函数名称
         name: String,
-        /// 函数参数列表
         params: Vec<String>,
-        /// 函数体指令列表
-        body: Vec<IrInstruction>,
+        body: Vec<LowerInstruction>,
     },
-    /// 函数表达式指令，定义函数表达式并将其存储到目标寄存器
     FunctionExpr {
-        /// 目标寄存器名称
         dst: String,
-        /// 函数名称（可选，匿名函数为None）
         name: Option<String>,
-        /// 函数参数列表
         params: Vec<String>,
-        /// 函数体指令列表
-        body: Vec<IrInstruction>,
+        body: Vec<LowerInstruction>,
     },
-    /// 类定义指令，定义类
     Class {
-        /// 目标寄存器名称（可选，若需将类存储到变量则指定）
         dst: Option<String>,
-        /// 类名称（可选，匿名类为None）
         name: Option<String>,
-        /// 父类（可选，无继承时为None）
-        super_class: Option<IrValue>,
-        /// 类成员列表（方法/属性的IR表示）
+        super_class: Option<LowerValue>,
         members: Vec<String>,
     },
-    /// 导入指令，处理模块导入
     Import {
-        /// 导入源路径
         source: String,
-        /// 导入的标识符列表
         specifiers: Vec<String>,
     },
-    /// 导出指令，处理模块导出
     Export {
-        /// 导出类型（如"named"、"default"、"all"等）
         kind: String,
-        /// 导出的标识符列表
         names: Vec<String>,
     },
-    /// 抛出异常指令，抛出指定值作为异常
-    Throw(IrValue),
-    /// 异常处理指令，处理try-catch-finally结构
+    Throw(LowerValue),
     Try {
-        /// try块的指令列表
-        body: Vec<IrInstruction>,
-        /// catch块的参数名称（可选，无参数时为None）
+        body: Vec<LowerInstruction>,
         catch_param: Option<String>,
-        /// catch块的指令列表
-        catch_body: Vec<IrInstruction>,
-        /// finally块的指令列表
-        finally_body: Vec<IrInstruction>,
+        catch_body: Vec<LowerInstruction>,
+        finally_body: Vec<LowerInstruction>,
     },
-    /// 显式作用域指令，声明一段 block/catch/function 等词法作用域
+    TryStart,
+    CatchStart(Option<String>),
+    FinallyStart,
+    TryEnd,
     Scope {
-        /// 作用域类型
         kind: String,
-        /// 作用域内指令列表
-        body: Vec<IrInstruction>,
+        body: Vec<LowerInstruction>,
     },
-    /// 返回指令，从函数返回值（可选，无返回值时为None）
-    Return(Option<IrValue>),
-    /// 弹出指令，弹出栈顶值（通常用于处理无副作用的表达式结果）
-    Pop(IrValue),
-    /// 无条件跳转指令，跳转到指定标签
+    EnterScope(String),
+    LeaveScope,
+    Return(Option<LowerValue>),
+    Pop(LowerValue),
     Jump(String),
-    /// 条件跳转指令，当测试值为false时跳转到指定标签
     JumpIfFalse {
-        /// 测试条件值
-        test: IrValue,
-        /// 跳转目标标签
+        test: LowerValue,
         label: String,
     },
-    /// 不支持的指令，用于标记编译器暂不支持的语法结构
     Unsupported(String),
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct IrModule {
-    pub extern_slots: Vec<String>,
-    pub instructions: Vec<IrInstruction>,
-}
 impl IrModule {
     pub fn to_text(&self) -> String {
-        let mut out = String::new();
-        if !self.extern_slots.is_empty() {
-            let _ = writeln!(out, ".externs");
-            for (index, name) in self.extern_slots.iter().enumerate() {
-                let _ = writeln!(out, "  e{index} = {name}");
-            }
-        }
-        for instruction in &self.instructions {
-            instruction.write_text(&mut out, 0);
-        }
-        out
+        self.to_string()
     }
 
     pub fn to_bytecode(&self) -> BytecodeModule {
         BytecodeBuilder::default().compile_module(self)
-    }
-}
-
-impl IrInstruction {
-    fn write_text(&self, out: &mut String, indent: usize) {
-        let pad = "  ".repeat(indent);
-        match self {
-            IrInstruction::Marker(message) => {
-                let _ = writeln!(out, "{pad}{message}");
-            }
-            IrInstruction::Label(label) => {
-                let _ = writeln!(out, "{pad}{label}:");
-            }
-            IrInstruction::Declare { kind, name } => {
-                let _ = writeln!(out, "{pad}declare {kind} {name}");
-            }
-            IrInstruction::LoadConst { dst, value } => {
-                let _ = writeln!(out, "{pad}%{dst} = const {value}");
-            }
-            IrInstruction::LoadName { dst, name } => {
-                let _ = writeln!(out, "{pad}%{dst} = load {name}");
-            }
-            IrInstruction::StoreName { name, src } => {
-                let _ = writeln!(out, "{pad}store {name}, {src}");
-            }
-            IrInstruction::StoreMember {
-                object,
-                property,
-                src,
-            } => {
-                let _ = writeln!(out, "{pad}store_member {object}, {property}, {src}");
-            }
-            IrInstruction::Move { dst, src } => {
-                let _ = writeln!(out, "{pad}%{dst} = move {src}");
-            }
-            IrInstruction::Binary {
-                dst,
-                op,
-                left,
-                right,
-            } => {
-                let _ = writeln!(out, "{pad}%{dst} = binary {op}, {left}, {right}");
-            }
-            IrInstruction::Unary { dst, op, arg } => {
-                let _ = writeln!(out, "{pad}%{dst} = unary {op}, {arg}");
-            }
-            IrInstruction::Member {
-                dst,
-                object,
-                property,
-            } => {
-                let _ = writeln!(out, "{pad}%{dst} = member {object}, {property}");
-            }
-            IrInstruction::Array { dst, items } => {
-                let items = items
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{pad}%{dst} = array [{items}]");
-            }
-            IrInstruction::Object { dst, props } => {
-                let props = props
-                    .iter()
-                    .map(|(key, value)| format!("{key}: {value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{pad}%{dst} = object {{{props}}}");
-            }
-            IrInstruction::Call { dst, callee, args } => {
-                let args = args
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{pad}%{dst} = call {callee}({args})");
-            }
-            IrInstruction::New { dst, callee, args } => {
-                let args = args
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{pad}%{dst} = new {callee}({args})");
-            }
-            IrInstruction::Template { dst, quasis, exprs } => {
-                let quasis = quasis
-                    .iter()
-                    .map(|part| format!("{part:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let exprs = exprs
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(out, "{pad}%{dst} = template [{quasis}] [{exprs}]");
-            }
-            IrInstruction::Function { name, params, body } => {
-                let _ = writeln!(out, "{pad}function {name}({}) {{", params.join(", "));
-                for instruction in body {
-                    instruction.write_text(out, indent + 1);
-                }
-                let _ = writeln!(out, "{pad}}}");
-            }
-            IrInstruction::FunctionExpr {
-                dst,
-                name,
-                params,
-                body,
-            } => {
-                let name = name.as_deref().unwrap_or("<anonymous>");
-                let _ = writeln!(
-                    out,
-                    "{pad}%{dst} = function {name}({}) {{",
-                    params.join(", ")
-                );
-                for instruction in body {
-                    instruction.write_text(out, indent + 1);
-                }
-                let _ = writeln!(out, "{pad}}}");
-            }
-            IrInstruction::Class {
-                dst,
-                name,
-                super_class,
-                members,
-            } => {
-                let target = dst
-                    .as_ref()
-                    .map(|dst| format!("%{dst} = "))
-                    .unwrap_or_default();
-                let name = name.as_deref().unwrap_or("<anonymous>");
-                let extends = super_class
-                    .as_ref()
-                    .map(|value| format!(" extends {value}"))
-                    .unwrap_or_default();
-                let _ = writeln!(out, "{pad}{target}class {name}{extends} {{");
-                for member in members {
-                    let _ = writeln!(out, "{pad}  {member}");
-                }
-                let _ = writeln!(out, "{pad}}}");
-            }
-            IrInstruction::Import { source, specifiers } => {
-                let _ = writeln!(
-                    out,
-                    "{pad}import [{}] from {source:?}",
-                    specifiers.join(", ")
-                );
-            }
-            IrInstruction::Export { kind, names } => {
-                let _ = writeln!(out, "{pad}export {kind} [{}]", names.join(", "));
-            }
-            IrInstruction::Throw(value) => {
-                let _ = writeln!(out, "{pad}throw {value}");
-            }
-            IrInstruction::Try {
-                body,
-                catch_param,
-                catch_body,
-                finally_body,
-            } => {
-                let _ = writeln!(out, "{pad}try {{");
-                for instruction in body {
-                    instruction.write_text(out, indent + 1);
-                }
-                let _ = writeln!(out, "{pad}}}");
-                if !catch_body.is_empty() {
-                    let param = catch_param.as_deref().unwrap_or("");
-                    let _ = writeln!(out, "{pad}catch {param} {{");
-                    for instruction in catch_body {
-                        instruction.write_text(out, indent + 1);
-                    }
-                    let _ = writeln!(out, "{pad}}}");
-                }
-                if !finally_body.is_empty() {
-                    let _ = writeln!(out, "{pad}finally {{");
-                    for instruction in finally_body {
-                        instruction.write_text(out, indent + 1);
-                    }
-                    let _ = writeln!(out, "{pad}}}");
-                }
-            }
-            IrInstruction::Scope { kind, body } => {
-                let _ = writeln!(out, "{pad}scope {kind} {{");
-                for instruction in body {
-                    instruction.write_text(out, indent + 1);
-                }
-                let _ = writeln!(out, "{pad}}}");
-            }
-            IrInstruction::Return(Some(value)) => {
-                let _ = writeln!(out, "{pad}return {value}");
-            }
-            IrInstruction::Return(None) => {
-                let _ = writeln!(out, "{pad}return");
-            }
-            IrInstruction::Pop(value) => {
-                let _ = writeln!(out, "{pad}pop {value}");
-            }
-            IrInstruction::Jump(label) => {
-                let _ = writeln!(out, "{pad}jump {label}");
-            }
-            IrInstruction::JumpIfFalse { test, label } => {
-                let _ = writeln!(out, "{pad}jump_if_false {test}, {label}");
-            }
-            IrInstruction::Unsupported(message) => {
-                let _ = writeln!(out, "{pad}unsupported {message}");
-            }
-        }
     }
 }
 
@@ -1298,12 +981,9 @@ impl BytecodeModule {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(encoding.magic.as_bytes());
         write_u32(&mut bytes, self.extern_slots.len() as u32);
-        for slot in &self.extern_slots {
-            write_string(&mut bytes, slot);
-        }
         write_u32(&mut bytes, self.names.len() as u32);
         for name in &self.names {
-            write_name_string(&mut bytes, name, &self.extern_slots);
+            write_name_string(&mut bytes, name, &[]);
         }
         write_u32(&mut bytes, self.functions.len() as u32);
         for function in &self.functions {
@@ -1352,16 +1032,20 @@ impl BytecodeModule {
         let mut cursor = ByteReader::new(bytes);
         cursor.expect_magic(encoding)?;
 
-        let extern_count = cursor.read_bounded_count("extern slots")?;
-        let mut extern_slots = Vec::with_capacity(extern_count);
-        for _ in 0..extern_count {
-            extern_slots.push(cursor.read_string()?);
+        let extern_count = cursor.read_u32()? as usize;
+        if extern_count > 65_535 {
+            return Err(EncodingError::UnknownCode(format!(
+                "extern slots count {extern_count} exceeds limit 65535"
+            )));
         }
+        let extern_slots = (0..extern_count)
+            .map(|index| format!("e{index}"))
+            .collect::<Vec<_>>();
 
         let name_count = cursor.read_bounded_count("names")?;
         let mut names = Vec::with_capacity(name_count);
         for _ in 0..name_count {
-            names.push(cursor.read_name_string(&extern_slots)?);
+            names.push(cursor.read_name_string(&[])?);
         }
 
         let function_count = cursor.read_bounded_count("functions")?;
@@ -2167,6 +1851,644 @@ fn ensure_operand_min_len(
     }
 }
 
+fn lower_module_to_bytecode_instructions(module: &IrModule) -> Vec<LowerInstruction> {
+    let mut instructions = Vec::new();
+
+    for import in &module.imports {
+        instructions.push(LowerInstruction::Import {
+            source: import.source.clone(),
+            specifiers: import
+                .specifiers
+                .iter()
+                .map(|specifier| import_specifier_name(module, specifier))
+                .collect(),
+        });
+    }
+
+    if let Some(entry) = module.functions.get(module.entry.0) {
+        instructions.extend(lower_function_body(module, module.entry, entry));
+    }
+
+    for export in &module.exports {
+        let (kind, names) = export_decl_names(module, export);
+        instructions.push(LowerInstruction::Export { kind, names });
+    }
+
+    instructions
+}
+
+fn lower_function_body(
+    module: &IrModule,
+    function_id: FunctionId,
+    function: &IrFunction,
+) -> Vec<LowerInstruction> {
+    let mut out = Vec::new();
+    for (index, block) in function.blocks.iter().enumerate() {
+        if index != function.entry.0 || function.blocks.len() > 1 {
+            out.push(LowerInstruction::Label(block_label(
+                function_id,
+                BlockId(index),
+            )));
+        }
+        for instruction in &block.instructions {
+            lower_ir_instruction(module, function, instruction, &mut out);
+        }
+        lower_ir_terminator(module, function_id, function, &block.terminator, &mut out);
+    }
+    out
+}
+
+fn lower_ir_instruction(
+    module: &IrModule,
+    function: &IrFunction,
+    instruction: &IrInstruction,
+    out: &mut Vec<LowerInstruction>,
+) {
+    match &instruction.kind {
+        IrInstructionKind::Nop => {}
+        IrInstructionKind::Debug(message) => out.push(LowerInstruction::Marker(message.clone())),
+        IrInstructionKind::Label(label) => out.push(LowerInstruction::Label(label.clone())),
+        IrInstructionKind::Jump(label) => out.push(LowerInstruction::Jump(label.clone())),
+        IrInstructionKind::JumpIfFalse { test, label } => {
+            out.push(LowerInstruction::JumpIfFalse {
+                test: lower_ir_value(module, function, test),
+                label: label.clone(),
+            });
+        }
+        IrInstructionKind::Declare(declaration) => {
+            let name = declaration
+                .name
+                .clone()
+                .or_else(|| local_name(function, declaration.local))
+                .unwrap_or_else(|| declaration.local.to_string());
+            out.push(LowerInstruction::Declare {
+                kind: declaration.kind.to_string(),
+                name: name.clone(),
+            });
+            if let Some(init) = &declaration.init {
+                out.push(LowerInstruction::StoreName {
+                    name,
+                    src: lower_ir_value(module, function, init),
+                });
+            }
+        }
+        IrInstructionKind::Move { dst, src } => out.push(LowerInstruction::Move {
+            dst: register_name(*dst),
+            src: lower_ir_value(module, function, src),
+        }),
+        IrInstructionKind::Load { dst, src } => lower_ir_load(module, function, *dst, src, out),
+        IrInstructionKind::Store { dst, op, src } => {
+            if *op != IrAssignOp::Assign {
+                out.push(LowerInstruction::Unsupported(format!(
+                    "compound assignment {op}"
+                )));
+            }
+            lower_ir_store(module, function, dst, src, out);
+        }
+        IrInstructionKind::Update { dst, place, op } => {
+            out.push(LowerInstruction::Unsupported(format!(
+                "structured update {op} {place}"
+            )));
+            if let Some(dst) = dst {
+                out.push(LowerInstruction::Move {
+                    dst: register_name(*dst),
+                    src: LowerValue::Undefined,
+                });
+            }
+        }
+        IrInstructionKind::Unary { dst, op, arg } => out.push(LowerInstruction::Unary {
+            dst: register_name(*dst),
+            op: op.to_string(),
+            arg: lower_ir_value(module, function, arg),
+        }),
+        IrInstructionKind::Binary {
+            dst,
+            op,
+            left,
+            right,
+        } => out.push(LowerInstruction::Binary {
+            dst: register_name(*dst),
+            op: op.to_string(),
+            left: lower_ir_value(module, function, left),
+            right: lower_ir_value(module, function, right),
+        }),
+        IrInstructionKind::Delete { dst, target } => {
+            out.push(LowerInstruction::Unary {
+                dst: register_name(*dst),
+                op: "delete".to_string(),
+                arg: lower_place_as_value(module, function, target),
+            });
+        }
+        IrInstructionKind::Throw(value) => {
+            out.push(LowerInstruction::Throw(lower_ir_value(
+                module, function, value,
+            )));
+        }
+        IrInstructionKind::Return(value) => {
+            out.push(LowerInstruction::Return(
+                value
+                    .as_ref()
+                    .map(|value| lower_ir_value(module, function, value)),
+            ));
+        }
+        IrInstructionKind::CreateArray { dst, elements } => {
+            out.push(LowerInstruction::Array {
+                dst: register_name(*dst),
+                items: elements
+                    .iter()
+                    .map(|element| match element {
+                        IrArrayElement::Value(value) | IrArrayElement::Spread(value) => {
+                            lower_ir_value(module, function, value)
+                        }
+                        IrArrayElement::Hole => LowerValue::Undefined,
+                    })
+                    .collect(),
+            });
+        }
+        IrInstructionKind::CreateObject { dst, properties } => {
+            let mut props = Vec::new();
+            for property in properties {
+                match property {
+                    IrObjectProperty::Data { key, value } => {
+                        props.push((
+                            property_key_name(module, function, key),
+                            lower_ir_value(module, function, value),
+                        ));
+                    }
+                    IrObjectProperty::Method {
+                        key,
+                        function: method_function,
+                    }
+                    | IrObjectProperty::Getter {
+                        key,
+                        function: method_function,
+                    }
+                    | IrObjectProperty::Setter {
+                        key,
+                        function: method_function,
+                    } => {
+                        props.push((
+                            property_key_name(module, function, key),
+                            LowerValue::Name(function_name(module, *method_function)),
+                        ));
+                    }
+                    IrObjectProperty::Spread(value) => {
+                        props.push(("...".to_string(), lower_ir_value(module, function, value)));
+                    }
+                }
+            }
+            out.push(LowerInstruction::Object {
+                dst: register_name(*dst),
+                props,
+            });
+        }
+        IrInstructionKind::CreateFunction { dst, function, .. } => {
+            if let Some(ir_function) = module.functions.get(function.0) {
+                out.push(LowerInstruction::FunctionExpr {
+                    dst: register_name(*dst),
+                    name: ir_function.name.clone(),
+                    params: function_params(ir_function),
+                    body: lower_function_body(module, *function, ir_function),
+                });
+            } else {
+                out.push(LowerInstruction::Unsupported(format!(
+                    "missing function {function}"
+                )));
+            }
+        }
+        IrInstructionKind::FunctionDeclaration { function } => {
+            if let Some(ir_function) = module.functions.get(function.0) {
+                out.push(LowerInstruction::Function {
+                    name: ir_function
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| function.to_string()),
+                    params: function_params(ir_function),
+                    body: lower_function_body(module, *function, ir_function),
+                });
+            } else {
+                out.push(LowerInstruction::Unsupported(format!(
+                    "missing function {function}"
+                )));
+            }
+        }
+        IrInstructionKind::CreateClass { dst, class } => {
+            if let Some(ir_class) = module.classes.get(class.0) {
+                out.push(LowerInstruction::Class {
+                    dst: Some(register_name(*dst)),
+                    name: ir_class.name.clone(),
+                    super_class: ir_class
+                        .super_class
+                        .as_ref()
+                        .map(|value| lower_ir_value(module, function, value)),
+                    members: ir_class
+                        .members
+                        .iter()
+                        .map(|member| property_key_name(module, function, &member.key))
+                        .collect(),
+                });
+            } else {
+                out.push(LowerInstruction::Unsupported(format!(
+                    "missing class {class}"
+                )));
+            }
+        }
+        IrInstructionKind::Call(call) => out.push(LowerInstruction::Call {
+            dst: call
+                .dst
+                .map(register_name)
+                .unwrap_or_else(|| "_".to_string()),
+            callee: lower_ir_value(module, function, &call.callee),
+            args: call
+                .args
+                .iter()
+                .map(|arg| lower_ir_argument(module, function, arg))
+                .collect(),
+        }),
+        IrInstructionKind::Construct(construct) => out.push(LowerInstruction::New {
+            dst: register_name(construct.dst),
+            callee: lower_ir_value(module, function, &construct.callee),
+            args: construct
+                .args
+                .iter()
+                .map(|arg| lower_ir_argument(module, function, arg))
+                .collect(),
+        }),
+        IrInstructionKind::Template(template) => out.push(LowerInstruction::Template {
+            dst: register_name(template.dst),
+            quasis: template
+                .cooked
+                .iter()
+                .map(|value| value.clone().unwrap_or_default())
+                .collect(),
+            exprs: template
+                .expressions
+                .iter()
+                .map(|value| lower_ir_value(module, function, value))
+                .collect(),
+        }),
+        IrInstructionKind::Await { dst, value } => {
+            out.push(LowerInstruction::Marker(format!(
+                "%{} = await {}",
+                register_name(*dst),
+                lower_ir_value_text(module, function, value)
+            )));
+            out.push(LowerInstruction::Move {
+                dst: register_name(*dst),
+                src: lower_ir_value(module, function, value),
+            });
+        }
+        IrInstructionKind::Yield {
+            dst,
+            value,
+            delegate,
+        } => {
+            out.push(LowerInstruction::Marker(format!(
+                "yield{} {}",
+                if *delegate { "*" } else { "" },
+                value
+                    .as_ref()
+                    .map(|value| lower_ir_value_text(module, function, value))
+                    .unwrap_or_default()
+            )));
+            if let Some(dst) = dst {
+                out.push(LowerInstruction::Move {
+                    dst: register_name(*dst),
+                    src: LowerValue::Undefined,
+                });
+            }
+        }
+        IrInstructionKind::EnterScope(scope) => {
+            let kind = function
+                .scopes
+                .get(scope.0)
+                .map(|scope| scope.kind.to_string())
+                .unwrap_or_else(|| "block".to_string());
+            out.push(LowerInstruction::EnterScope(kind));
+        }
+        IrInstructionKind::EnterWith { scope, object } => {
+            out.push(LowerInstruction::Marker(format!(
+                "enter_with {scope}, {}",
+                lower_ir_value_text(module, function, object)
+            )));
+        }
+        IrInstructionKind::LeaveScope(scope) => {
+            let _ = scope;
+            out.push(LowerInstruction::LeaveScope);
+        }
+        IrInstructionKind::EnterTry(handler) => {
+            let _ = handler;
+            out.push(LowerInstruction::TryStart);
+        }
+        IrInstructionKind::EnterCatch { param } => {
+            out.push(LowerInstruction::CatchStart(
+                param.and_then(|param| local_name(function, param)),
+            ));
+        }
+        IrInstructionKind::EnterFinally => {
+            out.push(LowerInstruction::FinallyStart);
+        }
+        IrInstructionKind::LeaveTry(handler) => {
+            let _ = handler;
+            out.push(LowerInstruction::TryEnd);
+        }
+        IrInstructionKind::Unsupported(message) => {
+            out.push(LowerInstruction::Unsupported(message.clone()));
+        }
+    }
+}
+
+fn lower_ir_terminator(
+    module: &IrModule,
+    function_id: FunctionId,
+    function: &IrFunction,
+    terminator: &IrTerminator,
+    out: &mut Vec<LowerInstruction>,
+) {
+    match terminator {
+        IrTerminator::Jump(target) => {
+            out.push(LowerInstruction::Jump(block_label(function_id, *target)))
+        }
+        IrTerminator::Branch {
+            test,
+            truthy,
+            falsy,
+        } => {
+            out.push(LowerInstruction::JumpIfFalse {
+                test: lower_ir_value(module, function, test),
+                label: block_label(function_id, *falsy),
+            });
+            out.push(LowerInstruction::Jump(block_label(function_id, *truthy)));
+        }
+        IrTerminator::Switch { default, .. } => {
+            out.push(LowerInstruction::Unsupported(
+                "switch terminator".to_string(),
+            ));
+            out.push(LowerInstruction::Jump(block_label(function_id, *default)));
+        }
+        IrTerminator::Return(value) => out.push(LowerInstruction::Return(
+            value
+                .as_ref()
+                .map(|value| lower_ir_value(module, function, value)),
+        )),
+        IrTerminator::Throw(value) => {
+            out.push(LowerInstruction::Throw(lower_ir_value(
+                module, function, value,
+            )));
+        }
+        IrTerminator::Rethrow => out.push(LowerInstruction::Unsupported("rethrow".to_string())),
+        IrTerminator::Unreachable => {}
+    }
+}
+
+fn lower_ir_load(
+    module: &IrModule,
+    function: &IrFunction,
+    dst: RegisterId,
+    src: &IrPlace,
+    out: &mut Vec<LowerInstruction>,
+) {
+    match src {
+        IrPlace::Local(local) => out.push(LowerInstruction::LoadName {
+            dst: register_name(dst),
+            name: local_name(function, *local).unwrap_or_else(|| local.to_string()),
+        }),
+        IrPlace::External(external) => out.push(LowerInstruction::LoadName {
+            dst: register_name(dst),
+            name: extern_name(module, *external),
+        }),
+        IrPlace::Member(member) => out.push(LowerInstruction::Member {
+            dst: register_name(dst),
+            object: lower_ir_value(module, function, &member.object),
+            property: property_key_value(module, function, &member.property),
+        }),
+        IrPlace::SuperMember(property) => out.push(LowerInstruction::Member {
+            dst: register_name(dst),
+            object: LowerValue::Name("super".to_string()),
+            property: property_key_value(module, function, property),
+        }),
+    }
+}
+
+fn lower_ir_store(
+    module: &IrModule,
+    function: &IrFunction,
+    dst: &IrPlace,
+    src: &IrValue,
+    out: &mut Vec<LowerInstruction>,
+) {
+    match dst {
+        IrPlace::Local(local) => out.push(LowerInstruction::StoreName {
+            name: local_name(function, *local).unwrap_or_else(|| local.to_string()),
+            src: lower_ir_value(module, function, src),
+        }),
+        IrPlace::External(external) => out.push(LowerInstruction::StoreName {
+            name: extern_name(module, *external),
+            src: lower_ir_value(module, function, src),
+        }),
+        IrPlace::Member(member) => out.push(LowerInstruction::StoreMember {
+            object: lower_ir_value(module, function, &member.object),
+            property: property_key_value(module, function, &member.property),
+            src: lower_ir_value(module, function, src),
+        }),
+        IrPlace::SuperMember(property) => out.push(LowerInstruction::StoreMember {
+            object: LowerValue::Name("super".to_string()),
+            property: property_key_value(module, function, property),
+            src: lower_ir_value(module, function, src),
+        }),
+    }
+}
+
+fn lower_place_as_value(module: &IrModule, function: &IrFunction, place: &IrPlace) -> LowerValue {
+    match place {
+        IrPlace::Local(local) => {
+            LowerValue::Name(local_name(function, *local).unwrap_or_else(|| local.to_string()))
+        }
+        IrPlace::External(external) => LowerValue::Name(extern_name(module, *external)),
+        IrPlace::Member(member) => property_key_value(module, function, &member.property),
+        IrPlace::SuperMember(property) => property_key_value(module, function, property),
+    }
+}
+
+fn lower_ir_value(module: &IrModule, function: &IrFunction, value: &IrValue) -> LowerValue {
+    match value {
+        IrValue::Undefined => LowerValue::Undefined,
+        IrValue::Null => LowerValue::Null,
+        IrValue::Bool(value) => LowerValue::Bool(*value),
+        IrValue::Const(constant) => lower_ir_const(module, *constant),
+        IrValue::Local(local) => {
+            LowerValue::Name(local_name(function, *local).unwrap_or_else(|| local.to_string()))
+        }
+        IrValue::Register(register) => LowerValue::Register(register_name(*register)),
+        IrValue::Function(function) => LowerValue::Name(function_name(module, *function)),
+        IrValue::Class(class) => LowerValue::Name(
+            module
+                .classes
+                .get(class.0)
+                .and_then(|class| class.name.clone())
+                .unwrap_or_else(|| class.to_string()),
+        ),
+        IrValue::External(external) => LowerValue::Name(extern_name(module, *external)),
+        IrValue::This => LowerValue::Name("this".to_string()),
+        IrValue::Super => LowerValue::Name("super".to_string()),
+        IrValue::NewTarget => LowerValue::Name("new.target".to_string()),
+        IrValue::ImportMeta => LowerValue::Name("import.meta".to_string()),
+    }
+}
+
+fn lower_ir_value_text(module: &IrModule, function: &IrFunction, value: &IrValue) -> String {
+    match lower_ir_value(module, function, value) {
+        LowerValue::Register(value) => format!("%{value}"),
+        LowerValue::Name(value) => value,
+        LowerValue::Number(value) => value.to_string(),
+        LowerValue::String(value) => format!("{value:?}"),
+        LowerValue::Bool(value) => value.to_string(),
+        LowerValue::Null => "null".to_string(),
+        LowerValue::Undefined => "undefined".to_string(),
+    }
+}
+
+fn lower_ir_const(module: &IrModule, id: ConstId) -> LowerValue {
+    match module.constants.get(id.0) {
+        Some(IrConst::String(value)) => LowerValue::String(value.clone()),
+        Some(IrConst::Int(value)) => LowerValue::Number(*value as f64),
+        Some(IrConst::Float(value)) => LowerValue::Number(*value),
+        Some(IrConst::BigInt(value)) => LowerValue::String(format!("{value}n")),
+        Some(IrConst::Regex { pattern, flags }) => {
+            LowerValue::String(format!("/{pattern}/{flags}"))
+        }
+        None => LowerValue::Undefined,
+    }
+}
+
+fn lower_ir_argument(
+    module: &IrModule,
+    function: &IrFunction,
+    argument: &IrArgument,
+) -> LowerValue {
+    match argument {
+        IrArgument::Value(value) | IrArgument::Spread(value) => {
+            lower_ir_value(module, function, value)
+        }
+    }
+}
+
+fn property_key_value(module: &IrModule, function: &IrFunction, key: &IrPropertyKey) -> LowerValue {
+    match key {
+        IrPropertyKey::Static(value) | IrPropertyKey::Private(value) => {
+            LowerValue::String(value.clone())
+        }
+        IrPropertyKey::Number(value) => LowerValue::Number(*value),
+        IrPropertyKey::Computed(value) => lower_ir_value(module, function, value),
+    }
+}
+
+fn property_key_name(module: &IrModule, function: &IrFunction, key: &IrPropertyKey) -> String {
+    match key {
+        IrPropertyKey::Static(value) | IrPropertyKey::Private(value) => value.clone(),
+        IrPropertyKey::Number(value) => value.to_string(),
+        IrPropertyKey::Computed(value) => lower_ir_value_text(module, function, value),
+    }
+}
+
+fn function_params(function: &IrFunction) -> Vec<String> {
+    function
+        .params
+        .iter()
+        .map(|param| local_name(function, param.local).unwrap_or_else(|| param.local.to_string()))
+        .collect()
+}
+
+fn function_name(module: &IrModule, id: FunctionId) -> String {
+    module
+        .functions
+        .get(id.0)
+        .and_then(|function| function.name.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn local_name(function: &IrFunction, id: LocalId) -> Option<String> {
+    function
+        .locals
+        .get(id.0)
+        .and_then(|local| local.name.clone())
+}
+
+fn extern_name(module: &IrModule, id: ExternId) -> String {
+    module
+        .extern_slots
+        .get(id.0)
+        .cloned()
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn block_label(function: FunctionId, id: BlockId) -> String {
+    format!("f{}_b{}", function.0, id.0)
+}
+
+fn register_name(id: RegisterId) -> String {
+    format!("t{}", id.0)
+}
+
+fn import_specifier_name(module: &IrModule, specifier: &IrImportSpecifier) -> String {
+    match specifier {
+        IrImportSpecifier::Default { local } => local_name_for_module_import(module, *local),
+        IrImportSpecifier::Namespace { local } => {
+            format!("* as {}", local_name_for_module_import(module, *local))
+        }
+        IrImportSpecifier::Named { imported, local } => {
+            let local = local_name_for_module_import(module, *local);
+            if imported == &local {
+                imported.clone()
+            } else {
+                format!("{imported} as {local}")
+            }
+        }
+    }
+}
+
+fn local_name_for_module_import(module: &IrModule, local: LocalId) -> String {
+    module
+        .functions
+        .get(module.entry.0)
+        .and_then(|function| local_name(function, local))
+        .unwrap_or_else(|| local.to_string())
+}
+
+fn export_decl_names(module: &IrModule, export: &IrExportDecl) -> (String, Vec<String>) {
+    match export {
+        IrExportDecl::Local { local, exported } => (
+            "local".to_string(),
+            vec![format!(
+                "{} as {exported}",
+                local_name_for_module_import(module, *local)
+            )],
+        ),
+        IrExportDecl::Default { value } => (
+            "default".to_string(),
+            vec![
+                module
+                    .functions
+                    .get(module.entry.0)
+                    .map(|function| lower_ir_value_text(module, function, value))
+                    .unwrap_or_else(|| "default".to_string()),
+            ],
+        ),
+        IrExportDecl::ReExport {
+            source,
+            imported,
+            exported,
+        } => (
+            format!("re-export from {source:?}"),
+            vec![format!("{imported} as {exported}")],
+        ),
+        IrExportDecl::ExportAll { source, exported } => (
+            format!("all from {source:?}"),
+            exported.iter().cloned().collect(),
+        ),
+    }
+}
+
 #[derive(Default)]
 struct BytecodeBuilder {
     extern_slots: Vec<String>,
@@ -2196,7 +2518,8 @@ impl BytecodeBuilder {
             .enumerate()
             .map(|(index, name)| (name.clone(), index as u32))
             .collect();
-        self.compile_instructions(&module.instructions);
+        let instructions = lower_module_to_bytecode_instructions(module);
+        self.compile_instructions(&instructions);
         BytecodeModule {
             extern_slots: self.extern_slots.clone(),
             names: self.names,
@@ -2206,43 +2529,43 @@ impl BytecodeBuilder {
         }
     }
 
-    fn compile_instructions(&mut self, instructions: &[IrInstruction]) {
+    fn compile_instructions(&mut self, instructions: &[LowerInstruction]) {
         for instruction in instructions {
             self.compile_instruction(instruction);
         }
     }
 
-    fn compile_instruction(&mut self, instruction: &IrInstruction) {
+    fn compile_instruction(&mut self, instruction: &LowerInstruction) {
         match instruction {
-            IrInstruction::Marker(message) => {
+            LowerInstruction::Marker(message) => {
                 let operand = self.string_constant_operand(message);
                 self.emit(BytecodeOp::Marker, vec![operand]);
             }
-            IrInstruction::Label(label) => {
+            LowerInstruction::Label(label) => {
                 let operand = self.label_operand(label);
                 self.emit(BytecodeOp::Label, vec![operand]);
             }
-            IrInstruction::Declare { kind, name } => {
+            LowerInstruction::Declare { kind, name } => {
                 let kind = BytecodeOperand::DeclKind(decl_kind_id(kind));
                 let name = self.name_operand(name);
                 self.emit(BytecodeOp::Declare, vec![kind, name]);
             }
-            IrInstruction::LoadConst { dst, value } => {
+            LowerInstruction::LoadConst { dst, value } => {
                 let dst = self.register_operand(dst);
                 let value = self.value_operand(value);
                 self.emit(BytecodeOp::LoadConst, vec![dst, value]);
             }
-            IrInstruction::LoadName { dst, name } => {
+            LowerInstruction::LoadName { dst, name } => {
                 let dst = self.register_operand(dst);
                 let name = self.name_ref_operand(name);
                 self.emit(BytecodeOp::LoadName, vec![dst, name]);
             }
-            IrInstruction::StoreName { name, src } => {
+            LowerInstruction::StoreName { name, src } => {
                 let name = self.name_ref_operand(name);
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::StoreName, vec![name, src]);
             }
-            IrInstruction::StoreMember {
+            LowerInstruction::StoreMember {
                 object,
                 property,
                 src,
@@ -2252,12 +2575,12 @@ impl BytecodeBuilder {
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::StoreMember, vec![object, property, src]);
             }
-            IrInstruction::Move { dst, src } => {
+            LowerInstruction::Move { dst, src } => {
                 let dst = self.register_operand(dst);
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::Move, vec![dst, src]);
             }
-            IrInstruction::Binary {
+            LowerInstruction::Binary {
                 dst,
                 op,
                 left,
@@ -2269,13 +2592,13 @@ impl BytecodeBuilder {
                 let right = self.value_operand(right);
                 self.emit(BytecodeOp::Binary, vec![dst, op, left, right]);
             }
-            IrInstruction::Unary { dst, op, arg } => {
+            LowerInstruction::Unary { dst, op, arg } => {
                 let dst = self.register_operand(dst);
                 let op = self.operator_operand(op);
                 let arg = self.value_operand(arg);
                 self.emit(BytecodeOp::Unary, vec![dst, op, arg]);
             }
-            IrInstruction::Member {
+            LowerInstruction::Member {
                 dst,
                 object,
                 property,
@@ -2285,7 +2608,7 @@ impl BytecodeBuilder {
                 let property = self.value_operand(property);
                 self.emit(BytecodeOp::Member, vec![dst, object, property]);
             }
-            IrInstruction::Array { dst, items } => {
+            LowerInstruction::Array { dst, items } => {
                 let mut operands = vec![
                     self.register_operand(dst),
                     BytecodeOperand::Count(items.len() as u32),
@@ -2293,7 +2616,7 @@ impl BytecodeBuilder {
                 operands.extend(items.iter().map(|item| self.value_operand(item)));
                 self.emit(BytecodeOp::Array, operands);
             }
-            IrInstruction::Object { dst, props } => {
+            LowerInstruction::Object { dst, props } => {
                 let mut operands = vec![
                     self.register_operand(dst),
                     BytecodeOperand::Count(props.len() as u32),
@@ -2304,7 +2627,7 @@ impl BytecodeBuilder {
                 }
                 self.emit(BytecodeOp::Object, operands);
             }
-            IrInstruction::Call { dst, callee, args } => {
+            LowerInstruction::Call { dst, callee, args } => {
                 let mut operands = vec![
                     self.register_operand(dst),
                     self.value_operand(callee),
@@ -2313,7 +2636,7 @@ impl BytecodeBuilder {
                 operands.extend(args.iter().map(|arg| self.value_operand(arg)));
                 self.emit(BytecodeOp::Call, operands);
             }
-            IrInstruction::New { dst, callee, args } => {
+            LowerInstruction::New { dst, callee, args } => {
                 let mut operands = vec![
                     self.register_operand(dst),
                     self.value_operand(callee),
@@ -2322,7 +2645,7 @@ impl BytecodeBuilder {
                 operands.extend(args.iter().map(|arg| self.value_operand(arg)));
                 self.emit(BytecodeOp::New, operands);
             }
-            IrInstruction::Template { dst, quasis, exprs } => {
+            LowerInstruction::Template { dst, quasis, exprs } => {
                 let mut operands = vec![
                     self.register_operand(dst),
                     BytecodeOperand::Count(quasis.len() as u32),
@@ -2332,7 +2655,7 @@ impl BytecodeBuilder {
                 operands.extend(exprs.iter().map(|expr| self.value_operand(expr)));
                 self.emit(BytecodeOp::Template, operands);
             }
-            IrInstruction::Function { name, params, body } => {
+            LowerInstruction::Function { name, params, body } => {
                 let scope = self.function_scope(params, body, Some(name));
                 let function = self.function_entry(Some(name), params, body, &scope);
                 self.emit(
@@ -2344,7 +2667,7 @@ impl BytecodeBuilder {
                 self.scopes.pop();
                 self.emit(BytecodeOp::FunctionEnd, Vec::new());
             }
-            IrInstruction::FunctionExpr {
+            LowerInstruction::FunctionExpr {
                 dst,
                 name,
                 params,
@@ -2364,7 +2687,7 @@ impl BytecodeBuilder {
                 self.scopes.pop();
                 self.emit(BytecodeOp::FunctionExprEnd, Vec::new());
             }
-            IrInstruction::Class {
+            LowerInstruction::Class {
                 dst,
                 name,
                 super_class,
@@ -2390,7 +2713,7 @@ impl BytecodeBuilder {
                 );
                 self.emit(BytecodeOp::Class, operands);
             }
-            IrInstruction::Import { source, specifiers } => {
+            LowerInstruction::Import { source, specifiers } => {
                 let mut operands = vec![
                     self.string_constant_operand(source),
                     BytecodeOperand::Count(specifiers.len() as u32),
@@ -2402,7 +2725,7 @@ impl BytecodeBuilder {
                 );
                 self.emit(BytecodeOp::Import, operands);
             }
-            IrInstruction::Export { kind, names } => {
+            LowerInstruction::Export { kind, names } => {
                 let mut operands = vec![
                     self.string_constant_operand(kind),
                     BytecodeOperand::Count(names.len() as u32),
@@ -2410,11 +2733,11 @@ impl BytecodeBuilder {
                 operands.extend(names.iter().map(|name| self.name_operand(name)));
                 self.emit(BytecodeOp::Export, operands);
             }
-            IrInstruction::Throw(value) => {
+            LowerInstruction::Throw(value) => {
                 let value = self.value_operand(value);
                 self.emit(BytecodeOp::Throw, vec![value]);
             }
-            IrInstruction::Try {
+            LowerInstruction::Try {
                 body,
                 catch_param,
                 catch_body,
@@ -2436,7 +2759,23 @@ impl BytecodeBuilder {
                 }
                 self.emit(BytecodeOp::TryEnd, Vec::new());
             }
-            IrInstruction::Scope { kind, body } => {
+            LowerInstruction::TryStart => {
+                self.emit(BytecodeOp::TryStart, Vec::new());
+            }
+            LowerInstruction::CatchStart(catch_param) => {
+                let catch_param = catch_param
+                    .as_ref()
+                    .map(|param| self.name_operand(param))
+                    .unwrap_or(BytecodeOperand::None);
+                self.emit(BytecodeOp::CatchStart, vec![catch_param]);
+            }
+            LowerInstruction::FinallyStart => {
+                self.emit(BytecodeOp::FinallyStart, Vec::new());
+            }
+            LowerInstruction::TryEnd => {
+                self.emit(BytecodeOp::TryEnd, Vec::new());
+            }
+            LowerInstruction::Scope { kind, body } => {
                 let scope = self.block_scope(body);
                 self.emit(
                     BytecodeOp::EnterScope,
@@ -2447,27 +2786,36 @@ impl BytecodeBuilder {
                 self.scopes.pop();
                 self.emit(BytecodeOp::LeaveScope, Vec::new());
             }
-            IrInstruction::Return(value) => {
+            LowerInstruction::EnterScope(kind) => {
+                self.emit(
+                    BytecodeOp::EnterScope,
+                    vec![BytecodeOperand::ScopeKind(scope_kind_id(kind))],
+                );
+            }
+            LowerInstruction::LeaveScope => {
+                self.emit(BytecodeOp::LeaveScope, Vec::new());
+            }
+            LowerInstruction::Return(value) => {
                 let value = value
                     .as_ref()
                     .map(|value| self.value_operand(value))
                     .unwrap_or(BytecodeOperand::None);
                 self.emit(BytecodeOp::Return, vec![value]);
             }
-            IrInstruction::Pop(value) => {
+            LowerInstruction::Pop(value) => {
                 let value = self.value_operand(value);
                 self.emit(BytecodeOp::Pop, vec![value]);
             }
-            IrInstruction::Jump(label) => {
+            LowerInstruction::Jump(label) => {
                 let label = self.label_operand(label);
                 self.emit(BytecodeOp::Jump, vec![label]);
             }
-            IrInstruction::JumpIfFalse { test, label } => {
+            LowerInstruction::JumpIfFalse { test, label } => {
                 let test = self.value_operand(test);
                 let label = self.label_operand(label);
                 self.emit(BytecodeOp::JumpIfFalse, vec![test, label]);
             }
-            IrInstruction::Unsupported(message) => {
+            LowerInstruction::Unsupported(message) => {
                 let message = self.string_constant_operand(message);
                 self.emit(BytecodeOp::Unsupported, vec![message]);
             }
@@ -2478,19 +2826,19 @@ impl BytecodeBuilder {
         self.instructions.push(BytecodeInstruction { op, operands });
     }
 
-    fn value_operand(&mut self, value: &IrValue) -> BytecodeOperand {
+    fn value_operand(&mut self, value: &LowerValue) -> BytecodeOperand {
         match value {
-            IrValue::Register(value) => self.register_operand(value),
-            IrValue::Name(value) => self.name_ref_operand(value),
-            IrValue::Number(value) => {
+            LowerValue::Register(value) => self.register_operand(value),
+            LowerValue::Name(value) => self.name_ref_operand(value),
+            LowerValue::Number(value) => {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Number(*value)))
             }
-            IrValue::String(value) => self.string_constant_operand(value),
-            IrValue::Bool(value) => {
+            LowerValue::String(value) => self.string_constant_operand(value),
+            LowerValue::Bool(value) => {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Bool(*value)))
             }
-            IrValue::Null => BytecodeOperand::Constant(self.constant(BytecodeConstant::Null)),
-            IrValue::Undefined => {
+            LowerValue::Null => BytecodeOperand::Constant(self.constant(BytecodeConstant::Null)),
+            LowerValue::Undefined => {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Undefined))
             }
         }
@@ -2522,7 +2870,7 @@ impl BytecodeBuilder {
         &mut self,
         name: Option<&str>,
         params: &[String],
-        body: &[IrInstruction],
+        body: &[LowerInstruction],
         scope: &NameScope,
     ) -> u32 {
         let name = name.map(|name| {
@@ -2586,7 +2934,7 @@ impl BytecodeBuilder {
     fn function_scope(
         &mut self,
         params: &[String],
-        body: &[IrInstruction],
+        body: &[LowerInstruction],
         function_name: Option<&str>,
     ) -> NameScope {
         let mut names = Vec::new();
@@ -2620,7 +2968,7 @@ impl BytecodeBuilder {
         scope
     }
 
-    fn block_scope(&mut self, body: &[IrInstruction]) -> NameScope {
+    fn block_scope(&mut self, body: &[LowerInstruction]) -> NameScope {
         let mut names = Vec::new();
         let mut seen = BTreeSet::new();
         let mut scope = NameScope::default();
@@ -2661,18 +3009,18 @@ fn register_id(register: &str) -> u32 {
 }
 
 fn collect_local_scope_names(
-    instructions: &[IrInstruction],
+    instructions: &[LowerInstruction],
     names: &mut Vec<String>,
     seen: &mut BTreeSet<String>,
 ) {
     for instruction in instructions {
         match instruction {
-            IrInstruction::Declare { name, .. } | IrInstruction::Function { name, .. } => {
+            LowerInstruction::Declare { name, .. } | LowerInstruction::Function { name, .. } => {
                 if seen.insert(name.clone()) {
                     names.push(name.clone());
                 }
             }
-            IrInstruction::Try {
+            LowerInstruction::Try {
                 body,
                 catch_param,
                 catch_body,
@@ -2687,21 +3035,21 @@ fn collect_local_scope_names(
                 collect_local_scope_names(catch_body, names, seen);
                 collect_local_scope_names(finally_body, names, seen);
             }
-            IrInstruction::Scope { .. } => {}
-            IrInstruction::FunctionExpr { .. } => {}
+            LowerInstruction::Scope { .. } => {}
+            LowerInstruction::FunctionExpr { .. } => {}
             _ => {}
         }
     }
 }
 
-fn instructions_have_return_value(instructions: &[IrInstruction]) -> bool {
+fn instructions_have_return_value(instructions: &[LowerInstruction]) -> bool {
     instructions.iter().any(instruction_has_return_value)
 }
 
-fn instruction_has_return_value(instruction: &IrInstruction) -> bool {
+fn instruction_has_return_value(instruction: &LowerInstruction) -> bool {
     match instruction {
-        IrInstruction::Return(Some(_)) => true,
-        IrInstruction::Try {
+        LowerInstruction::Return(Some(_)) => true,
+        LowerInstruction::Try {
             body,
             catch_body,
             finally_body,
@@ -2711,8 +3059,8 @@ fn instruction_has_return_value(instruction: &IrInstruction) -> bool {
                 || instructions_have_return_value(catch_body)
                 || instructions_have_return_value(finally_body)
         }
-        IrInstruction::Scope { body, .. } => instructions_have_return_value(body),
-        IrInstruction::Function { .. } | IrInstruction::FunctionExpr { .. } => false,
+        LowerInstruction::Scope { body, .. } => instructions_have_return_value(body),
+        LowerInstruction::Function { .. } | LowerInstruction::FunctionExpr { .. } => false,
         _ => false,
     }
 }
@@ -3281,13 +3629,6 @@ impl<'a> ByteReader<'a> {
         }
     }
 
-    fn read_string(&mut self) -> Result<String, EncodingError> {
-        let len = self.read_u32()? as usize;
-        let bytes = self.read_slice(len)?;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|err| EncodingError::UnknownCode(format!("utf8 string: {err}")))
-    }
-
     fn read_constant_string(&mut self) -> Result<String, EncodingError> {
         match self.read_u32()? {
             0 => {
@@ -3398,11 +3739,6 @@ fn decode_zigzag_u32(value: u32) -> i32 {
     ((value >> 1) as i32) ^ (-((value & 1) as i32))
 }
 
-fn write_string(bytes: &mut Vec<u8>, value: &str) {
-    write_u32(bytes, value.len() as u32);
-    bytes.extend_from_slice(value.as_bytes());
-}
-
 fn write_constant_string(bytes: &mut Vec<u8>, value: &str) {
     if let Some(index) = constant_string_atom_index(value) {
         write_u32(bytes, 0);
@@ -3492,46 +3828,104 @@ const CONSTANT_STRING_ATOMS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DEFAULT_BYTECODE_MAGIC, EncodingConfig, EncodingNames, IrInstruction, IrModule, IrValue,
-        ObfuscationConfig, ObfuscationSeed,
-    };
+    use super::*;
+
+    fn bytecode_from_lower(
+        extern_slots: Vec<String>,
+        instructions: Vec<LowerInstruction>,
+    ) -> BytecodeModule {
+        let mut builder = BytecodeBuilder {
+            extern_slots,
+            ..BytecodeBuilder::default()
+        };
+        builder.extern_slot_ids = builder
+            .extern_slots
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index as u32))
+            .collect();
+        builder.compile_instructions(&instructions);
+        BytecodeModule {
+            extern_slots: builder.extern_slots,
+            names: builder.names,
+            functions: builder.functions,
+            constants: builder.constants,
+            instructions: builder.instructions,
+        }
+    }
+
+    fn simple_ir_module(
+        constants: Vec<IrConst>,
+        instructions: Vec<IrInstruction>,
+        terminator: IrTerminator,
+    ) -> IrModule {
+        IrModule {
+            constants,
+            functions: vec![IrFunction {
+                name: Some("entry".to_string()),
+                locals: vec![IrLocal {
+                    name: Some("a".to_string()),
+                    kind: IrBindingKind::Const,
+                    scope: ScopeId(0),
+                    mutable: false,
+                    captured: false,
+                }],
+                scopes: vec![IrScope {
+                    parent: None,
+                    kind: IrScopeKind::Global,
+                    bindings: vec![LocalId(0)],
+                }],
+                register_count: 1,
+                blocks: vec![IrBlock {
+                    instructions,
+                    terminator,
+                    ..IrBlock::default()
+                }],
+                ..IrFunction::default()
+            }],
+            entry: FunctionId(0),
+            ..IrModule::default()
+        }
+    }
 
     #[test]
     fn renders_ir_text_from_core() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![
-                IrInstruction::Declare {
-                    kind: "const".to_string(),
-                    name: "a".to_string(),
-                },
-                IrInstruction::LoadConst {
-                    dst: "t0".to_string(),
-                    value: IrValue::Number(1.0),
-                },
-                IrInstruction::Return(Some(IrValue::Register("t0".to_string()))),
+        let module = simple_ir_module(
+            vec![IrConst::Int(1)],
+            vec![
+                IrInstruction::new(IrInstructionKind::Declare(IrDeclaration {
+                    local: LocalId(0),
+                    kind: IrBindingKind::Const,
+                    name: Some("a".to_string()),
+                    init: None,
+                })),
+                IrInstruction::new(IrInstructionKind::Move {
+                    dst: RegisterId(0),
+                    src: IrValue::Const(ConstId(0)),
+                }),
             ],
-        };
+            IrTerminator::Return(Some(IrValue::Register(RegisterId(0)))),
+        );
 
         let text = module.to_text();
-        assert!(text.contains("declare const a"));
-        assert!(text.contains("%t0 = const 1"));
-        assert!(text.contains("return %t0"));
+        assert!(text.contains("declare const local#0 name=a"), "{text}");
+        assert!(text.contains("r0 = move const#0"), "{text}");
+        assert!(text.contains("return r0"), "{text}");
     }
 
     #[test]
     fn lowers_ir_to_bytecode_in_core() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![IrInstruction::LoadConst {
-                dst: "t0".to_string(),
-                value: IrValue::Number(1.0),
-            }],
-        };
+        let module = simple_ir_module(
+            vec![IrConst::Int(1)],
+            vec![IrInstruction::new(IrInstructionKind::Move {
+                dst: RegisterId(0),
+                src: IrValue::Const(ConstId(0)),
+            })],
+            IrTerminator::Return(Some(IrValue::Register(RegisterId(0)))),
+        );
 
         let bytecode = module.to_bytecode();
-        assert!(bytecode.to_text().contains("LOAD_CONST"));
+        assert!(bytecode.to_text().contains("MOVE"));
         assert!(
             bytecode
                 .to_bytes()
@@ -3541,90 +3935,88 @@ mod tests {
 
     #[test]
     fn compact_bytecode_roundtrips_dynamic_operand_layouts() {
-        let module = IrModule {
-            extern_slots: vec!["console".to_string()],
-            instructions: vec![
-                IrInstruction::Array {
+        let bytecode = bytecode_from_lower(
+            vec!["console".to_string()],
+            vec![
+                LowerInstruction::Array {
                     dst: "arr".to_string(),
-                    items: vec![IrValue::Number(1.0), IrValue::String("x".to_string())],
+                    items: vec![LowerValue::Number(1.0), LowerValue::String("x".to_string())],
                 },
-                IrInstruction::Object {
+                LowerInstruction::Object {
                     dst: "obj".to_string(),
                     props: vec![
-                        ("a".to_string(), IrValue::Register("arr".to_string())),
-                        ("b".to_string(), IrValue::Bool(true)),
+                        ("a".to_string(), LowerValue::Register("arr".to_string())),
+                        ("b".to_string(), LowerValue::Bool(true)),
                     ],
                 },
-                IrInstruction::Call {
+                LowerInstruction::Call {
                     dst: "call".to_string(),
-                    callee: IrValue::Name("fn".to_string()),
+                    callee: LowerValue::Name("fn".to_string()),
                     args: vec![
-                        IrValue::Register("arr".to_string()),
-                        IrValue::Register("obj".to_string()),
+                        LowerValue::Register("arr".to_string()),
+                        LowerValue::Register("obj".to_string()),
                     ],
                 },
-                IrInstruction::New {
+                LowerInstruction::New {
                     dst: "instance".to_string(),
-                    callee: IrValue::Name("Ctor".to_string()),
-                    args: vec![IrValue::Register("call".to_string())],
+                    callee: LowerValue::Name("Ctor".to_string()),
+                    args: vec![LowerValue::Register("call".to_string())],
                 },
-                IrInstruction::Template {
+                LowerInstruction::Template {
                     dst: "template".to_string(),
                     quasis: vec!["hello ".to_string(), "".to_string()],
-                    exprs: vec![IrValue::Register("instance".to_string())],
+                    exprs: vec![LowerValue::Register("instance".to_string())],
                 },
-                IrInstruction::Function {
+                LowerInstruction::Function {
                     name: "named".to_string(),
                     params: vec!["value".to_string()],
-                    body: vec![IrInstruction::Return(Some(IrValue::Name(
+                    body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                         "value".to_string(),
                     )))],
                 },
-                IrInstruction::FunctionExpr {
+                LowerInstruction::FunctionExpr {
                     dst: "expr".to_string(),
                     name: None,
                     params: vec!["left".to_string(), "right".to_string()],
-                    body: vec![IrInstruction::Return(None)],
+                    body: vec![LowerInstruction::Return(None)],
                 },
-                IrInstruction::Class {
+                LowerInstruction::Class {
                     dst: Some("klass".to_string()),
                     name: Some("Klass".to_string()),
-                    super_class: Some(IrValue::Name("Base".to_string())),
+                    super_class: Some(LowerValue::Name("Base".to_string())),
                     members: vec!["method".to_string(), "field".to_string()],
                 },
-                IrInstruction::Import {
+                LowerInstruction::Import {
                     source: "./mod.js".to_string(),
                     specifiers: vec!["a".to_string(), "b".to_string()],
                 },
-                IrInstruction::Export {
+                LowerInstruction::Export {
                     kind: "named".to_string(),
                     names: vec!["a".to_string(), "b".to_string()],
                 },
             ],
-        };
-
-        let bytecode = module.to_bytecode();
+        );
         let bytes = bytecode.to_bytes();
         let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
+        let mut expected = bytecode.clone();
+        expected.extern_slots = vec!["e0".to_string()];
 
-        assert_eq!(restored, bytecode);
+        assert_eq!(restored, expected);
         assert!(bytes.starts_with(DEFAULT_BYTECODE_MAGIC.as_bytes()));
     }
 
     #[test]
     fn functions_are_declared_in_fun_section_and_indexed_from_code() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![IrInstruction::Function {
+        let bytecode = bytecode_from_lower(
+            Vec::new(),
+            vec![LowerInstruction::Function {
                 name: "add".to_string(),
                 params: vec!["left".to_string(), "right".to_string()],
-                body: vec![IrInstruction::Return(Some(IrValue::Name(
+                body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                     "left".to_string(),
                 )))],
             }],
-        };
-
-        let bytecode = module.to_bytecode();
+        );
         let text = bytecode.to_text();
         let bytes = bytecode.to_bytes();
         let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
@@ -3643,24 +4035,22 @@ mod tests {
 
     #[test]
     fn scope_ir_emits_explicit_scope_opcodes() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![IrInstruction::Scope {
+        let bytecode = bytecode_from_lower(
+            Vec::new(),
+            vec![LowerInstruction::Scope {
                 kind: "block".to_string(),
                 body: vec![
-                    IrInstruction::Declare {
+                    LowerInstruction::Declare {
                         kind: "let".to_string(),
                         name: "value".to_string(),
                     },
-                    IrInstruction::StoreName {
+                    LowerInstruction::StoreName {
                         name: "value".to_string(),
-                        src: IrValue::Number(1.0),
+                        src: LowerValue::Number(1.0),
                     },
                 ],
             }],
-        };
-
-        let bytecode = module.to_bytecode();
+        );
         let text = bytecode.to_text();
         let restored = super::BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap();
 
@@ -3790,23 +4180,24 @@ mod tests {
         let bytes = bytecode.to_bytes();
         let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
         let text = bytecode.to_text();
+        let mut expected = bytecode.clone();
+        expected.extern_slots = vec!["e0".to_string()];
 
-        assert_eq!(restored, bytecode);
-        assert_eq!(count_subslice(&bytes, b"console"), 1);
+        assert_eq!(restored, expected);
+        assert_eq!(count_subslice(&bytes, b"console"), 0);
         assert!(!text.contains(".names"));
         assert!(text.contains("LOAD_NAME r0, extern#0(\"console\")"));
     }
 
     #[test]
     fn encodes_bytecode_with_yaml_config() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![IrInstruction::LoadConst {
+        let bytecode = bytecode_from_lower(
+            Vec::new(),
+            vec![LowerInstruction::LoadConst {
                 dst: "t0".to_string(),
-                value: IrValue::Number(1.0),
+                value: LowerValue::Number(1.0),
             }],
-        };
-        let bytecode = module.to_bytecode();
+        );
         let encoding = EncodingConfig::from_yaml(
             r#"
             magic: "CUSTOM01"
@@ -3830,14 +4221,13 @@ mod tests {
 
     #[test]
     fn encoding_seed_restores_config_and_rejects_mismatched_bytes() {
-        let module = IrModule {
-            extern_slots: Vec::new(),
-            instructions: vec![IrInstruction::LoadConst {
+        let bytecode = bytecode_from_lower(
+            Vec::new(),
+            vec![LowerInstruction::LoadConst {
                 dst: "t0".to_string(),
-                value: IrValue::Number(1.0),
+                value: LowerValue::Number(1.0),
             }],
-        };
-        let bytecode = module.to_bytecode();
+        );
         let encoding = EncodingConfig::from_yaml(
             r#"
             opcodes:

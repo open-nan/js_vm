@@ -82,7 +82,7 @@ npm run test:fuzz -- --threads=4 --time=2m
 npm run test:fuzz -- --log --error=5
 ```
 
-`--log` 会输出 `tests/.issues/<YY-MM-DD:HH:mm:ss>/log.txt`，`--error=0..5` 控制归档范围：`1` internal failures / VM runtime timeouts / VM-only failures，`2` compile errors，`3` runtime errors / differential mismatches，`4` expected JS runtime errors，`5` both-engine timeout / skipped。归档源码和元数据会按状态写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/<status>/`，错误摘要写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/errors.log`。
+默认只会在出现一级 VM/internal 异常时按需写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>`；没有异常不会创建空归档目录。`--log` 会输出 `tests/.issues/<YY-MM-DD:HH:mm:ss>/log.txt`，`--error=0..5` 控制归档范围：`0` 关闭异常归档，`1` internal failures / VM runtime timeouts / VM-only failures，`2` compile errors，`3` runtime errors / differential mismatches，`4` expected JS runtime errors，`5` both-engine timeout / skipped。归档源码和元数据会按状态写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/<status>/`，错误摘要写入 `tests/.issues/<YY-MM-DD:HH:mm:ss>/errors.log`。
 
 需要把 fuzz 用例接入参考引擎做差分时：
 

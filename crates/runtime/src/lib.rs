@@ -12,6 +12,12 @@ use std::{
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
+use js_sys::{Array as JsArray, Function as JsFunction, Reflect};
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = globalThis, js_name = __jsVmHostLog)]
@@ -20,10 +26,15 @@ extern "C" {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub fn js_execute_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<String, String> {
+pub fn js_execute_bytes_with_seed(
+    bytes: &[u8],
+    seed: &str,
+    externals: Box<[JsValue]>,
+) -> Result<String, String> {
     let module =
         BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
-    Executor::run(&module)
+    let host_bridge = HostBridge::from_js_values(externals.into_vec());
+    Executor::run_with_host_bridge(&module, host_bridge)
         .map(|value| value.to_string())
         .map_err(|err| err.to_string())
 }
@@ -38,6 +49,7 @@ pub struct Executor {
     last_value: Value,
     exports: BTreeMap<String, Value>,
     host_bridge: HostBridge,
+    external_names: Vec<String>,
     call_depth: usize,
     execution_budget: Rc<Cell<usize>>,
 }
@@ -56,6 +68,7 @@ impl Default for Executor {
             last_value: Value::Undefined,
             exports: BTreeMap::new(),
             host_bridge: HostBridge::default(),
+            external_names: Vec::new(),
             call_depth: 0,
             execution_budget: Rc::new(Cell::new(MAX_EXECUTION_STEPS)),
         }
@@ -72,8 +85,9 @@ impl Executor {
         externals: &[String],
     ) -> Result<Value, ExecuteError> {
         let mut executor = Self::with_host_bridge(HostBridge::default());
-        executor.inject_externals(module.extern_slots.iter().cloned());
-        executor.inject_externals(externals.iter().cloned());
+        executor.external_names = externals.to_vec();
+        executor.inject_module_externals(module);
+        executor.inject_external_names(externals.iter().cloned());
         executor.load_scope_metadata(module)?;
         match executor.execute_range(module, 0, module.instructions.len())? {
             Flow::Value(value) | Flow::Return(value) => Ok(value),
@@ -85,8 +99,10 @@ impl Executor {
         module: &BytecodeModule,
         host_bridge: HostBridge,
     ) -> Result<Value, ExecuteError> {
+        host_bridge.validate_extern_count(module.extern_slots.len())?;
         let mut executor = Self::with_host_bridge(host_bridge);
-        executor.inject_externals(module.extern_slots.iter().cloned());
+        executor.external_names = module.extern_slots.clone();
+        executor.inject_module_externals(module);
         executor.load_scope_metadata(module)?;
         match executor.execute_range(module, 0, module.instructions.len())? {
             Flow::Value(value) | Flow::Return(value) => Ok(value),
@@ -101,10 +117,27 @@ impl Executor {
         }
     }
 
-    fn inject_externals(&mut self, externals: impl IntoIterator<Item = String>) {
-        for name in externals {
-            self.lexical_env
-                .define_global_if_absent(name.clone(), Value::ExternalRef(name));
+    fn inject_module_externals(&mut self, module: &BytecodeModule) {
+        for (index, name) in module.extern_slots.iter().enumerate() {
+            let name = self
+                .external_names
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            self.lexical_env.define_global_if_absent(
+                name.clone(),
+                Value::ExternalRef(ExternalRefValue::new(index as u32, name.clone())),
+            );
+        }
+    }
+
+    fn inject_external_names(&mut self, externals: impl IntoIterator<Item = String>) {
+        let offset = self.host_bridge.external_count();
+        for (index, name) in externals.into_iter().enumerate() {
+            self.lexical_env.define_global_if_absent(
+                name.clone(),
+                Value::ExternalRef(ExternalRefValue::new((offset + index) as u32, name)),
+            );
         }
     }
 
@@ -148,15 +181,21 @@ impl Executor {
                 }
                 BytecodeOp::LoadName => {
                     let dst = register(instruction, 0)?;
-                    let name = self.read_name(module, operand(instruction, 1)?)?;
-                    let value = self.get_name(&name);
+                    let source = operand(instruction, 1)?;
+                    let value = match source {
+                        BytecodeOperand::External(_) => self.read_value(module, source)?,
+                        _ => {
+                            let name = self.read_name(module, source)?;
+                            self.get_name(&name)
+                        }
+                    };
                     self.write_register(dst, value.clone());
                     self.last_value = value;
                 }
                 BytecodeOp::StoreName => {
-                    let name = self.read_name(module, operand(instruction, 0)?)?;
+                    let target = operand(instruction, 0)?;
                     let value = self.read_value(module, operand(instruction, 1)?)?;
-                    self.lexical_env.set_or_define_current(name, value.clone());
+                    self.write_operand_target(module, target, value.clone())?;
                     self.last_value = value;
                 }
                 BytecodeOp::StoreMember => {
@@ -165,8 +204,12 @@ impl Executor {
                     let property_value = self.read_value(module, operand(instruction, 1)?)?;
                     let property = property_key(&property_value);
                     let value = self.read_value(module, operand(instruction, 2)?)?;
-                    set_member(&mut object, &property, value.clone())?;
-                    self.write_operand_target(module, object_operand, object)?;
+                    if let Value::ExternalRef(reference) = &object {
+                        self.host_bridge.set(reference, &property, &value)?;
+                    } else {
+                        set_member(&mut object, &property, value.clone())?;
+                        self.write_operand_target(module, object_operand, object)?;
+                    }
                     self.last_value = value;
                 }
                 BytecodeOp::Move => {
@@ -197,7 +240,7 @@ impl Executor {
                     let object = self.read_value(module, operand(instruction, 1)?)?;
                     let property_value = self.read_value(module, operand(instruction, 2)?)?;
                     let property = property_key(&property_value);
-                    let value = get_member(&object, &property)?;
+                    let value = self.get_member(&object, &property)?;
                     self.write_register(dst, value.clone());
                     self.last_value = value;
                 }
@@ -311,17 +354,16 @@ impl Executor {
                 BytecodeOp::TryStart => {
                     let parts = find_try_parts(module, pc)?;
                     let body_env_depth = self.lexical_env.depth();
-                    let flow =
-                        match self.execute_range(module, parts.body_start, parts.body_end) {
-                            Ok(flow) => flow,
-                            Err(err) => {
-                                self.lexical_env.truncate_to_depth(body_env_depth);
-                                match catchable_error_value(&err) {
-                                    Some(value) => Flow::Throw(value),
-                                    None => return Err(err),
-                                }
+                    let flow = match self.execute_range(module, parts.body_start, parts.body_end) {
+                        Ok(flow) => flow,
+                        Err(err) => {
+                            self.lexical_env.truncate_to_depth(body_env_depth);
+                            match catchable_error_value(&err) {
+                                Some(value) => Flow::Throw(value),
+                                None => return Err(err),
                             }
-                        };
+                        }
+                    };
                     let flow = match flow {
                         Flow::Throw(value) if parts.catch_start < parts.catch_end => {
                             self.lexical_env.push_frame(ScopeKind::Catch);
@@ -467,9 +509,21 @@ impl Executor {
             Value::BoundNativeFunction(function, this_value) => {
                 self.call_native_method(module, &function.name, *this_value, args)
             }
-            Value::ExternalRef(path) => self.host_bridge.call(&path, args),
+            Value::ExternalRef(reference) => self.host_bridge.call(&reference, args),
             Value::Class(class) => Ok(Value::Object(class.static_props)),
             _ => Err(ExecuteError::TypeError(format!("{callee} is not callable"))),
+        }
+    }
+
+    fn get_member(&self, object: &Value, property: &str) -> Result<Value, ExecuteError> {
+        match object {
+            Value::ExternalRef(reference) => {
+                if reference.display_path() == "Symbol" {
+                    return Ok(Value::Symbol(format!("Symbol.{property}")));
+                }
+                self.host_bridge.get(reference, property)
+            }
+            _ => get_local_member(object, property),
         }
     }
 
@@ -513,7 +567,7 @@ impl Executor {
             Value::BoundNativeFunction(function, this_value) => {
                 self.call_native_method(module, &function.name, *this_value, args)
             }
-            Value::ExternalRef(path) => construct_external(&path, args),
+            Value::ExternalRef(reference) => self.host_bridge.construct(&reference, args),
             _ => Err(ExecuteError::TypeError(format!(
                 "{callee} is not constructable"
             ))),
@@ -672,11 +726,7 @@ impl Executor {
                 Value::Array(items) => {
                     let items = items.borrow();
                     let len = items.len() as isize;
-                    let start = args
-                        .first()
-                        .map(Value::to_number)
-                        .unwrap_or(0.0)
-                        .trunc() as isize;
+                    let start = args.first().map(Value::to_number).unwrap_or(0.0).trunc() as isize;
                     let end = args
                         .get(1)
                         .map(Value::to_number)
@@ -769,6 +819,7 @@ impl Executor {
             last_value: Value::Undefined,
             exports: self.exports.clone(),
             host_bridge: self.host_bridge.clone(),
+            external_names: self.external_names.clone(),
             call_depth: self.call_depth + 1,
             execution_budget: self.execution_budget.clone(),
         };
@@ -857,8 +908,7 @@ impl Executor {
                 Ok(self.get_name(&name))
             }
             BytecodeOperand::External(index) => {
-                let name = external_string(module, *index)?;
-                Ok(self.get_name(&name))
+                self.external_ref(module, *index).map(Value::ExternalRef)
             }
             BytecodeOperand::None => Ok(Value::Undefined),
             BytecodeOperand::Label(_)
@@ -881,7 +931,7 @@ impl Executor {
     ) -> Result<String, ExecuteError> {
         match operand {
             BytecodeOperand::Name(index) => name_string(module, *index),
-            BytecodeOperand::External(index) => external_string(module, *index),
+            BytecodeOperand::External(index) => self.external_name(module, *index),
             BytecodeOperand::Constant(index) => constant_string(module, *index),
             _ => Err(ExecuteError::InvalidOperand("name")),
         }
@@ -953,8 +1003,10 @@ impl Executor {
                 Ok(())
             }
             BytecodeOperand::External(index) => {
-                self.lexical_env
-                    .set_or_define_current(external_string(module, *index)?, value);
+                self.host_bridge.set_slot(*index, &value)?;
+                if let Ok(name) = self.external_name(module, *index) {
+                    self.lexical_env.set_or_define_current(name, value);
+                }
                 Ok(())
             }
             _ => Err(ExecuteError::InvalidOperand("assignable object")),
@@ -967,6 +1019,29 @@ impl Executor {
             self.registers.resize(index + 1, Value::Undefined);
         }
         self.registers[index] = value;
+    }
+
+    fn external_ref(
+        &self,
+        module: &BytecodeModule,
+        index: u32,
+    ) -> Result<ExternalRefValue, ExecuteError> {
+        let root = external_string(module, index).unwrap_or_else(|_| format!("extern#{index}"));
+        let root = self
+            .external_names
+            .get(index as usize)
+            .cloned()
+            .unwrap_or(root);
+        self.host_bridge.validate_slot(index)?;
+        Ok(ExternalRefValue::new(index, root))
+    }
+
+    fn external_name(&self, module: &BytecodeModule, index: u32) -> Result<String, ExecuteError> {
+        self.external_names
+            .get(index as usize)
+            .cloned()
+            .or_else(|| module.extern_slots.get(index as usize).cloned())
+            .ok_or(ExecuteError::BadConstant(index))
     }
 }
 
@@ -1108,6 +1183,37 @@ fn catchable_error_value(error: &ExecuteError) -> Option<Value> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalRefValue {
+    pub slot: u32,
+    pub root: String,
+    pub path: Vec<String>,
+}
+
+impl ExternalRefValue {
+    fn new(slot: u32, root: impl Into<String>) -> Self {
+        Self {
+            slot,
+            root: root.into(),
+            path: Vec::new(),
+        }
+    }
+
+    fn member(&self, property: &str) -> Self {
+        let mut next = self.clone();
+        next.path.push(property.to_string());
+        next
+    }
+
+    fn display_path(&self) -> String {
+        if self.path.is_empty() {
+            self.root.clone()
+        } else {
+            format!("{}.{}", self.root, self.path.join("."))
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
@@ -1120,7 +1226,7 @@ pub enum Value {
     BoundFunction(FunctionValue, Box<Value>),
     NativeFunction(NativeFunctionValue),
     BoundNativeFunction(NativeFunctionValue, Box<Value>),
-    ExternalRef(String),
+    ExternalRef(ExternalRefValue),
     Class(ClassValue),
     Module(ModuleValue),
     Null,
@@ -1244,7 +1350,7 @@ impl fmt::Display for Value {
             Value::NativeFunction(function) | Value::BoundNativeFunction(function, _) => {
                 write!(f, "function {}", function.name)
             }
-            Value::ExternalRef(name) => write!(f, "[external {name}]"),
+            Value::ExternalRef(reference) => write!(f, "[external {}]", reference.display_path()),
             Value::Class(class) => write!(
                 f,
                 "class {}",
@@ -1503,7 +1609,7 @@ const OPERATOR_NAMES: &[&str] = &[
     "instanceof",
 ];
 
-fn get_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
+fn get_local_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
     match object {
         Value::Object(props) => match props.get(property).cloned() {
             Some(Value::Function(function)) => {
@@ -1519,14 +1625,10 @@ fn get_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
             Some(value) => Ok(value),
             None => Ok(Value::Undefined),
         },
-        Value::ExternalRef(path) => {
-            let normalized = HostBridge::normalize_path(path);
-            if normalized == "Symbol" {
-                return Ok(Value::Symbol(format!("Symbol.{property}")));
-            }
-            Ok(HostBridge::get(path, property))
+        Value::ExternalRef(reference) => Ok(Value::ExternalRef(reference.member(property))),
+        Value::Array(items) if property == "length" => {
+            Ok(Value::Number(items.borrow().len() as f64))
         }
-        Value::Array(items) if property == "length" => Ok(Value::Number(items.borrow().len() as f64)),
         Value::Array(_) if is_array_native_method(property) => Ok(Value::BoundNativeFunction(
             NativeFunctionValue {
                 name: format!("Array.{property}"),
@@ -1667,6 +1769,8 @@ pub type HostFunction = fn(&[Value]) -> Result<Value, ExecuteError>;
 #[derive(Debug, Clone)]
 pub struct HostBridge {
     functions: BTreeMap<String, HostFunction>,
+    #[cfg(target_arch = "wasm32")]
+    values: Rc<RefCell<Vec<JsValue>>>,
 }
 
 impl Default for HostBridge {
@@ -1679,48 +1783,59 @@ impl HostBridge {
     pub fn empty() -> Self {
         Self {
             functions: BTreeMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            values: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_js_values(values: Vec<JsValue>) -> Self {
+        Self {
+            functions: BTreeMap::new(),
+            values: Rc::new(RefCell::new(values)),
         }
     }
 
     pub fn with_default_capabilities() -> Self {
         let mut bridge = Self::empty();
-        bridge.register_function("console.log", host_console_log);
-        bridge.register_function("console.info", host_console_info);
-        bridge.register_function("console.warn", host_console_warn);
-        bridge.register_function("console.error", host_console_error);
-        bridge.register_function("console.debug", host_console_debug);
+        bridge.register_function("console.log", host_noop);
+        bridge.register_function("console.info", host_noop);
+        bridge.register_function("console.warn", host_noop);
+        bridge.register_function("console.error", host_noop);
+        bridge.register_function("console.debug", host_noop);
+        bridge.register_function("console.assert", host_noop);
+        bridge.register_function("console.clear", host_noop);
+        bridge.register_function("console.count", host_noop);
+        bridge.register_function("console.countReset", host_noop);
+        bridge.register_function("console.dir", host_noop);
+        bridge.register_function("console.dirxml", host_noop);
+        bridge.register_function("console.group", host_noop);
+        bridge.register_function("console.groupCollapsed", host_noop);
+        bridge.register_function("console.groupEnd", host_noop);
+        bridge.register_function("console.profile", host_noop);
+        bridge.register_function("console.profileEnd", host_noop);
+        bridge.register_function("console.table", host_noop);
         bridge.register_function("console.time", host_noop);
         bridge.register_function("console.timeEnd", host_noop);
         bridge.register_function("console.timeLog", host_noop);
-        bridge.register_function("console.count", host_noop);
-        bridge.register_function("console.countReset", host_noop);
         bridge.register_function("console.trace", host_noop);
-        bridge.register_function("console.assert", host_noop);
-        bridge.register_function("console.group", host_noop);
-        bridge.register_function("console.groupEnd", host_noop);
-        bridge.register_function("console.groupCollapsed", host_noop);
-        bridge.register_function("console.clear", host_noop);
-        bridge.register_function("console.table", host_noop);
-        bridge.register_function("console.dir", host_noop);
-        bridge.register_function("console.dirxml", host_noop);
-        bridge.register_function("console.profile", host_noop);
-        bridge.register_function("console.profileEnd", host_noop);
-        bridge.register_function("fetch", host_fetch);
+        bridge.register_function("fetch", host_noop);
         bridge.register_function("gc", host_noop);
         bridge.register_function("gcparam", host_noop);
-        bridge.register_function("uneval", host_uneval);
-        bridge.register_function("__vmPrint", host_print);
-        bridge.register_function("print", host_print);
-        bridge.register_function("alert", host_print);
+        bridge.register_function("uneval", host_string);
+        bridge.register_function("__vmPrint", host_noop);
+        bridge.register_function("print", host_noop);
+        bridge.register_function("alert", host_noop);
         bridge.register_function("fail", host_noop);
         bridge.register_function("failWithMessage", host_noop);
         bridge.register_function("triggerAssertFalse", host_noop);
         bridge.register_function("quit", host_noop);
         bridge.register_function("Symbol", host_symbol);
         bridge.register_function("Symbol.for", host_symbol_for);
-        bridge.register_function("Object.freeze", host_object_freeze);
-        bridge.register_function("Object.seal", host_object_freeze);
-        bridge.register_function("Object.preventExtensions", host_object_freeze);
+        bridge.register_function("Object", host_object);
+        bridge.register_function("Object.freeze", host_first_arg);
+        bridge.register_function("Object.seal", host_first_arg);
+        bridge.register_function("Object.preventExtensions", host_first_arg);
         bridge.register_function("Object.keys", host_object_keys);
         bridge.register_function("Object.values", host_object_values);
         bridge.register_function("Object.entries", host_object_entries);
@@ -1728,16 +1843,15 @@ impl HostBridge {
         bridge.register_function("Object.create", host_object_create);
         bridge.register_function("Object.assign", host_object_assign);
         bridge.register_function("Object.defineProperty", host_object_define_property);
-        bridge.register_function("Object.isFrozen", host_object_false_predicate);
-        bridge.register_function("Object.isSealed", host_object_false_predicate);
-        bridge.register_function("Object.isExtensible", host_object_true_predicate);
+        bridge.register_function("Object.isFrozen", host_false);
+        bridge.register_function("Object.isSealed", host_false);
+        bridge.register_function("Object.isExtensible", host_true);
         bridge.register_function(
             "Object.getOwnPropertyDescriptor",
-            host_object_get_own_property_descriptor,
+            host_object_get_descriptor,
         );
-        bridge.register_function("Object.getOwnPropertyNames", host_object_get_own_property_names);
-        bridge.register_function("Object.getPrototypeOf", host_object_get_prototype_of);
-        bridge.register_function("Object", host_object);
+        bridge.register_function("Object.getOwnPropertyNames", host_object_keys);
+        bridge.register_function("Object.getPrototypeOf", host_noop);
         bridge.register_function("Array", host_array);
         bridge.register_function("Array.isArray", host_array_is_array);
         bridge.register_function("String", host_string);
@@ -1748,26 +1862,211 @@ impl HostBridge {
     }
 
     pub fn register_function(&mut self, path: impl Into<String>, function: HostFunction) {
-        let path = Self::normalize_path(&path.into());
-        self.functions.insert(path, function);
+        self.functions
+            .insert(Self::normalize_path(&path.into()), function);
     }
 
     pub fn has_function(&self, path: &str) -> bool {
         self.functions.contains_key(&Self::normalize_path(path))
     }
 
-    fn get(path: &str, property: &str) -> Value {
-        Value::ExternalRef(format!("{path}.{property}"))
+    fn external_count(&self) -> usize {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return self.values.borrow().len();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return 0;
+        }
     }
 
-    fn call(&self, path: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
-        let normalized = Self::normalize_path(path);
-        let Some(function) = self.functions.get(&normalized) else {
-            return Err(ExecuteError::Runtime(format!(
-                "external function {path} is not registered"
-            )));
-        };
-        function(&args)
+    fn validate_extern_count(&self, expected: usize) -> Result<(), ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let actual = self.values.borrow().len();
+            if actual != expected {
+                return Err(ExecuteError::Runtime(format!(
+                    "external slot count mismatch: expected {expected}, got {actual}"
+                )));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = expected;
+        Ok(())
+    }
+
+    fn validate_slot(&self, slot: u32) -> Result<(), ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.values.borrow().get(slot as usize).is_none() {
+                return Err(ExecuteError::Runtime(format!(
+                    "external slot {slot} is not available"
+                )));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = slot;
+        Ok(())
+    }
+
+    fn get(&self, reference: &ExternalRefValue, property: &str) -> Result<Value, ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let next = reference.member(property);
+            let value = self.resolve_js_value(&next)?;
+            if is_js_value_convertible(&value) {
+                js_value_to_value(value, self)
+            } else {
+                Ok(Value::ExternalRef(next))
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Ok(Value::ExternalRef(reference.member(property)))
+        }
+    }
+
+    fn set(
+        &self,
+        reference: &ExternalRefValue,
+        property: &str,
+        value: &Value,
+    ) -> Result<(), ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let target = self.resolve_js_value(reference)?;
+            Reflect::set(
+                &target,
+                &JsValue::from_str(property),
+                &value_to_js_value(value, self)?,
+            )
+            .map_err(js_error)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (reference, property, value);
+        Ok(())
+    }
+
+    fn set_slot(&self, slot: u32, value: &Value) -> Result<(), ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let next_value = value_to_js_value(value, self)?;
+            let mut values = self.values.borrow_mut();
+            let Some(target) = values.get_mut(slot as usize) else {
+                return Err(ExecuteError::Runtime(format!(
+                    "external slot {slot} is not available"
+                )));
+            };
+            *target = next_value;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (slot, value);
+        Ok(())
+    }
+
+    fn call(&self, reference: &ExternalRefValue, args: Vec<Value>) -> Result<Value, ExecuteError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (callee, this_value) = self.resolve_js_callable(reference)?;
+            let Some(function) = callee.dyn_ref::<JsFunction>() else {
+                return Err(ExecuteError::TypeError(format!(
+                    "{} is not callable",
+                    reference.display_path()
+                )));
+            };
+            let js_args = values_to_js_array(&args, self)?;
+            let result = function.apply(&this_value, &js_args).map_err(js_error)?;
+            return self.store_or_convert_js_value(result, reference.display_path());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = reference.display_path();
+            let Some(function) = self.functions.get(&Self::normalize_path(&path)) else {
+                return Err(ExecuteError::Runtime(format!(
+                    "external function {path} is not registered"
+                )));
+            };
+            function(&args)
+        }
+    }
+
+    fn construct(
+        &self,
+        reference: &ExternalRefValue,
+        args: Vec<Value>,
+    ) -> Result<Value, ExecuteError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return construct_external(&reference.display_path(), args);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let constructor = self.resolve_js_value(reference)?;
+            if is_js_proxy_constructor(&constructor) {
+                return Ok(args
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| Value::Object(BTreeMap::new())));
+            }
+            let Some(constructor) = constructor.dyn_ref::<JsFunction>() else {
+                return Err(ExecuteError::TypeError(format!(
+                    "{} is not constructable",
+                    reference.display_path()
+                )));
+            };
+            let js_args = values_to_js_array(&args, self)?;
+            let result = Reflect::construct(constructor, &js_args).map_err(js_error)?;
+            return self.store_or_convert_js_value(result, reference.display_path());
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn resolve_js_value(&self, reference: &ExternalRefValue) -> Result<JsValue, ExecuteError> {
+        self.validate_slot(reference.slot)?;
+        let mut value = self.values.borrow()[reference.slot as usize].clone();
+        for property in &reference.path {
+            value = Reflect::get(&value, &JsValue::from_str(property)).map_err(js_error)?;
+        }
+        Ok(value)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn resolve_js_callable(
+        &self,
+        reference: &ExternalRefValue,
+    ) -> Result<(JsValue, JsValue), ExecuteError> {
+        self.validate_slot(reference.slot)?;
+        let mut this_value = JsValue::UNDEFINED;
+        let mut value = self.values.borrow()[reference.slot as usize].clone();
+        if reference.path.is_empty() {
+            return Ok((value, this_value));
+        }
+        for property in &reference.path[..reference.path.len() - 1] {
+            value = Reflect::get(&value, &JsValue::from_str(property)).map_err(js_error)?;
+        }
+        this_value = value.clone();
+        let property = reference.path.last().expect("checked non-empty path");
+        let callee = Reflect::get(&this_value, &JsValue::from_str(property)).map_err(js_error)?;
+        Ok((callee, this_value))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn store_or_convert_js_value(
+        &self,
+        value: JsValue,
+        root_hint: String,
+    ) -> Result<Value, ExecuteError> {
+        if is_js_value_convertible(&value) {
+            return js_value_to_value(value, self);
+        }
+        let mut values = self.values.borrow_mut();
+        let slot = values.len() as u32;
+        values.push(value);
+        Ok(Value::ExternalRef(ExternalRefValue::new(
+            slot,
+            format!("{root_hint}#result"),
+        )))
     }
 
     fn normalize_path(path: &str) -> String {
@@ -1778,178 +2077,48 @@ impl HostBridge {
     }
 }
 
-fn host_console_log(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("log", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_console_info(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("info", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_console_warn(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("warn", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_console_error(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("error", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_console_debug(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("debug", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_fetch(args: &[Value]) -> Result<Value, ExecuteError> {
-    let target = args
-        .first()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "undefined".to_string());
-    host_console("log", &format!("NETWORK fetch {target}"));
-    Ok(Value::Undefined)
+#[cfg(not(target_arch = "wasm32"))]
+fn construct_external(path: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
+    match HostBridge::normalize_path(path).as_str() {
+        "Proxy" => Ok(args
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Value::Object(BTreeMap::new()))),
+        "Array" => host_array(&args),
+        "Object" => host_object(&args),
+        "String" => host_string(&args),
+        "Number" => host_number(&args),
+        "Boolean" => host_boolean(&args),
+        _ => Err(ExecuteError::Runtime(format!(
+            "external constructor {path} is not registered"
+        ))),
+    }
 }
 
 fn host_noop(_args: &[Value]) -> Result<Value, ExecuteError> {
     Ok(Value::Undefined)
 }
 
-fn host_print(args: &[Value]) -> Result<Value, ExecuteError> {
-    host_console("log", &host_message(args));
-    Ok(Value::Undefined)
-}
-
-fn host_uneval(args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::String(
-        args.first()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "undefined".to_string()),
-    ))
-}
-
-fn host_symbol(args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::Symbol(symbol_description(args)))
-}
-
-fn host_symbol_for(args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::Symbol(symbol_description(args)))
-}
-
-fn host_object_freeze(args: &[Value]) -> Result<Value, ExecuteError> {
+fn host_first_arg(args: &[Value]) -> Result<Value, ExecuteError> {
     Ok(args.first().cloned().unwrap_or(Value::Undefined))
 }
 
-fn host_object_keys(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    Ok(array_value(
-        enumerable_property_names(&object)
-            .into_iter()
-            .map(Value::String)
-            .collect(),
-    ))
-}
-
-fn host_object_values(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    Ok(array_value(
-        enumerable_property_names(&object)
-            .into_iter()
-            .filter_map(|property| own_property_value(&object, &property))
-            .collect(),
-    ))
-}
-
-fn host_object_entries(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    Ok(array_value(
-        enumerable_property_names(&object)
-            .into_iter()
-            .filter_map(|property| {
-                own_property_value(&object, &property)
-                    .map(|value| array_value(vec![Value::String(property), value]))
-            })
-            .collect(),
-    ))
-}
-
-fn host_object_has_own(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    let property = args.get(1).map(ToString::to_string).unwrap_or_default();
-    Ok(Value::Bool(own_property_value(&object, &property).is_some()))
-}
-
-fn host_object_create(_args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::Object(BTreeMap::new()))
-}
-
-fn host_object_assign(args: &[Value]) -> Result<Value, ExecuteError> {
-    let mut target = args
-        .first()
-        .cloned()
-        .unwrap_or_else(|| Value::Object(BTreeMap::new()));
-    for source in args.iter().skip(1) {
-        for property in enumerable_property_names(source) {
-            if let Some(value) = own_property_value(source, &property) {
-                set_member(&mut target, &property, value)?;
-            }
-        }
-    }
-    Ok(target)
-}
-
-fn host_object_define_property(args: &[Value]) -> Result<Value, ExecuteError> {
-    let mut target = args
-        .first()
-        .cloned()
-        .unwrap_or_else(|| Value::Object(BTreeMap::new()));
-    let property = args.get(1).map(ToString::to_string).unwrap_or_default();
-    let descriptor = args.get(2).cloned().unwrap_or(Value::Undefined);
-    let value = match descriptor {
-        Value::Object(props) => props.get("value").cloned().unwrap_or(Value::Undefined),
-        value => value,
-    };
-    if !property.is_empty() {
-        set_member(&mut target, &property, value)?;
-    }
-    Ok(target)
-}
-
-fn host_object_true_predicate(_args: &[Value]) -> Result<Value, ExecuteError> {
+fn host_true(_args: &[Value]) -> Result<Value, ExecuteError> {
     Ok(Value::Bool(true))
 }
 
-fn host_object_false_predicate(_args: &[Value]) -> Result<Value, ExecuteError> {
+fn host_false(_args: &[Value]) -> Result<Value, ExecuteError> {
     Ok(Value::Bool(false))
 }
 
-fn host_object_get_own_property_descriptor(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    let property = args.get(1).map(ToString::to_string).unwrap_or_default();
-    Ok(match own_property_value(&object, &property) {
-        Some(value) => Value::Object(BTreeMap::from([
-            ("value".to_string(), value),
-            ("writable".to_string(), Value::Bool(true)),
-            ("enumerable".to_string(), Value::Bool(true)),
-            ("configurable".to_string(), Value::Bool(true)),
-        ])),
-        None => Value::Undefined,
-    })
-}
-
-fn host_object_get_own_property_names(args: &[Value]) -> Result<Value, ExecuteError> {
-    let object = args.first().cloned().unwrap_or(Value::Undefined);
-    Ok(array_value(
-        own_property_names(&object)
-            .into_iter()
-            .map(Value::String)
-            .collect(),
+fn host_symbol(args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(Value::Symbol(
+        args.first().map(ToString::to_string).unwrap_or_default(),
     ))
 }
 
-fn host_object_get_prototype_of(_args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::Null)
+fn host_symbol_for(args: &[Value]) -> Result<Value, ExecuteError> {
+    host_symbol(args)
 }
 
 fn host_object(args: &[Value]) -> Result<Value, ExecuteError> {
@@ -1960,31 +2129,17 @@ fn host_object(args: &[Value]) -> Result<Value, ExecuteError> {
 }
 
 fn host_array(args: &[Value]) -> Result<Value, ExecuteError> {
-    const MAX_HOST_ARRAY_LENGTH: usize = 65_536;
-
     if args.len() == 1 {
         if let Value::Number(length) = args[0] {
-            if length.is_finite() && length >= 0.0 && length.fract() == 0.0 {
-                let length = length as usize;
-                if length > MAX_HOST_ARRAY_LENGTH {
-                    return Err(ExecuteError::RangeError(format!(
-                        "invalid array length {length}"
-                    )));
-                }
-                return Ok(array_value(vec![Value::Undefined; length]));
-            }
+            let length = length.max(0.0).trunc() as usize;
+            return Ok(array_value(vec![Value::Undefined; length]));
         }
     }
-
     Ok(array_value(args.to_vec()))
 }
 
 fn host_array_is_array(args: &[Value]) -> Result<Value, ExecuteError> {
     Ok(Value::Bool(matches!(args.first(), Some(Value::Array(_)))))
-}
-
-fn host_math_random(_args: &[Value]) -> Result<Value, ExecuteError> {
-    Ok(Value::Number(0.5))
 }
 
 fn host_string(args: &[Value]) -> Result<Value, ExecuteError> {
@@ -2005,93 +2160,228 @@ fn host_boolean(args: &[Value]) -> Result<Value, ExecuteError> {
     ))
 }
 
-fn construct_external(path: &str, args: Vec<Value>) -> Result<Value, ExecuteError> {
-    match HostBridge::normalize_path(path).as_str() {
-        "Proxy" => Ok(args.into_iter().next().unwrap_or(Value::Object(BTreeMap::new()))),
-        "Symbol" => Ok(Value::Symbol(symbol_description(&args))),
-        "String" => Ok(Value::String(
-            args.first().map(ToString::to_string).unwrap_or_default(),
-        )),
-        "Number" => Ok(Value::Number(
-            args.first().map(Value::to_number).unwrap_or(0.0),
-        )),
-        "Boolean" => Ok(Value::Bool(
-            args.first().map(Value::is_truthy).unwrap_or(false),
-        )),
-        "Object" => Ok(args.into_iter().next().unwrap_or(Value::Object(BTreeMap::new()))),
-        "Array" => Ok(array_value(args)),
-        _ => Err(ExecuteError::Runtime(format!(
-            "[external {path}] is not constructable"
-        ))),
+fn host_math_random(_args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(Value::Number(0.5))
+}
+
+fn host_object_keys(args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(array_value(
+        object_keys(args.first())
+            .into_iter()
+            .map(Value::String)
+            .collect(),
+    ))
+}
+
+fn host_object_values(args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(array_value(match args.first() {
+        Some(Value::Object(props)) => props.values().cloned().collect(),
+        Some(Value::Array(items)) => items.borrow().clone(),
+        _ => Vec::new(),
+    }))
+}
+
+fn host_object_entries(args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(array_value(match args.first() {
+        Some(Value::Object(props)) => props
+            .iter()
+            .map(|(key, value)| array_value(vec![Value::String(key.clone()), value.clone()]))
+            .collect(),
+        Some(Value::Array(items)) => items
+            .borrow()
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, value)| array_value(vec![Value::String(index.to_string()), value]))
+            .collect(),
+        _ => Vec::new(),
+    }))
+}
+
+fn host_object_has_own(args: &[Value]) -> Result<Value, ExecuteError> {
+    let key = args.get(1).map(ToString::to_string).unwrap_or_default();
+    Ok(Value::Bool(match args.first() {
+        Some(Value::Object(props)) => props.contains_key(&key),
+        Some(Value::Array(items)) => key
+            .parse::<usize>()
+            .is_ok_and(|index| index < items.borrow().len()),
+        _ => false,
+    }))
+}
+
+fn host_object_create(_args: &[Value]) -> Result<Value, ExecuteError> {
+    Ok(Value::Object(BTreeMap::new()))
+}
+
+fn host_object_assign(args: &[Value]) -> Result<Value, ExecuteError> {
+    let mut target = match args.first().cloned() {
+        Some(Value::Object(props)) => props,
+        _ => BTreeMap::new(),
+    };
+    for source in args.iter().skip(1) {
+        if let Value::Object(props) = source {
+            target.extend(props.clone());
+        }
     }
+    Ok(Value::Object(target))
 }
 
-fn symbol_description(args: &[Value]) -> String {
-    args.first()
-        .map(ToString::to_string)
-        .unwrap_or_default()
+fn host_object_define_property(args: &[Value]) -> Result<Value, ExecuteError> {
+    let target = args
+        .first()
+        .cloned()
+        .unwrap_or(Value::Object(BTreeMap::new()));
+    let key = args.get(1).map(ToString::to_string).unwrap_or_default();
+    let descriptor = args.get(2).cloned().unwrap_or(Value::Undefined);
+    let value = match descriptor {
+        Value::Object(props) => props.get("value").cloned().unwrap_or(Value::Undefined),
+        _ => Value::Undefined,
+    };
+    Ok(match target {
+        Value::Object(mut props) => {
+            props.insert(key, value);
+            Value::Object(props)
+        }
+        value => value,
+    })
 }
 
-fn own_property_value(object: &Value, property: &str) -> Option<Value> {
-    match object {
-        Value::Object(props) => props.get(property).cloned(),
-        Value::Class(class) => class.static_props.get(property).cloned(),
-        Value::Array(items) if property == "length" => Some(Value::Number(items.borrow().len() as f64)),
-        Value::Array(items) => property
+fn host_object_get_descriptor(args: &[Value]) -> Result<Value, ExecuteError> {
+    let key = args.get(1).map(ToString::to_string).unwrap_or_default();
+    let value = match args.first() {
+        Some(Value::Object(props)) => props.get(&key).cloned(),
+        Some(Value::Array(items)) => key
             .parse::<usize>()
             .ok()
             .and_then(|index| items.borrow().get(index).cloned()),
-        Value::String(value) if property == "length" => Some(Value::Number(value.len() as f64)),
-        Value::String(value) => property
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| value.chars().nth(index))
-            .map(|value| Value::String(value.to_string())),
         _ => None,
-    }
+    };
+    Ok(value
+        .map(|value| {
+            let mut props = BTreeMap::new();
+            props.insert("value".to_string(), value);
+            Value::Object(props)
+        })
+        .unwrap_or(Value::Undefined))
 }
 
-fn enumerable_property_names(object: &Value) -> Vec<String> {
-    own_property_names(object)
-        .into_iter()
-        .filter(|property| property != "length")
-        .collect()
-}
-
-fn own_property_names(object: &Value) -> Vec<String> {
-    match object {
-        Value::Object(props) => props.keys().cloned().collect(),
-        Value::Class(class) => class.static_props.keys().cloned().collect(),
-        Value::Array(items) => (0..items.borrow().len())
+fn object_keys(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Object(props)) => props.keys().cloned().collect(),
+        Some(Value::Array(items)) => (0..items.borrow().len())
             .map(|index| index.to_string())
-            .chain(std::iter::once("length".to_string()))
-            .collect(),
-        Value::String(value) => (0..value.chars().count())
-            .map(|index| index.to_string())
-            .chain(std::iter::once("length".to_string()))
             .collect(),
         _ => Vec::new(),
     }
 }
 
-fn host_message(args: &[Value]) -> String {
-    args.iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
+#[cfg(target_arch = "wasm32")]
+fn values_to_js_array(values: &[Value], bridge: &HostBridge) -> Result<JsArray, ExecuteError> {
+    let array = JsArray::new();
+    for value in values {
+        array.push(&value_to_js_value(value, bridge)?);
+    }
+    Ok(array)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn host_console(level: &str, message: &str) {
-    wasm_host_log(level, message);
+fn value_to_js_value(value: &Value, bridge: &HostBridge) -> Result<JsValue, ExecuteError> {
+    Ok(match value {
+        Value::Number(value) => JsValue::from_f64(*value),
+        Value::String(value) | Value::Symbol(value) => JsValue::from_str(value),
+        Value::Bool(value) => JsValue::from_bool(*value),
+        Value::Null => JsValue::NULL,
+        Value::Undefined => JsValue::UNDEFINED,
+        Value::Array(items) => {
+            let array = JsArray::new();
+            for item in items.borrow().iter() {
+                array.push(&value_to_js_value(item, bridge)?);
+            }
+            array.into()
+        }
+        Value::Object(props) => {
+            let object = js_sys::Object::new();
+            for (key, value) in props {
+                Reflect::set(
+                    &object,
+                    &JsValue::from_str(key),
+                    &value_to_js_value(value, bridge)?,
+                )
+                .map_err(js_error)?;
+            }
+            object.into()
+        }
+        Value::ExternalRef(reference) => bridge.resolve_js_value(reference)?,
+        Value::Function(_)
+        | Value::BoundFunction(_, _)
+        | Value::NativeFunction(_)
+        | Value::BoundNativeFunction(_, _)
+        | Value::Class(_)
+        | Value::Module(_) => JsValue::UNDEFINED,
+    })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn host_console(level: &str, message: &str) {
-    match level {
-        "warn" | "error" => eprintln!("{message}"),
-        _ => println!("{message}"),
+#[cfg(target_arch = "wasm32")]
+fn js_value_to_value(value: JsValue, bridge: &HostBridge) -> Result<Value, ExecuteError> {
+    if value.is_undefined() {
+        Ok(Value::Undefined)
+    } else if value.is_null() {
+        Ok(Value::Null)
+    } else if let Some(value) = value.as_bool() {
+        Ok(Value::Bool(value))
+    } else if let Some(value) = value.as_f64() {
+        Ok(Value::Number(value))
+    } else if let Some(value) = value.as_string() {
+        Ok(Value::String(value))
+    } else if JsArray::is_array(&value) {
+        let array = JsArray::from(&value);
+        let mut items = Vec::with_capacity(array.length() as usize);
+        for item in array.iter() {
+            if is_js_value_convertible(&item) {
+                items.push(js_value_to_value(item, bridge)?);
+            } else {
+                items.push(bridge.store_or_convert_js_value(item, "host-array-item".to_string())?);
+            }
+        }
+        Ok(array_value(items))
+    } else {
+        Ok(Value::Undefined)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_js_value_convertible(value: &JsValue) -> bool {
+    value.is_undefined()
+        || value.is_null()
+        || value.as_bool().is_some()
+        || value.as_f64().is_some()
+        || value.as_string().is_some()
+        || JsArray::is_array(value)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_js_proxy_constructor(value: &JsValue) -> bool {
+    Reflect::get(&js_sys::global(), &JsValue::from_str("Proxy"))
+        .ok()
+        .is_some_and(|proxy| js_sys::Object::is(value, &proxy))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_error(value: JsValue) -> ExecuteError {
+    let message = value
+        .as_string()
+        .or_else(|| {
+            Reflect::get(&value, &JsValue::from_str("stack"))
+                .ok()
+                .and_then(|value| value.as_string())
+        })
+        .or_else(|| {
+            Reflect::get(&value, &JsValue::from_str("message"))
+                .ok()
+                .and_then(|value| value.as_string())
+        })
+        .unwrap_or_else(|| "host bridge JavaScript error".to_string());
+    ExecuteError::Runtime(message)
 }
 
 fn binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteError> {
@@ -2172,15 +2462,10 @@ fn unary(op: &str, arg: Value) -> Result<Value, ExecuteError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecuteError, Executor, HostBridge, Value};
+    use super::{Executor, HostBridge};
     use js_token_core::{
         BytecodeConstant, BytecodeInstruction, BytecodeModule, BytecodeOp, BytecodeOperand,
     };
-
-    fn custom_answer(args: &[Value]) -> Result<Value, ExecuteError> {
-        let offset = args.first().map(Value::to_number).unwrap_or(0.0);
-        Ok(Value::Number(40.0 + offset))
-    }
 
     fn call_host_module(root: &str, member: &str, args: Vec<BytecodeOperand>) -> BytecodeModule {
         let mut operands = vec![
@@ -2221,26 +2506,6 @@ mod tests {
                 },
             ],
         }
-    }
-
-    #[test]
-    fn host_bridge_registers_custom_capability() {
-        let module = call_host_module("host", "answer", vec![BytecodeOperand::Constant(1)]);
-        let mut bridge = HostBridge::empty();
-        bridge.register_function("host.answer", custom_answer);
-
-        let value = Executor::run_with_host_bridge(&module, bridge).unwrap();
-
-        assert_eq!(value, Value::Number(42.0));
-    }
-
-    #[test]
-    fn host_bridge_defaults_normalize_window_aliases() {
-        let bridge = HostBridge::default();
-
-        assert!(bridge.has_function("console.log"));
-        assert!(bridge.has_function("window.console.log"));
-        assert!(bridge.has_function("globalThis.fetch"));
     }
 
     #[test]

@@ -120,6 +120,84 @@ function externSlotsForIteration(externs, iteration, baseSeed = 1337) {
   return shuffled(externs, rand);
 }
 
+function createDefaultHostEnvironment() {
+  const hostMath = Object.create(Math);
+  hostMath.random = () => 0.5;
+  const emit = (level, args) => {
+    globalThis.__jsVmHostLog?.(level, args.map(String).join(' '));
+  };
+  const hostConsole = {
+    log: (...args) => emit('log', args),
+    info: (...args) => emit('info', args),
+    warn: (...args) => emit('warn', args),
+    error: (...args) => emit('error', args),
+    debug: (...args) => emit('debug', args),
+    assert: () => undefined,
+    clear: () => undefined,
+    count: () => undefined,
+    countReset: () => undefined,
+    dir: (...args) => emit('log', args),
+    dirxml: (...args) => emit('log', args),
+    group: () => undefined,
+    groupCollapsed: () => undefined,
+    groupEnd: () => undefined,
+    profile: () => undefined,
+    profileEnd: () => undefined,
+    table: (...args) => emit('log', args),
+    time: () => undefined,
+    timeEnd: () => undefined,
+    timeLog: () => undefined,
+    trace: (...args) => emit('log', args),
+  };
+  return {
+    console: hostConsole,
+    window: { console: hostConsole },
+    globalThis: { console: hostConsole },
+    fetch: (target) => {
+      globalThis.__jsVmHostLog?.('log', `NETWORK fetch ${String(target)}`);
+      return undefined;
+    },
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Symbol,
+    Math: hostMath,
+    __vmPrint: (...args) => emit('log', args),
+    print: (...args) => emit('log', args),
+    alert: (...args) => emit('log', args),
+    gc: () => undefined,
+    gcparam: () => undefined,
+    uneval: (value) => String(value),
+    fail: () => undefined,
+    failWithMessage: () => undefined,
+    triggerAssertFalse: () => undefined,
+    quit: () => undefined,
+  };
+}
+
+function resolveExternalValue(name, environment = createDefaultHostEnvironment()) {
+  if (Object.prototype.hasOwnProperty.call(environment, name)) return environment[name];
+  const parts = String(name).split('.');
+  let current = environment;
+  for (const part of parts) {
+    if (current == null) break;
+    current = current[part];
+  }
+  if (current !== undefined) return current;
+  current = globalThis;
+  for (const part of parts) {
+    if (current == null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function externValuesForSlots(externSlots, environment = createDefaultHostEnvironment()) {
+  return externSlots.map((name) => resolveExternalValue(name, environment));
+}
+
 async function loadVm() {
   return JsVmAdapter.load();
 }
@@ -197,7 +275,11 @@ function runVmSourceWithPackages(vm, source, options = {}) {
         }
         let result;
         try {
-          result = vm.js_execute_bytes_with_seed(bytes, seed);
+          result = vm.js_execute_bytes_with_seed(
+            bytes,
+            seed,
+            externValuesForSlots(externSlots, options.externEnvironment),
+          );
         } finally {
           if (options.captureLogs) {
             globalThis.__jsVmHostLog = previousHostLog || (() => {});
@@ -241,12 +323,12 @@ function createCoverage() {
     opcodes: new Set(),
     sections: new Set(),
     maxByteLength: 0,
-    artifacts: 0,
+    bytecodeCount: 0,
   };
 }
 
 function collectBytecodeCoverage(coverage, text, byteLength) {
-  coverage.artifacts += 1;
+  coverage.bytecodeCount += 1;
   coverage.maxByteLength = Math.max(coverage.maxByteLength, byteLength);
   for (const line of text.split(/\r?\n/)) {
     const section = line.match(/^\.(\w+)/);
@@ -278,7 +360,7 @@ function finalizeCoverage(coverage) {
     opcodes: Array.from(coverage.opcodes).sort(),
     sections: Array.from(coverage.sections).sort(),
     maxByteLength: coverage.maxByteLength,
-    artifacts: coverage.artifacts,
+    bytecodeCount: coverage.bytecodeCount,
   };
 }
 
@@ -292,6 +374,8 @@ module.exports = {
   shuffled,
   seedRows,
   externSlotsForIteration,
+  externValuesForSlots,
+  createDefaultHostEnvironment,
   JsVmAdapter,
   loadVm,
   runVmSource,

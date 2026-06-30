@@ -1,8 +1,147 @@
-use js_token_core::{IrInstruction, IrModule, IrValue};
+use js_token_core as core;
 use std::collections::{BTreeMap, BTreeSet};
 use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::*;
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
+
+#[derive(Debug, Clone, PartialEq)]
+enum IrValue {
+    Register(String),
+    Name(String),
+    Number(f64),
+    String(String),
+    Bool(bool),
+    Null,
+    Undefined,
+}
+
+impl std::fmt::Display for IrValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IrValue::Register(value) => write!(f, "%{value}"),
+            IrValue::Name(value) => f.write_str(value),
+            IrValue::Number(value) => write!(f, "{value}"),
+            IrValue::String(value) => write!(f, "{value:?}"),
+            IrValue::Bool(value) => write!(f, "{value}"),
+            IrValue::Null => f.write_str("null"),
+            IrValue::Undefined => f.write_str("undefined"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum IrInstruction {
+    Marker(String),
+    Label(String),
+    Declare {
+        kind: String,
+        name: String,
+    },
+    LoadConst {
+        dst: String,
+        value: IrValue,
+    },
+    LoadName {
+        dst: String,
+        name: String,
+    },
+    StoreName {
+        name: String,
+        src: IrValue,
+    },
+    StoreMember {
+        object: IrValue,
+        property: IrValue,
+        src: IrValue,
+    },
+    Move {
+        dst: String,
+        src: IrValue,
+    },
+    Binary {
+        dst: String,
+        op: String,
+        left: IrValue,
+        right: IrValue,
+    },
+    Unary {
+        dst: String,
+        op: String,
+        arg: IrValue,
+    },
+    Member {
+        dst: String,
+        object: IrValue,
+        property: IrValue,
+    },
+    Array {
+        dst: String,
+        items: Vec<IrValue>,
+    },
+    Object {
+        dst: String,
+        props: Vec<(String, IrValue)>,
+    },
+    Call {
+        dst: String,
+        callee: IrValue,
+        args: Vec<IrValue>,
+    },
+    New {
+        dst: String,
+        callee: IrValue,
+        args: Vec<IrValue>,
+    },
+    Template {
+        dst: String,
+        quasis: Vec<String>,
+        exprs: Vec<IrValue>,
+    },
+    Function {
+        name: String,
+        params: Vec<String>,
+        body: Vec<IrInstruction>,
+    },
+    FunctionExpr {
+        dst: String,
+        name: Option<String>,
+        params: Vec<String>,
+        body: Vec<IrInstruction>,
+    },
+    Class {
+        dst: Option<String>,
+        name: Option<String>,
+        super_class: Option<IrValue>,
+        members: Vec<String>,
+    },
+    Import {
+        source: String,
+        specifiers: Vec<String>,
+    },
+    Export {
+        kind: String,
+        names: Vec<String>,
+    },
+    Throw(IrValue),
+    Try {
+        body: Vec<IrInstruction>,
+        catch_param: Option<String>,
+        catch_body: Vec<IrInstruction>,
+        finally_body: Vec<IrInstruction>,
+    },
+    Scope {
+        kind: String,
+        body: Vec<IrInstruction>,
+    },
+    Return(Option<IrValue>),
+    Pop(IrValue),
+    Jump(String),
+    JumpIfFalse {
+        test: IrValue,
+        label: String,
+    },
+    Unsupported(String),
+}
 
 pub struct LoweringContext {
     instructions: Vec<IrInstruction>,
@@ -37,15 +176,12 @@ impl LoweringContext {
         }
     }
 
-    pub fn into_module(self) -> IrModule {
+    pub fn into_module(self) -> core::IrModule {
         let mut extern_slots = vec![String::new(); self.extern_slots.len()];
         for (name, slot) in self.extern_slots {
             extern_slots[slot] = name;
         }
-        IrModule {
-            extern_slots,
-            instructions: self.instructions,
-        }
+        StructuredIrBuilder::new(extern_slots).build(self.instructions)
     }
 
     fn child(&mut self) -> Self {
@@ -811,6 +947,12 @@ impl LoweringContext {
             Expr::Object(expr) => self.lower_object(expr),
             Expr::Ident(ident) => {
                 let name = ident_name(ident);
+                match name.as_str() {
+                    "undefined" => return IrValue::Undefined,
+                    "NaN" => return IrValue::Number(f64::NAN),
+                    "Infinity" => return IrValue::Number(f64::INFINITY),
+                    _ => {}
+                }
                 self.mark_extern(&name);
                 let dst = self.temp();
                 self.emit(IrInstruction::LoadName {
@@ -1706,6 +1848,815 @@ impl LoweringContext {
             },
             AssignTarget::Pat(pat) => self.lower_pat_binding(&pat.clone().into(), value, "assign"),
         }
+    }
+}
+
+struct StructuredIrBuilder {
+    module: core::IrModule,
+}
+
+#[derive(Default)]
+struct FunctionBuildState {
+    locals: BTreeMap<String, core::LocalId>,
+    local_defs: Vec<core::IrLocal>,
+    scopes: Vec<core::IrScope>,
+    exception_handlers: Vec<core::IrExceptionHandler>,
+    register_count: usize,
+}
+
+impl StructuredIrBuilder {
+    fn new(extern_slots: Vec<String>) -> Self {
+        Self {
+            module: core::IrModule {
+                extern_slots,
+                ..core::IrModule::default()
+            },
+        }
+    }
+
+    fn build(mut self, instructions: Vec<IrInstruction>) -> core::IrModule {
+        let entry = self.build_function(
+            Some("entry".to_string()),
+            Vec::new(),
+            instructions,
+            Vec::new(),
+        );
+        self.module.entry = entry;
+        self.module
+    }
+
+    fn build_function(
+        &mut self,
+        name: Option<String>,
+        params: Vec<String>,
+        instructions: Vec<IrInstruction>,
+        inherited_names: Vec<String>,
+    ) -> core::FunctionId {
+        let mut state = FunctionBuildState::new();
+        for name in inherited_names {
+            state.add_inherited_local(&name);
+        }
+        for param in &params {
+            state.ensure_local(param, core::IrBindingKind::Param);
+        }
+        collect_work_locals(&instructions, &mut state);
+
+        let blocks = self.lower_blocks(&mut state, instructions);
+        let params = params
+            .iter()
+            .map(|param| core::IrParam {
+                local: state.ensure_local(param, core::IrBindingKind::Param),
+                default: None,
+            })
+            .collect();
+
+        let id = core::FunctionId(self.module.functions.len());
+        self.module.functions.push(core::IrFunction {
+            name,
+            kind: core::IrFunctionKind::Normal,
+            flags: core::IrFunctionFlags::default(),
+            params,
+            rest_param: None,
+            locals: state.local_defs,
+            scopes: state.scopes,
+            captures: Vec::new(),
+            register_count: state.register_count,
+            exception_handlers: state.exception_handlers,
+            blocks,
+            entry: core::BlockId(0),
+        });
+        id
+    }
+
+    fn lower_blocks(
+        &mut self,
+        state: &mut FunctionBuildState,
+        instructions: Vec<IrInstruction>,
+    ) -> Vec<core::IrBlock> {
+        let mut labels = BTreeMap::new();
+        labels.insert("$entry".to_string(), core::BlockId(0));
+        for instruction in &instructions {
+            if let IrInstruction::Label(label) = instruction {
+                let id = core::BlockId(labels.len());
+                labels.entry(label.clone()).or_insert(id);
+            }
+        }
+
+        let mut blocks = vec![core::IrBlock::default(); labels.len().max(1)];
+        let mut current = core::BlockId(0);
+        let mut anonymous_id = labels.len();
+
+        for instruction in instructions {
+            match instruction {
+                IrInstruction::Label(label) => {
+                    let raw_label = label.clone();
+                    let target = *labels.entry(label).or_insert_with(|| {
+                        let id = core::BlockId(anonymous_id);
+                        anonymous_id += 1;
+                        blocks.push(core::IrBlock::default());
+                        id
+                    });
+                    if current != target
+                        && matches!(
+                            blocks[current.0].terminator,
+                            core::IrTerminator::Unreachable
+                        )
+                        && !blocks[current.0].instructions.is_empty()
+                    {
+                        blocks[current.0].terminator = core::IrTerminator::Jump(target);
+                    }
+                    current = target;
+                    ensure_block(&mut blocks, current);
+                    blocks[current.0]
+                        .instructions
+                        .push(core::IrInstruction::new(core::IrInstructionKind::Label(
+                            raw_label,
+                        )));
+                }
+                IrInstruction::Jump(label) => {
+                    let target = label_block(&mut labels, &mut blocks, &mut anonymous_id, &label);
+                    blocks[current.0].terminator = core::IrTerminator::Jump(target);
+                    current = fresh_block(&mut blocks, &mut anonymous_id);
+                }
+                IrInstruction::JumpIfFalse { test, label } => {
+                    let falsy = label_block(&mut labels, &mut blocks, &mut anonymous_id, &label);
+                    let truthy = fresh_block(&mut blocks, &mut anonymous_id);
+                    blocks[current.0].terminator = core::IrTerminator::Branch {
+                        test: self.lower_value(state, test),
+                        truthy,
+                        falsy,
+                    };
+                    current = truthy;
+                }
+                IrInstruction::Return(value) => {
+                    blocks[current.0].terminator = core::IrTerminator::Return(
+                        value.map(|value| self.lower_value(state, value)),
+                    );
+                    current = fresh_block(&mut blocks, &mut anonymous_id);
+                }
+                IrInstruction::Throw(value) => {
+                    blocks[current.0].terminator =
+                        core::IrTerminator::Throw(self.lower_value(state, value));
+                    current = fresh_block(&mut blocks, &mut anonymous_id);
+                }
+                other => {
+                    let lowered = self.lower_instruction(state, other);
+                    blocks[current.0].instructions.extend(lowered);
+                }
+            }
+        }
+
+        let exit = core::BlockId(blocks.len());
+        blocks.push(core::IrBlock::default());
+        for index in 0..exit.0 {
+            if matches!(blocks[index].terminator, core::IrTerminator::Unreachable)
+                && !blocks[index].instructions.is_empty()
+            {
+                blocks[index].terminator = core::IrTerminator::Jump(exit);
+            }
+        }
+
+        blocks
+    }
+
+    fn lower_instruction(
+        &mut self,
+        state: &mut FunctionBuildState,
+        instruction: IrInstruction,
+    ) -> Vec<core::IrInstruction> {
+        match instruction {
+            IrInstruction::Marker(message) => {
+                vec![core::IrInstruction::new(core::IrInstructionKind::Debug(
+                    message,
+                ))]
+            }
+            IrInstruction::Declare { kind, name } => {
+                let binding = binding_kind(&kind);
+                let local = state.ensure_local(&name, binding);
+                vec![core::IrInstruction::new(core::IrInstructionKind::Declare(
+                    core::IrDeclaration {
+                        local,
+                        kind: binding,
+                        name: Some(name),
+                        init: None,
+                    },
+                ))]
+            }
+            IrInstruction::LoadConst { dst, value } | IrInstruction::Move { dst, src: value } => {
+                let dst = state.register(&dst);
+                vec![core::IrInstruction::new(core::IrInstructionKind::Move {
+                    dst,
+                    src: self.lower_value(state, value),
+                })]
+            }
+            IrInstruction::LoadName { dst, name } => {
+                let dst = state.register(&dst);
+                vec![core::IrInstruction::new(core::IrInstructionKind::Load {
+                    dst,
+                    src: self.name_place(state, &name),
+                })]
+            }
+            IrInstruction::StoreName { name, src } => {
+                vec![core::IrInstruction::new(core::IrInstructionKind::Store {
+                    dst: self.name_place(state, &name),
+                    op: core::IrAssignOp::Assign,
+                    src: self.lower_value(state, src),
+                })]
+            }
+            IrInstruction::StoreMember {
+                object,
+                property,
+                src,
+            } => vec![core::IrInstruction::new(core::IrInstructionKind::Store {
+                dst: core::IrPlace::Member(core::IrMember {
+                    object: self.lower_value(state, object),
+                    property: self.property_key(state, property),
+                    optional: false,
+                }),
+                op: core::IrAssignOp::Assign,
+                src: self.lower_value(state, src),
+            })],
+            IrInstruction::Binary {
+                dst,
+                op,
+                left,
+                right,
+            } => vec![core::IrInstruction::new(core::IrInstructionKind::Binary {
+                dst: state.register(&dst),
+                op: core_binary_op(&op),
+                left: self.lower_value(state, left),
+                right: self.lower_value(state, right),
+            })],
+            IrInstruction::Unary { dst, op, arg } => {
+                vec![core::IrInstruction::new(core::IrInstructionKind::Unary {
+                    dst: state.register(&dst),
+                    op: core_unary_op(&op),
+                    arg: self.lower_value(state, arg),
+                })]
+            }
+            IrInstruction::Member {
+                dst,
+                object,
+                property,
+            } => vec![core::IrInstruction::new(core::IrInstructionKind::Load {
+                dst: state.register(&dst),
+                src: core::IrPlace::Member(core::IrMember {
+                    object: self.lower_value(state, object),
+                    property: self.property_key(state, property),
+                    optional: false,
+                }),
+            })],
+            IrInstruction::Array { dst, items } => {
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::CreateArray {
+                        dst: state.register(&dst),
+                        elements: items
+                            .into_iter()
+                            .map(|item| core::IrArrayElement::Value(self.lower_value(state, item)))
+                            .collect(),
+                    },
+                )]
+            }
+            IrInstruction::Object { dst, props } => {
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::CreateObject {
+                        dst: state.register(&dst),
+                        properties: props
+                            .into_iter()
+                            .map(|(key, value)| core::IrObjectProperty::Data {
+                                key: core::IrPropertyKey::Static(key),
+                                value: self.lower_value(state, value),
+                            })
+                            .collect(),
+                    },
+                )]
+            }
+            IrInstruction::Call { dst, callee, args } => vec![core::IrInstruction::new(
+                core::IrInstructionKind::Call(core::IrCall {
+                    dst: Some(state.register(&dst)),
+                    kind: core::IrCallKind::Normal,
+                    callee: self.lower_value(state, callee),
+                    this_arg: None,
+                    args: args
+                        .into_iter()
+                        .map(|arg| core::IrArgument::Value(self.lower_value(state, arg)))
+                        .collect(),
+                }),
+            )],
+            IrInstruction::New { dst, callee, args } => vec![core::IrInstruction::new(
+                core::IrInstructionKind::Construct(core::IrConstruct {
+                    dst: state.register(&dst),
+                    callee: self.lower_value(state, callee),
+                    args: args
+                        .into_iter()
+                        .map(|arg| core::IrArgument::Value(self.lower_value(state, arg)))
+                        .collect(),
+                }),
+            )],
+            IrInstruction::Template { dst, quasis, exprs } => {
+                vec![core::IrInstruction::new(core::IrInstructionKind::Template(
+                    core::IrTemplate {
+                        dst: state.register(&dst),
+                        cooked: quasis.iter().cloned().map(Some).collect(),
+                        raw: quasis,
+                        expressions: exprs
+                            .into_iter()
+                            .map(|expr| self.lower_value(state, expr))
+                            .collect(),
+                    },
+                ))]
+            }
+            IrInstruction::Function { name, params, body } => {
+                let inherited_names = state.visible_names();
+                let function =
+                    self.build_function(Some(name.clone()), params, body, inherited_names);
+                let local = state.ensure_local(&name, core::IrBindingKind::Function);
+                vec![
+                    core::IrInstruction::new(core::IrInstructionKind::Declare(
+                        core::IrDeclaration {
+                            local,
+                            kind: core::IrBindingKind::Function,
+                            name: Some(name.clone()),
+                            init: None,
+                        },
+                    )),
+                    core::IrInstruction::new(core::IrInstructionKind::FunctionDeclaration {
+                        function,
+                    }),
+                ]
+            }
+            IrInstruction::FunctionExpr {
+                dst,
+                name,
+                params,
+                body,
+            } => {
+                let mut inherited_names = state.visible_names();
+                if let Some(name) = &name {
+                    inherited_names.push(name.clone());
+                }
+                let function = self.build_function(name, params, body, inherited_names);
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::CreateFunction {
+                        dst: state.register(&dst),
+                        function,
+                        captures: Vec::new(),
+                    },
+                )]
+            }
+            IrInstruction::Class {
+                dst,
+                name,
+                super_class,
+                members,
+            } => {
+                let super_class = super_class.map(|value| self.lower_value(state, value));
+                let class = core::ClassId(self.module.classes.len());
+                self.module.classes.push(core::IrClass {
+                    name: name.clone(),
+                    super_class,
+                    constructor: None,
+                    members: members
+                        .into_iter()
+                        .map(|member| core::IrClassMember {
+                            key: core::IrPropertyKey::Static(member),
+                            kind: core::IrClassMemberKind::Field { value: None },
+                            is_static: false,
+                        })
+                        .collect(),
+                    static_blocks: Vec::new(),
+                });
+                let dst = dst
+                    .map(|dst| state.register(&dst))
+                    .unwrap_or_else(|| state.temp_register());
+                let mut out = vec![core::IrInstruction::new(
+                    core::IrInstructionKind::CreateClass { dst, class },
+                )];
+                if let Some(name) = name {
+                    let local = state.ensure_local(&name, core::IrBindingKind::Class);
+                    out.push(core::IrInstruction::new(core::IrInstructionKind::Store {
+                        dst: core::IrPlace::Local(local),
+                        op: core::IrAssignOp::Assign,
+                        src: core::IrValue::Register(dst),
+                    }));
+                }
+                out
+            }
+            IrInstruction::Import { source, specifiers } => {
+                let specifiers = specifiers
+                    .into_iter()
+                    .map(|name| {
+                        let local = state.ensure_local(&name, core::IrBindingKind::Import);
+                        core::IrImportSpecifier::Named {
+                            imported: name,
+                            local,
+                        }
+                    })
+                    .collect();
+                self.module
+                    .imports
+                    .push(core::IrImportDecl { source, specifiers });
+                Vec::new()
+            }
+            IrInstruction::Export { kind, names } => {
+                for name in names {
+                    let local = state.ensure_local(&name, core::IrBindingKind::Var);
+                    self.module.exports.push(core::IrExportDecl::Local {
+                        local,
+                        exported: if kind == "default" {
+                            "default".to_string()
+                        } else {
+                            name
+                        },
+                    });
+                }
+                Vec::new()
+            }
+            IrInstruction::Try {
+                body,
+                catch_param,
+                catch_body,
+                finally_body,
+            } => {
+                let handler = core::ExceptionHandlerId(state.exception_handlers.len());
+                let catch_local = catch_param
+                    .as_ref()
+                    .map(|param| state.ensure_local(param, core::IrBindingKind::Catch));
+                state.exception_handlers.push(core::IrExceptionHandler {
+                    protected_blocks: Vec::new(),
+                    catch_param: catch_local,
+                    catch_block: None,
+                    finally_block: None,
+                    exit_block: None,
+                });
+                let mut out = vec![core::IrInstruction::new(core::IrInstructionKind::EnterTry(
+                    handler,
+                ))];
+                out.extend(self.lower_linear_inline(state, body));
+                if !catch_body.is_empty() {
+                    out.push(core::IrInstruction::new(
+                        core::IrInstructionKind::EnterCatch { param: catch_local },
+                    ));
+                    out.extend(self.lower_linear_inline(state, catch_body));
+                }
+                if !finally_body.is_empty() {
+                    out.push(core::IrInstruction::new(
+                        core::IrInstructionKind::EnterFinally,
+                    ));
+                    out.extend(self.lower_linear_inline(state, finally_body));
+                }
+                out.push(core::IrInstruction::new(core::IrInstructionKind::LeaveTry(
+                    handler,
+                )));
+                out
+            }
+            IrInstruction::Scope { kind, body } => {
+                let scope = state.push_scope(scope_kind(&kind));
+                let mut out = vec![core::IrInstruction::new(
+                    core::IrInstructionKind::EnterScope(scope),
+                )];
+                out.extend(self.lower_linear_inline(state, body));
+                out.push(core::IrInstruction::new(
+                    core::IrInstructionKind::LeaveScope(scope),
+                ));
+                out
+            }
+            IrInstruction::Pop(value) => vec![core::IrInstruction::new(
+                core::IrInstructionKind::Debug(format!("pop {}", value)),
+            )],
+            IrInstruction::Unsupported(message) => {
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::Unsupported(message),
+                )]
+            }
+            IrInstruction::Label(_)
+            | IrInstruction::Jump(_)
+            | IrInstruction::JumpIfFalse { .. }
+            | IrInstruction::Return(_)
+            | IrInstruction::Throw(_) => Vec::new(),
+        }
+    }
+
+    fn lower_linear_inline(
+        &mut self,
+        state: &mut FunctionBuildState,
+        instructions: Vec<IrInstruction>,
+    ) -> Vec<core::IrInstruction> {
+        instructions
+            .into_iter()
+            .flat_map(|instruction| match instruction {
+                IrInstruction::Throw(value) => vec![core::IrInstruction::new(
+                    core::IrInstructionKind::Throw(self.lower_value(state, value)),
+                )],
+                IrInstruction::Return(value) => {
+                    vec![core::IrInstruction::new(core::IrInstructionKind::Return(
+                        value.map(|value| self.lower_value(state, value)),
+                    ))]
+                }
+                IrInstruction::Label(label) => {
+                    vec![core::IrInstruction::new(core::IrInstructionKind::Label(
+                        label,
+                    ))]
+                }
+                IrInstruction::Jump(label) => {
+                    vec![core::IrInstruction::new(core::IrInstructionKind::Jump(
+                        label,
+                    ))]
+                }
+                IrInstruction::JumpIfFalse { test, label } => {
+                    vec![core::IrInstruction::new(
+                        core::IrInstructionKind::JumpIfFalse {
+                            test: self.lower_value(state, test),
+                            label,
+                        },
+                    )]
+                }
+                other => self.lower_instruction(state, other),
+            })
+            .collect()
+    }
+
+    fn lower_value(&mut self, state: &mut FunctionBuildState, value: IrValue) -> core::IrValue {
+        match value {
+            IrValue::Register(value) => core::IrValue::Register(state.register(&value)),
+            IrValue::Name(value) if value == "this" => core::IrValue::This,
+            IrValue::Name(value) if value == "super" => core::IrValue::Super,
+            IrValue::Name(value) if value == "new.target" => core::IrValue::NewTarget,
+            IrValue::Name(value) if value == "undefined" => core::IrValue::Undefined,
+            IrValue::Name(value) if value == "NaN" => {
+                core::IrValue::Const(self.push_const(core::IrConst::Float(f64::NAN)))
+            }
+            IrValue::Name(value) if value == "Infinity" => {
+                core::IrValue::Const(self.push_const(core::IrConst::Float(f64::INFINITY)))
+            }
+            IrValue::Name(value) if state.locals.contains_key(&value) => {
+                core::IrValue::Local(state.ensure_local(&value, core::IrBindingKind::Var))
+            }
+            IrValue::Name(value) => core::IrValue::External(self.ensure_extern(&value)),
+            IrValue::Number(value) => {
+                core::IrValue::Const(self.push_const(if value.fract() == 0.0 {
+                    core::IrConst::Int(value as i64)
+                } else {
+                    core::IrConst::Float(value)
+                }))
+            }
+            IrValue::String(value) => {
+                core::IrValue::Const(self.push_const(core::IrConst::String(value)))
+            }
+            IrValue::Bool(value) => core::IrValue::Bool(value),
+            IrValue::Null => core::IrValue::Null,
+            IrValue::Undefined => core::IrValue::Undefined,
+        }
+    }
+
+    fn name_place(&mut self, state: &mut FunctionBuildState, name: &str) -> core::IrPlace {
+        if state.locals.contains_key(name) {
+            core::IrPlace::Local(state.ensure_local(name, core::IrBindingKind::Var))
+        } else {
+            core::IrPlace::External(self.ensure_extern(name))
+        }
+    }
+
+    fn property_key(
+        &mut self,
+        state: &mut FunctionBuildState,
+        value: IrValue,
+    ) -> core::IrPropertyKey {
+        match value {
+            IrValue::String(value) => core::IrPropertyKey::Static(value),
+            IrValue::Number(value) => core::IrPropertyKey::Number(value),
+            IrValue::Name(value) => core::IrPropertyKey::Static(value),
+            other => core::IrPropertyKey::Computed(self.lower_value(state, other)),
+        }
+    }
+
+    fn push_const(&mut self, constant: core::IrConst) -> core::ConstId {
+        let id = core::ConstId(self.module.constants.len());
+        self.module.constants.push(constant);
+        id
+    }
+
+    fn ensure_extern(&mut self, name: &str) -> core::ExternId {
+        if let Some(index) = self
+            .module
+            .extern_slots
+            .iter()
+            .position(|slot| slot == name)
+        {
+            return core::ExternId(index);
+        }
+        let id = core::ExternId(self.module.extern_slots.len());
+        self.module.extern_slots.push(name.to_string());
+        id
+    }
+}
+
+impl FunctionBuildState {
+    fn new() -> Self {
+        Self {
+            scopes: vec![core::IrScope {
+                parent: None,
+                kind: core::IrScopeKind::Function,
+                bindings: Vec::new(),
+            }],
+            ..Self::default()
+        }
+    }
+
+    fn ensure_local(&mut self, name: &str, kind: core::IrBindingKind) -> core::LocalId {
+        if let Some(local) = self.locals.get(name) {
+            return *local;
+        }
+        let id = core::LocalId(self.local_defs.len());
+        self.locals.insert(name.to_string(), id);
+        self.local_defs.push(core::IrLocal {
+            name: Some(name.to_string()),
+            kind,
+            scope: core::ScopeId(0),
+            mutable: !matches!(kind, core::IrBindingKind::Const),
+            captured: false,
+        });
+        if let Some(scope) = self.scopes.first_mut() {
+            scope.bindings.push(id);
+        }
+        id
+    }
+
+    fn add_inherited_local(&mut self, name: &str) -> core::LocalId {
+        if let Some(local) = self.locals.get(name) {
+            return *local;
+        }
+        let id = core::LocalId(self.local_defs.len());
+        self.locals.insert(name.to_string(), id);
+        self.local_defs.push(core::IrLocal {
+            name: Some(name.to_string()),
+            kind: core::IrBindingKind::Var,
+            scope: core::ScopeId(0),
+            mutable: true,
+            captured: true,
+        });
+        id
+    }
+
+    fn visible_names(&self) -> Vec<String> {
+        self.locals.keys().cloned().collect()
+    }
+
+    fn register(&mut self, register: &str) -> core::RegisterId {
+        let id = register_id(register);
+        self.register_count = self.register_count.max(id + 1);
+        core::RegisterId(id)
+    }
+
+    fn temp_register(&mut self) -> core::RegisterId {
+        let id = self.register_count;
+        self.register_count += 1;
+        core::RegisterId(id)
+    }
+
+    fn push_scope(&mut self, kind: core::IrScopeKind) -> core::ScopeId {
+        let id = core::ScopeId(self.scopes.len());
+        self.scopes.push(core::IrScope {
+            parent: Some(core::ScopeId(0)),
+            kind,
+            bindings: Vec::new(),
+        });
+        id
+    }
+}
+
+fn collect_work_locals(instructions: &[IrInstruction], state: &mut FunctionBuildState) {
+    for instruction in instructions {
+        match instruction {
+            IrInstruction::Declare { kind, name } => {
+                state.ensure_local(name, binding_kind(kind));
+            }
+            IrInstruction::Function { name, .. } => {
+                state.ensure_local(name, core::IrBindingKind::Function);
+            }
+            IrInstruction::Class {
+                name: Some(name), ..
+            } => {
+                state.ensure_local(name, core::IrBindingKind::Class);
+            }
+            IrInstruction::Try {
+                body,
+                catch_param,
+                catch_body,
+                finally_body,
+            } => {
+                collect_work_locals(body, state);
+                if let Some(param) = catch_param {
+                    state.ensure_local(param, core::IrBindingKind::Catch);
+                }
+                collect_work_locals(catch_body, state);
+                collect_work_locals(finally_body, state);
+            }
+            IrInstruction::Scope { body, .. } => collect_work_locals(body, state),
+            _ => {}
+        }
+    }
+}
+
+fn ensure_block(blocks: &mut Vec<core::IrBlock>, id: core::BlockId) {
+    while blocks.len() <= id.0 {
+        blocks.push(core::IrBlock::default());
+    }
+}
+
+fn fresh_block(blocks: &mut Vec<core::IrBlock>, anonymous_id: &mut usize) -> core::BlockId {
+    let id = core::BlockId(*anonymous_id);
+    *anonymous_id += 1;
+    ensure_block(blocks, id);
+    id
+}
+
+fn label_block(
+    labels: &mut BTreeMap<String, core::BlockId>,
+    blocks: &mut Vec<core::IrBlock>,
+    anonymous_id: &mut usize,
+    label: &str,
+) -> core::BlockId {
+    if let Some(block) = labels.get(label) {
+        return *block;
+    }
+    let id = fresh_block(blocks, anonymous_id);
+    labels.insert(label.to_string(), id);
+    id
+}
+
+fn register_id(register: &str) -> usize {
+    register
+        .strip_prefix('t')
+        .unwrap_or(register)
+        .parse::<usize>()
+        .unwrap_or(0)
+}
+
+fn binding_kind(kind: &str) -> core::IrBindingKind {
+    match kind {
+        "const" => core::IrBindingKind::Const,
+        "let" | "loop" | "assign" => core::IrBindingKind::Let,
+        "function" => core::IrBindingKind::Function,
+        "class" => core::IrBindingKind::Class,
+        "catch" => core::IrBindingKind::Catch,
+        "import" => core::IrBindingKind::Import,
+        _ => core::IrBindingKind::Var,
+    }
+}
+
+fn scope_kind(kind: &str) -> core::IrScopeKind {
+    match kind {
+        "function" => core::IrScopeKind::Function,
+        "loop" => core::IrScopeKind::Loop,
+        "catch" => core::IrScopeKind::Catch,
+        "class" => core::IrScopeKind::Class,
+        "with" => core::IrScopeKind::With,
+        _ => core::IrScopeKind::Block,
+    }
+}
+
+fn core_unary_op(op: &str) -> core::IrUnaryOp {
+    match op {
+        "+" => core::IrUnaryOp::Plus,
+        "-" => core::IrUnaryOp::Minus,
+        "!" => core::IrUnaryOp::Not,
+        "~" => core::IrUnaryOp::BitNot,
+        "typeof" => core::IrUnaryOp::TypeOf,
+        "void" => core::IrUnaryOp::Void,
+        "delete" => core::IrUnaryOp::Delete,
+        _ => core::IrUnaryOp::Void,
+    }
+}
+
+fn core_binary_op(op: &str) -> core::IrBinaryOp {
+    match op {
+        "+" => core::IrBinaryOp::Add,
+        "-" => core::IrBinaryOp::Sub,
+        "*" => core::IrBinaryOp::Mul,
+        "/" => core::IrBinaryOp::Div,
+        "%" => core::IrBinaryOp::Mod,
+        "**" => core::IrBinaryOp::Pow,
+        "==" => core::IrBinaryOp::Eq,
+        "===" => core::IrBinaryOp::StrictEq,
+        "!=" => core::IrBinaryOp::NotEq,
+        "!==" => core::IrBinaryOp::StrictNotEq,
+        "<" => core::IrBinaryOp::Lt,
+        "<=" => core::IrBinaryOp::Le,
+        ">" => core::IrBinaryOp::Gt,
+        ">=" => core::IrBinaryOp::Ge,
+        "&&" => core::IrBinaryOp::LogicalAnd,
+        "||" => core::IrBinaryOp::LogicalOr,
+        "??" => core::IrBinaryOp::Nullish,
+        "&" => core::IrBinaryOp::BitAnd,
+        "|" => core::IrBinaryOp::BitOr,
+        "^" => core::IrBinaryOp::BitXor,
+        "<<" => core::IrBinaryOp::Shl,
+        ">>" => core::IrBinaryOp::Shr,
+        ">>>" => core::IrBinaryOp::UShr,
+        "in" => core::IrBinaryOp::In,
+        "instanceof" => core::IrBinaryOp::InstanceOf,
+        _ => core::IrBinaryOp::Add,
     }
 }
 
