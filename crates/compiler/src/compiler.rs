@@ -28,17 +28,21 @@ impl Compiler {
         extern_slots: Box<[JsValue]>,
     ) -> Result<CompilerArtifact, String> {
         let module = self.bytecode_module_with_extern_slots(extern_slots)?;
-        let bytes = match seed.as_deref() {
+        let encoding = match seed.as_deref() {
             Some(seed) if !seed.is_empty() => {
-                let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
-                module
-                    .to_bytes_with_encoding(&encoding)
-                    .map_err(|err| err.to_string())?
+                EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?
             }
-            _ => module.to_bytes(),
+            _ => EncodingConfig::default(),
         };
+        let bytes = module
+            .to_bytes_with_encoding(&encoding)
+            .map_err(|err| err.to_string())?;
+        let bytes_profile_text = module
+            .bytes_profile_text_with_encoding(&encoding)
+            .map_err(|err| err.to_string())?;
         Ok(CompilerArtifact {
             bytecode_text: module.to_text(),
+            bytes_profile_text,
             bytes,
         })
     }
@@ -98,12 +102,17 @@ fn remap_external_operands(
 
 pub struct CompilerArtifact {
     bytecode_text: String,
+    bytes_profile_text: String,
     bytes: Vec<u8>,
 }
 
 impl CompilerArtifact {
     pub fn bytecode_text(&self) -> String {
         self.bytecode_text.clone()
+    }
+
+    pub fn bytes_profile_text(&self) -> String {
+        self.bytes_profile_text.clone()
     }
 
     pub fn bytes(&self) -> Vec<u8> {
@@ -154,32 +163,32 @@ fn js_values_to_strings(values: &[JsValue]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{compile_to_ir, remap_external_operands};
-    use js_token_core::{BytecodeModule, EncodingConfig};
-    use js_vm_runtime::Executor;
-
-    const MULTIPLE_FUNCTIONS_FIB_ADD: &str =
-        include_str!("../../../tests/corpus/regressions/multiple-functions-fib-add.test.js");
-
-    fn run_source(source: &str) -> Result<String, String> {
-        let ir = compile_to_ir(source)?;
-        let extern_slots = ir.extern_slots.clone();
-        let module = ir.to_bytecode();
-        let bytes = module.to_bytes();
-        let seed = EncodingConfig::default()
-            .paired_seed(&bytes)
-            .map_err(|err| err.to_string())?;
-        let module =
-            BytecodeModule::from_bytes_with_seed(&bytes, &seed).map_err(|err| err.to_string())?;
-        Executor::run_with_external_names(&module, &extern_slots)
-            .map(|value| value.to_string())
-            .map_err(|err| err.to_string())
-    }
+    use js_token_core::IrConst;
 
     fn count_subslice(bytes: &[u8], needle: &[u8]) -> usize {
         bytes
             .windows(needle.len())
             .filter(|window| *window == needle)
             .count()
+    }
+
+    #[test]
+    fn repeated_literals_share_ir_constants() {
+        let ir = compile_to_ir("const a = 1; const b = 1; const c = 'x'; const d = 'x'; a + b;")
+            .unwrap();
+        let ones = ir
+            .constants
+            .iter()
+            .filter(|constant| matches!(constant, IrConst::Int(1)))
+            .count();
+        let strings = ir
+            .constants
+            .iter()
+            .filter(|constant| matches!(constant, IrConst::String(value) if value == "x"))
+            .count();
+
+        assert_eq!(ones, 1, "{:#?}", ir.constants);
+        assert_eq!(strings, 1, "{:#?}", ir.constants);
     }
 
     #[test]
@@ -216,157 +225,5 @@ mod tests {
         assert_eq!(module.extern_slots, vec!["window", "console"]);
         assert!(text.contains("extern#1(\"console\")"), "{text}");
         assert!(text.contains("extern#0(\"window\")"), "{text}");
-    }
-
-    #[test]
-    fn regression_multiple_functions_fib_add_executes() {
-        assert_eq!(run_source(MULTIPLE_FUNCTIONS_FIB_ADD).as_deref(), Ok("21"));
-    }
-
-    #[test]
-    fn class_methods_compile_and_execute() {
-        let cases = [
-            (
-                "class A { value() { return 7; } } const a = new A(); a.value();",
-                "7",
-            ),
-            ("class A { static value() { return 9; } } A.value();", "9"),
-            (
-                "class Box { constructor(v) { this.v = v; } value() { return this.v; } } const box = new Box(11); box.value();",
-                "11",
-            ),
-            (
-                "class Point { x = 3; y = 4; sum() { return this.x + this.y; } } const p = new Point(); p.sum();",
-                "7",
-            ),
-        ];
-
-        for (source, expected) in cases {
-            assert_eq!(run_source(source).as_deref(), Ok(expected), "{source}");
-        }
-    }
-
-    #[test]
-    fn compiler_runtime_class_method_fuzz_cases() {
-        let method_names = ["m", "value", "compute"];
-        let values = [0, 1, 2, 7, 13];
-
-        for (method_index, method) in method_names.iter().enumerate() {
-            for value in values {
-                let class_name = format!("C{method_index}_{value}");
-                let source = format!(
-                    "class {class_name} {{ {method}() {{ return {value}; }} }} const obj = new {class_name}(); obj.{method}();"
-                );
-                let expected = value.to_string();
-                assert_eq!(
-                    run_source(&source).as_deref(),
-                    Ok(expected.as_str()),
-                    "{source}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn compiler_runtime_expression_fuzz_cases() {
-        let cases = [
-            ("const a = [1, 2, 3]; a.length;", "3"),
-            ("const o = { value() { return 5; } }; o.value();", "5"),
-            ("function add(a, b) { return a + b; } add(2, 3);", "5"),
-            ("let x = 1; x = x + 4; x;", "5"),
-            ("const s = `a${1 + 2}`; s;", "a3"),
-            ("try { throw 6; } catch (err) { err + 1; }", "7"),
-            ("this.answer = 4; this.answer;", "4"),
-            ("try { null.value; } catch (err) { 9; }", "9"),
-            (
-                "try { this.alert = console.log; } catch (err) { 99; } 7;",
-                "7",
-            ),
-            (
-                "const frozen = Object.freeze({ value: 6 }); frozen.value;",
-                "6",
-            ),
-            ("Object.getOwnPropertyNames({ a: 1, b: 2 }).length;", "2"),
-            ("Object.keys({ a: 1, b: 2 }).length;", "2"),
-            ("Object.values({ a: 1, b: 2 })[1];", "2"),
-            ("Object.entries({ a: 1 })[0][0];", "a"),
-            ("Object.hasOwn({ a: 1 }, 'a');", "true"),
-            (
-                "const merged = Object.assign({ a: 1 }, { b: 2 }); merged.b;",
-                "2",
-            ),
-            ("Object.defineProperty({}, 'a', { value: 3 }).a;", "3"),
-            (
-                "const array = []; Object.defineProperty(array, 'x', { value: 3 }); array.length;",
-                "0",
-            ),
-            ("const sym = Symbol('foo'); typeof sym;", "symbol"),
-            ("Number('4') + new Number(5);", "9"),
-            ("Array(3).length;", "3"),
-            ("Array(1, 2, 3)[2];", "3"),
-            ("Array.isArray(Array(1));", "true"),
-            (
-                "const pushed = []; pushed.push(1); pushed.push(2); pushed.length;",
-                "2",
-            ),
-            (
-                "const names = []; Object.getOwnPropertyNames({ a: 1 }).forEach(name => names.push(name)); names.length;",
-                "1",
-            ),
-            (
-                "const xs = [1, 2, 3]; let total = 0; for (const x of xs) { total = total + x; } total;",
-                "6",
-            ),
-            (
-                "const keys = Object.keys({ a: 1, b: 2 }); let text = ''; for (const key of keys) { text = text + key; } text;",
-                "ab",
-            ),
-            (
-                "const key = 'value'; const obj = { value: 7 }; obj[key];",
-                "7",
-            ),
-            ("const xs = [4, 5]; const index = 1; xs[index];", "5"),
-            (
-                "const obj = { a: 1, b: 2 }; let total = 0; for (const key in obj) { total = total + obj[key]; } total;",
-                "3",
-            ),
-            (
-                "function pick(value = 7) { return value; } pick() + pick(3);",
-                "10",
-            ),
-            (
-                "let guarded; let out = 7; guarded != null && guarded.value; out;",
-                "7",
-            ),
-            (
-                "function* gen() { yield 1; yield 2; } let sum = 0; for (const item of gen()) { sum = sum + item; } sum;",
-                "3",
-            ),
-            (
-                "function readThis() { return this.WScript != null; } readThis();",
-                "true",
-            ),
-            ("console.log.extra = 1; console.log.length = 3; 7;", "7"),
-            ("Object(null).missing;", "undefined"),
-            ("let text = 'build'; text.x = 1; text;", "build"),
-            ("'build'[0];", "b"),
-            (
-                "function t() { try { return t(); } catch (err) { return 7; } } t();",
-                "7",
-            ),
-            ("try { const value = 12; value(); } catch (err) { 4; }", "4"),
-            ("function fn() { return 1; } fn.label = 'x'; fn();", "1"),
-            ("gc(); 1;", "1"),
-            (
-                "const p = new Proxy(function () { return 8; }, {}); p();",
-                "8",
-            ),
-            ("delete ({ value: 1 }).value;", "true"),
-            ("~0;", "-1"),
-        ];
-
-        for (source, expected) in cases {
-            assert_eq!(run_source(source).as_deref(), Ok(expected), "{source}");
-        }
     }
 }

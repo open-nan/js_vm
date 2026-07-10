@@ -43,12 +43,31 @@ const OPCODES = [
   'CALL_1',
   'ENTER_SCOPE',
   'LEAVE_SCOPE',
+  'LOAD_LOCAL',
+  'STORE_LOCAL',
+  'LOAD_UNDEFINED',
+  'LOAD_NULL',
+  'LOAD_TRUE',
+  'LOAD_FALSE',
+  'LOAD_INT_SMALL',
+  'MEMBER_CONST',
+  'STORE_MEMBER_CONST',
+  'CALL_0',
+  'CALL_2',
+  'RETURN_REG',
+  'RETURN_CONST',
+  'JUMP_IF_FALSE_REG',
+  'BINARY_REG_REG',
+  'BINARY_REG_CONST',
+  'LOAD_LOCAL_SMALL',
+  'STORE_LOCAL_SMALL',
 ];
 
 const OPERAND_TAGS = [
   'register',
   'constant',
   'name',
+  'local',
   'extern',
   'label',
   'count',
@@ -149,21 +168,52 @@ function createDefaultHostEnvironment() {
     timeLog: () => undefined,
     trace: (...args) => emit('log', args),
   };
+  const hostWindowTarget = {
+    console: hostConsole,
+    document: { nodeType: 9 },
+    get strictLocation() {
+      if (this !== hostWindowTarget) {
+        throw new TypeError('Illegal invocation');
+      }
+      return { href: 'http://js-vm.test/' };
+    },
+  };
+  let hostWindow;
+  hostWindow = new Proxy(hostWindowTarget, {
+    get(target, property) {
+      if (property === 'console') return hostConsole;
+      if (property === 'window' || property === 'globalThis' || property === 'self') {
+        return hostWindow;
+      }
+      return Reflect.get(target, property, target);
+    },
+  });
   return {
     console: hostConsole,
-    window: { console: hostConsole },
-    globalThis: { console: hostConsole },
+    window: hostWindow,
+    globalThis: hostWindow,
+    self: hostWindow,
     fetch: (target) => {
       globalThis.__jsVmHostLog?.('log', `NETWORK fetch ${String(target)}`);
       return undefined;
     },
     Object,
     Array,
+    Date,
+    Error,
+    JSON,
+    RegExp,
     String,
+    TypeError,
     Number,
     Boolean,
     Symbol,
     Math: hostMath,
+    encodeURIComponent,
+    isFinite,
+    parseFloat,
+    parseInt,
+    hostStringPrimitive: 'hello',
     __vmPrint: (...args) => emit('log', args),
     print: (...args) => emit('log', args),
     alert: (...args) => emit('log', args),
@@ -183,12 +233,6 @@ function resolveExternalValue(name, environment = createDefaultHostEnvironment()
   let current = environment;
   for (const part of parts) {
     if (current == null) break;
-    current = current[part];
-  }
-  if (current !== undefined) return current;
-  current = globalThis;
-  for (const part of parts) {
-    if (current == null) return undefined;
     current = current[part];
   }
   return current;
@@ -351,6 +395,12 @@ function specializedCoverageOpcodes(op, operands) {
   }
   if (op === 'CALL' && /,\s+#1,/.test(operands)) {
     return ['CALL_1'];
+  }
+  if (op === 'LOAD_NAME' && /,\s*local#\d+\b/.test(operands)) {
+    return ['LOAD_LOCAL'];
+  }
+  if (op === 'STORE_NAME' && /^local#\d+\b/.test(operands)) {
+    return ['STORE_LOCAL'];
   }
   return [];
 }

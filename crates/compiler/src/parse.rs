@@ -211,6 +211,10 @@ impl LoweringContext {
         self.locals.insert(name.into());
     }
 
+    fn declare_function_intrinsics(&mut self) {
+        self.declare_local("arguments");
+    }
+
     fn mark_extern(&mut self, name: &str) {
         if !self.locals.contains(name) && !is_implicit_global(name) {
             let slot = self.extern_slots.len();
@@ -646,6 +650,7 @@ impl LoweringContext {
         let params = function_param_names(&decl.function.params);
 
         let mut body_ctx = self.child();
+        body_ctx.declare_function_intrinsics();
         body_ctx.declare_local(name.clone());
         for param in &params {
             body_ctx.declare_local(param.clone());
@@ -1337,6 +1342,7 @@ impl LoweringContext {
                         let dst = self.temp();
                         let params = function_param_names(&prop.function.params);
                         let mut body_ctx = self.child();
+                        body_ctx.declare_function_intrinsics();
                         for param in &params {
                             body_ctx.declare_local(param.clone());
                         }
@@ -1379,6 +1385,7 @@ impl LoweringContext {
         let name = expr.ident.as_ref().map(ident_name);
         let params = function_param_names(&expr.function.params);
         let mut body_ctx = self.child();
+        body_ctx.declare_function_intrinsics();
         if let Some(name) = &name {
             body_ctx.declare_local(name.clone());
         }
@@ -1526,6 +1533,7 @@ impl LoweringContext {
         let dst = self.temp();
         let params = function_param_names(&function.params);
         let mut body_ctx = self.child();
+        body_ctx.declare_function_intrinsics();
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
@@ -1549,6 +1557,7 @@ impl LoweringContext {
         let dst = self.temp();
         let params = constructor_param_names(&constructor.params);
         let mut body_ctx = self.child();
+        body_ctx.declare_function_intrinsics();
         for param in &params {
             body_ctx.declare_local(param.clone());
         }
@@ -1853,6 +1862,7 @@ impl LoweringContext {
 
 struct StructuredIrBuilder {
     module: core::IrModule,
+    constant_ids: BTreeMap<String, core::ConstId>,
 }
 
 #[derive(Default)]
@@ -1871,6 +1881,7 @@ impl StructuredIrBuilder {
                 extern_slots,
                 ..core::IrModule::default()
             },
+            constant_ids: BTreeMap::new(),
         }
     }
 
@@ -1895,6 +1906,9 @@ impl StructuredIrBuilder {
         let mut state = FunctionBuildState::new();
         for name in inherited_names {
             state.add_inherited_local(&name);
+        }
+        if name.as_deref() != Some("entry") {
+            state.ensure_local("arguments", core::IrBindingKind::Var);
         }
         for param in &params {
             state.ensure_local(param, core::IrBindingKind::Param);
@@ -1961,7 +1975,6 @@ impl StructuredIrBuilder {
                             blocks[current.0].terminator,
                             core::IrTerminator::Unreachable
                         )
-                        && !blocks[current.0].instructions.is_empty()
                     {
                         blocks[current.0].terminator = core::IrTerminator::Jump(target);
                     }
@@ -2168,8 +2181,11 @@ impl StructuredIrBuilder {
             }
             IrInstruction::Function { name, params, body } => {
                 let inherited_names = state.visible_names();
+                let captured_names =
+                    captured_in_function_body(None, &params, &body, &inherited_names);
+                state.mark_captured(&captured_names);
                 let function =
-                    self.build_function(Some(name.clone()), params, body, inherited_names);
+                    self.build_function(Some(name.clone()), params, body, captured_names);
                 let local = state.ensure_local(&name, core::IrBindingKind::Function);
                 vec![
                     core::IrInstruction::new(core::IrInstructionKind::Declare(
@@ -2191,11 +2207,15 @@ impl StructuredIrBuilder {
                 params,
                 body,
             } => {
-                let mut inherited_names = state.visible_names();
+                let inherited_names = state.visible_names();
+                let captured_names =
+                    captured_in_function_body(name.as_deref(), &params, &body, &inherited_names);
+                let mut child_inherited_names = captured_names.clone();
                 if let Some(name) = &name {
-                    inherited_names.push(name.clone());
+                    child_inherited_names.push(name.clone());
                 }
-                let function = self.build_function(name, params, body, inherited_names);
+                state.mark_captured(&captured_names);
+                let function = self.build_function(name, params, body, child_inherited_names);
                 vec![core::IrInstruction::new(
                     core::IrInstructionKind::CreateFunction {
                         dst: state.register(&dst),
@@ -2431,8 +2451,13 @@ impl StructuredIrBuilder {
     }
 
     fn push_const(&mut self, constant: core::IrConst) -> core::ConstId {
+        let key = ir_const_key(&constant);
+        if let Some(id) = self.constant_ids.get(&key) {
+            return *id;
+        }
         let id = core::ConstId(self.module.constants.len());
         self.module.constants.push(constant);
+        self.constant_ids.insert(key, id);
         id
     }
 
@@ -2502,6 +2527,16 @@ impl FunctionBuildState {
         self.locals.keys().cloned().collect()
     }
 
+    fn mark_captured(&mut self, names: &[String]) {
+        for name in names {
+            if let Some(local) = self.locals.get(name) {
+                if let Some(definition) = self.local_defs.get_mut(local.0) {
+                    definition.captured = true;
+                }
+            }
+        }
+    }
+
     fn register(&mut self, register: &str) -> core::RegisterId {
         let id = register_id(register);
         self.register_count = self.register_count.max(id + 1);
@@ -2555,6 +2590,180 @@ fn collect_work_locals(instructions: &[IrInstruction], state: &mut FunctionBuild
             IrInstruction::Scope { body, .. } => collect_work_locals(body, state),
             _ => {}
         }
+    }
+}
+
+fn captured_in_function_body(
+    function_name: Option<&str>,
+    params: &[String],
+    body: &[IrInstruction],
+    inherited_names: &[String],
+) -> Vec<String> {
+    let inherited = inherited_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<String>>();
+    let mut refs = BTreeSet::new();
+    collect_instruction_refs(body, &mut refs);
+
+    let mut locals = params.iter().cloned().collect::<BTreeSet<String>>();
+    if let Some(function_name) = function_name {
+        locals.insert(function_name.to_string());
+    }
+    collect_instruction_local_bindings(body, &mut locals);
+
+    refs.into_iter()
+        .filter(|name| inherited.contains(name) && !locals.contains(name))
+        .collect()
+}
+
+fn collect_instruction_refs(instructions: &[IrInstruction], refs: &mut BTreeSet<String>) {
+    for instruction in instructions {
+        match instruction {
+            IrInstruction::LoadConst { value, .. } | IrInstruction::Move { src: value, .. } => {
+                collect_value_refs(value, refs)
+            }
+            IrInstruction::LoadName { name, .. } => {
+                refs.insert(name.clone());
+            }
+            IrInstruction::StoreName { name, src } => {
+                refs.insert(name.clone());
+                collect_value_refs(src, refs);
+            }
+            IrInstruction::StoreMember {
+                object,
+                property,
+                src,
+            } => {
+                collect_value_refs(object, refs);
+                collect_value_refs(property, refs);
+                collect_value_refs(src, refs);
+            }
+            IrInstruction::Binary { left, right, .. } => {
+                collect_value_refs(left, refs);
+                collect_value_refs(right, refs);
+            }
+            IrInstruction::Unary { arg, .. } => collect_value_refs(arg, refs),
+            IrInstruction::Member {
+                object, property, ..
+            } => {
+                collect_value_refs(object, refs);
+                collect_value_refs(property, refs);
+            }
+            IrInstruction::Array { items, .. } => {
+                for item in items {
+                    collect_value_refs(item, refs);
+                }
+            }
+            IrInstruction::Object { props, .. } => {
+                for (_, value) in props {
+                    collect_value_refs(value, refs);
+                }
+            }
+            IrInstruction::Call { callee, args, .. } | IrInstruction::New { callee, args, .. } => {
+                collect_value_refs(callee, refs);
+                for arg in args {
+                    collect_value_refs(arg, refs);
+                }
+            }
+            IrInstruction::Template { exprs, .. } => {
+                for expr in exprs {
+                    collect_value_refs(expr, refs);
+                }
+            }
+            IrInstruction::Function { body, .. } | IrInstruction::FunctionExpr { body, .. } => {
+                collect_instruction_refs(body, refs);
+            }
+            IrInstruction::Class { super_class, .. } => {
+                if let Some(super_class) = super_class {
+                    collect_value_refs(super_class, refs);
+                }
+            }
+            IrInstruction::Export { names, .. } => {
+                refs.extend(names.iter().cloned());
+            }
+            IrInstruction::Throw(value) | IrInstruction::Pop(value) => {
+                collect_value_refs(value, refs)
+            }
+            IrInstruction::Try {
+                body,
+                catch_body,
+                finally_body,
+                ..
+            } => {
+                collect_instruction_refs(body, refs);
+                collect_instruction_refs(catch_body, refs);
+                collect_instruction_refs(finally_body, refs);
+            }
+            IrInstruction::Scope { body, .. } => collect_instruction_refs(body, refs),
+            IrInstruction::Return(value) => {
+                if let Some(value) = value {
+                    collect_value_refs(value, refs);
+                }
+            }
+            IrInstruction::JumpIfFalse { test, .. } => collect_value_refs(test, refs),
+            IrInstruction::Declare { .. }
+            | IrInstruction::Import { .. }
+            | IrInstruction::Marker(_)
+            | IrInstruction::Label(_)
+            | IrInstruction::Jump(_)
+            | IrInstruction::Unsupported(_) => {}
+        }
+    }
+}
+
+fn collect_instruction_local_bindings(
+    instructions: &[IrInstruction],
+    locals: &mut BTreeSet<String>,
+) {
+    for instruction in instructions {
+        match instruction {
+            IrInstruction::Declare { name, .. } | IrInstruction::Function { name, .. } => {
+                locals.insert(name.clone());
+            }
+            IrInstruction::Class {
+                name: Some(name), ..
+            } => {
+                locals.insert(name.clone());
+            }
+            IrInstruction::Try {
+                body,
+                catch_param,
+                catch_body,
+                finally_body,
+            } => {
+                collect_instruction_local_bindings(body, locals);
+                if let Some(catch_param) = catch_param {
+                    locals.insert(catch_param.clone());
+                }
+                collect_instruction_local_bindings(catch_body, locals);
+                collect_instruction_local_bindings(finally_body, locals);
+            }
+            IrInstruction::Scope { body, .. } => collect_instruction_local_bindings(body, locals),
+            IrInstruction::FunctionExpr { body, name, .. } => {
+                if let Some(name) = name {
+                    locals.insert(name.clone());
+                }
+                collect_instruction_local_bindings(body, locals);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_value_refs(value: &IrValue, refs: &mut BTreeSet<String>) {
+    if let IrValue::Name(name) = value {
+        refs.insert(name.clone());
+    }
+}
+
+fn ir_const_key(constant: &core::IrConst) -> String {
+    match constant {
+        core::IrConst::String(value) => format!("s:{value}"),
+        core::IrConst::Int(value) => format!("i:{value}"),
+        core::IrConst::Float(value) => format!("f:{:016x}", value.to_bits()),
+        core::IrConst::BigInt(value) => format!("b:{value}"),
+        core::IrConst::Regex { pattern, flags } => format!("r:{pattern}/{flags}"),
     }
 }
 
