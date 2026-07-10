@@ -21,6 +21,10 @@ impl CompilerArtifact {
         self.inner.bytecode_text()
     }
 
+    pub fn bytes_profile_text(&self) -> String {
+        self.inner.bytes_profile_text()
+    }
+
     pub fn bytes(&self) -> Vec<u8> {
         self.inner.bytes()
     }
