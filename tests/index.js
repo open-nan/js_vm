@@ -156,6 +156,7 @@ function runCorpusCase(vm, file) {
     seeds: meta.seeds ?? DEFAULT_RANDOM_SEEDS,
     baseSeed: BASE_SEED,
     expect: meta.expect,
+    moduleExpect: meta.moduleExpect,
     id: relative(file),
   });
   return {

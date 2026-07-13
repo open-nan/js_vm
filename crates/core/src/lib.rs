@@ -117,7 +117,7 @@ enum LowerInstruction {
     },
     Export {
         kind: String,
-        names: Vec<String>,
+        entries: Vec<(String, LowerValue)>,
     },
     Throw(LowerValue),
     Try {
@@ -898,6 +898,7 @@ pub enum BytecodeOperand {
     None,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperandKind {
     Register,
@@ -988,8 +989,25 @@ pub struct BytecodeFunction {
     pub has_return: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BytecodeModuleKind {
+    #[default]
+    Script,
+    Module,
+}
+
+impl From<IrModuleKind> for BytecodeModuleKind {
+    fn from(kind: IrModuleKind) -> Self {
+        match kind {
+            IrModuleKind::Script => BytecodeModuleKind::Script,
+            IrModuleKind::Module => BytecodeModuleKind::Module,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct BytecodeModule {
+    pub kind: BytecodeModuleKind,
     pub extern_slots: Vec<String>,
     pub names: Vec<String>,
     pub functions: Vec<BytecodeFunction>,
@@ -1029,6 +1047,9 @@ impl BytecodeBytesProfile {
 impl BytecodeModule {
     pub fn to_text(&self) -> String {
         let mut out = String::new();
+        if self.kind == BytecodeModuleKind::Module {
+            let _ = writeln!(out, ".mode module");
+        }
         if !self.extern_slots.is_empty() {
             let _ = writeln!(out, ".externs");
             for (index, name) in self.extern_slots.iter().enumerate() {
@@ -1098,6 +1119,7 @@ impl BytecodeModule {
         encoding.validate()?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(encoding.magic.as_bytes());
+        bytes.push(bytecode_module_kind_id(self.kind));
         write_u32(&mut bytes, self.extern_slots.len() as u32);
         write_u32(&mut bytes, self.names.len() as u32);
         for name in &self.names {
@@ -1164,6 +1186,10 @@ impl BytecodeModule {
         let start = bytes.len();
         bytes.extend_from_slice(encoding.magic.as_bytes());
         profile.add_section("magic", bytes.len() - start);
+
+        let start = bytes.len();
+        bytes.push(bytecode_module_kind_id(self.kind));
+        profile.add_section("mode", bytes.len() - start);
 
         let start = bytes.len();
         write_u32(&mut bytes, self.extern_slots.len() as u32);
@@ -1249,6 +1275,7 @@ impl BytecodeModule {
         encoding.validate()?;
         let mut cursor = ByteReader::new(bytes);
         cursor.expect_magic(encoding)?;
+        let kind = bytecode_module_kind_from_id(cursor.read_u8()?)?;
 
         let extern_count = cursor.read_u32()? as usize;
         if extern_count > 65_535 {
@@ -1308,6 +1335,7 @@ impl BytecodeModule {
         cursor.expect_end()?;
 
         Ok(Self {
+            kind,
             extern_slots,
             names,
             functions,
@@ -1773,8 +1801,22 @@ fn write_instruction_operands(
                 OperandKind::Count,
                 encoding,
             )?;
-            write_repeated_operands(bytes, instruction, 2, count, OperandKind::Name, encoding)?;
-            ensure_operand_len(instruction, 2 + count)
+            ensure_operand_len(instruction, 2 + count * 2)?;
+            for index in 0..count {
+                write_operand(
+                    bytes,
+                    operand_at(instruction, 2 + index * 2)?,
+                    OperandKind::Constant,
+                    encoding,
+                )?;
+                write_operand(
+                    bytes,
+                    operand_at(instruction, 3 + index * 2)?,
+                    OperandKind::Value,
+                    encoding,
+                )?;
+            }
+            Ok(())
         }
         op => {
             let schema = fixed_operand_schema(op);
@@ -2438,7 +2480,22 @@ fn profile_instruction_operands(
                 OperandKind::Count,
                 encoding,
             )?;
-            profile_repeated_operands(profile, instruction, 2, count, OperandKind::Name, encoding)
+            ensure_operand_len(instruction, 2 + count * 2)?;
+            for index in 0..count {
+                profile_operand(
+                    profile,
+                    operand_at(instruction, 2 + index * 2)?,
+                    OperandKind::Constant,
+                    encoding,
+                )?;
+                profile_operand(
+                    profile,
+                    operand_at(instruction, 3 + index * 2)?,
+                    OperandKind::Value,
+                    encoding,
+                )?;
+            }
+            Ok(())
         }
         op => {
             let schema = fixed_operand_schema(op);
@@ -2731,13 +2788,10 @@ fn read_instruction_operands(
             let count = read_operand(cursor, OperandKind::Count, encoding)?;
             let count_value = bounded_dynamic_count(cursor, count.payload(), "export name")?;
             operands.push(count);
-            read_repeated_operands(
-                cursor,
-                &mut operands,
-                count_value,
-                OperandKind::Name,
-                encoding,
-            )?;
+            for _ in 0..count_value {
+                operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+                operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            }
         }
         op => {
             for kind in fixed_operand_schema(op).iter().copied() {
@@ -3195,8 +3249,8 @@ fn lower_module_to_bytecode_instructions(module: &IrModule) -> Vec<LowerInstruct
     }
 
     for export in &module.exports {
-        let (kind, names) = export_decl_names(module, export);
-        instructions.push(LowerInstruction::Export { kind, names });
+        let (kind, entries) = export_decl_entries(module, export);
+        instructions.push(LowerInstruction::Export { kind, entries });
     }
 
     instructions
@@ -3794,24 +3848,36 @@ fn local_name_for_module_import(module: &IrModule, local: LocalId) -> String {
         .unwrap_or_else(|| local.to_string())
 }
 
-fn export_decl_names(module: &IrModule, export: &IrExportDecl) -> (String, Vec<String>) {
+fn export_decl_entries(
+    module: &IrModule,
+    export: &IrExportDecl,
+) -> (String, Vec<(String, LowerValue)>) {
     match export {
         IrExportDecl::Local { local, exported } => (
             "local".to_string(),
-            vec![format!(
-                "{} as {exported}",
-                local_name_for_module_import(module, *local)
-            )],
+            module
+                .functions
+                .get(module.entry.0)
+                .map(|function| {
+                    vec![(
+                        exported.clone(),
+                        lower_ir_value(module, function, &IrValue::Local(*local)),
+                    )]
+                })
+                .unwrap_or_default(),
         ),
         IrExportDecl::Default { value } => (
             "default".to_string(),
-            vec![
-                module
-                    .functions
-                    .get(module.entry.0)
-                    .map(|function| lower_ir_value_text(module, function, value))
-                    .unwrap_or_else(|| "default".to_string()),
-            ],
+            module
+                .functions
+                .get(module.entry.0)
+                .map(|function| {
+                    vec![(
+                        "default".to_string(),
+                        lower_ir_value(module, function, value),
+                    )]
+                })
+                .unwrap_or_default(),
         ),
         IrExportDecl::ReExport {
             source,
@@ -3819,13 +3885,30 @@ fn export_decl_names(module: &IrModule, export: &IrExportDecl) -> (String, Vec<S
             exported,
         } => (
             format!("re-export from {source:?}"),
-            vec![format!("{imported} as {exported}")],
+            vec![(exported.clone(), LowerValue::Name(imported.clone()))],
         ),
         IrExportDecl::ExportAll { source, exported } => (
             format!("all from {source:?}"),
-            exported.iter().cloned().collect(),
+            exported
+                .iter()
+                .map(|name| (name.clone(), LowerValue::Name(name.clone())))
+                .collect(),
         ),
     }
+}
+
+fn module_export_local_names(module: &IrModule) -> BTreeSet<String> {
+    let Some(entry) = module.functions.get(module.entry.0) else {
+        return BTreeSet::new();
+    };
+    module
+        .exports
+        .iter()
+        .filter_map(|export| match export {
+            IrExportDecl::Local { local, .. } => local_name(entry, *local),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -3841,6 +3924,7 @@ struct BytecodeBuilder {
     constant_ids: BTreeMap<String, u32>,
     functions: Vec<BytecodeFunction>,
     instructions: Vec<BytecodeInstruction>,
+    module_export_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -3863,6 +3947,7 @@ impl BytecodeBuilder {
             .enumerate()
             .map(|(index, name)| (name.clone(), index as u32))
             .collect();
+        self.module_export_names = module_export_local_names(module);
         let instructions = lower_module_to_bytecode_instructions(module);
         self.referenced_labels = referenced_labels(&instructions);
         self.compile_instructions(&instructions);
@@ -3870,6 +3955,7 @@ impl BytecodeBuilder {
         self.resolve_labels_to_jump_targets();
         self.renumber_registers();
         BytecodeModule {
+            kind: module.kind.into(),
             extern_slots: self.extern_slots.clone(),
             names: self.names,
             functions: self.functions,
@@ -4224,12 +4310,17 @@ impl BytecodeBuilder {
                 );
                 self.emit(BytecodeOp::Import, operands);
             }
-            LowerInstruction::Export { kind, names } => {
+            LowerInstruction::Export { kind, entries } => {
                 let mut operands = vec![
                     self.string_constant_operand(kind),
-                    BytecodeOperand::Count(names.len() as u32),
+                    BytecodeOperand::Count(entries.len() as u32),
                 ];
-                operands.extend(names.iter().map(|name| self.name_operand(name)));
+                for (name, value) in entries {
+                    let name = self.string_constant_operand(name);
+                    let value = self.value_operand(value);
+                    operands.push(name);
+                    operands.push(value);
+                }
                 self.emit(BytecodeOp::Export, operands);
             }
             LowerInstruction::Throw(value) => {
@@ -4523,7 +4614,9 @@ impl BytecodeBuilder {
 
         let mut local_slot = 0;
         for name in names {
-            let captured = captured.contains(&name) || function_declarations.contains(&name);
+            let captured = captured.contains(&name)
+                || function_declarations.contains(&name)
+                || self.module_export_names.contains(&name);
             if captured {
                 scope.names.insert(name.clone(), ScopedName::Name(name));
             } else {
@@ -4543,7 +4636,10 @@ impl BytecodeBuilder {
         let function_declarations = function_declaration_names(body);
         let mut local_slot = 0;
         for name in names {
-            if captured.contains(&name) || function_declarations.contains(&name) {
+            if captured.contains(&name)
+                || function_declarations.contains(&name)
+                || self.module_export_names.contains(&name)
+            {
                 scope.names.insert(name.clone(), ScopedName::Name(name));
             } else {
                 scope.names.insert(name, ScopedName::LocalSlot(local_slot));
@@ -5151,6 +5247,23 @@ fn scope_kind_name(kind: u32) -> Option<&'static str> {
         2 => Some("catch"),
         3 => Some("scope"),
         _ => None,
+    }
+}
+
+fn bytecode_module_kind_id(kind: BytecodeModuleKind) -> u8 {
+    match kind {
+        BytecodeModuleKind::Script => 0,
+        BytecodeModuleKind::Module => 1,
+    }
+}
+
+fn bytecode_module_kind_from_id(kind: u8) -> Result<BytecodeModuleKind, EncodingError> {
+    match kind {
+        0 => Ok(BytecodeModuleKind::Script),
+        1 => Ok(BytecodeModuleKind::Module),
+        _ => Err(EncodingError::UnknownCode(format!(
+            "bytecode module kind {kind}"
+        ))),
     }
 }
 
@@ -5991,6 +6104,7 @@ mod tests {
         builder.resolve_labels_to_jump_targets();
         builder.renumber_registers();
         BytecodeModule {
+            kind: BytecodeModuleKind::Script,
             extern_slots: builder.extern_slots,
             names: builder.names,
             functions: builder.functions,
@@ -6152,7 +6266,10 @@ mod tests {
                 },
                 LowerInstruction::Export {
                     kind: "named".to_string(),
-                    names: vec!["a".to_string(), "b".to_string()],
+                    entries: vec![
+                        ("a".to_string(), LowerValue::Name("a".to_string())),
+                        ("b".to_string(), LowerValue::Name("b".to_string())),
+                    ],
                 },
             ],
         );
@@ -6232,6 +6349,7 @@ mod tests {
     #[test]
     fn specialized_opcodes_decode_to_canonical_instructions() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: Vec::new(),
             names: Vec::new(),
             functions: Vec::new(),
@@ -6543,6 +6661,7 @@ mod tests {
     #[test]
     fn compact_value_operands_use_single_byte_for_common_operands() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: vec!["console".to_string()],
             names: vec!["globalName".to_string()],
             functions: vec![super::BytecodeFunction {
@@ -6625,6 +6744,7 @@ mod tests {
     #[test]
     fn bytecode_bytes_profile_reports_sections_opcodes_and_operands() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: Vec::new(),
             names: Vec::new(),
             functions: Vec::new(),
@@ -6657,6 +6777,7 @@ mod tests {
     #[test]
     fn string_constants_use_compact_atoms() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: Vec::new(),
             names: Vec::new(),
             functions: Vec::new(),
@@ -6691,6 +6812,7 @@ mod tests {
     #[test]
     fn string_constants_use_prefix_dictionary() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: Vec::new(),
             names: vec!["module.exports".to_string()],
             functions: Vec::new(),
@@ -6713,6 +6835,7 @@ mod tests {
     #[test]
     fn load_name_can_reference_extern_slots_without_names_entry() {
         let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
             extern_slots: vec!["console".to_string()],
             names: Vec::new(),
             functions: Vec::new(),

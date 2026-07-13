@@ -138,8 +138,11 @@ fn compile_to_ir_with_externals(source: &str, externals: &[String]) -> Result<Ir
     let program = parse_source(source)?;
 
     let mut ctx = LoweringContext::with_externals(externals);
-    match program {
-        Program::Module(module) => ctx.lower_module(&module),
+    let kind = match program {
+        Program::Module(module) => {
+            ctx.lower_module(&module);
+            js_token_core::IrModuleKind::Module
+        }
         Program::Script(script) => {
             for stmt in &script.body {
                 ctx.predeclare_stmt(stmt);
@@ -147,10 +150,13 @@ fn compile_to_ir_with_externals(source: &str, externals: &[String]) -> Result<Ir
             for stmt in &script.body {
                 ctx.lower_stmt(stmt);
             }
+            js_token_core::IrModuleKind::Script
         }
-    }
+    };
 
-    Ok(ctx.into_module())
+    let mut module = ctx.into_module();
+    module.kind = kind;
+    Ok(module)
 }
 
 fn js_values_to_strings(values: &[JsValue]) -> Vec<String> {

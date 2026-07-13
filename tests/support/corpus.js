@@ -44,6 +44,7 @@ function parseMeta(source, file) {
   }
   return {
     expect: meta.expect,
+    moduleExpect: meta['module-expect'],
     seeds: meta.seeds ? Number.parseInt(meta.seeds, 10) : undefined,
   };
 }

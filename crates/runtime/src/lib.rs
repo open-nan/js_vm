@@ -6,8 +6,8 @@ mod ops;
 mod value;
 
 use executor::{DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_RECURSIVE_CALL_DEPTH};
-use host::fallback_global_external;
-use js_token_core::BytecodeModule;
+use host::{fallback_global_external, value_to_js_value};
+use js_token_core::{BytecodeModule, BytecodeModuleKind};
 use wasm_bindgen::prelude::*;
 
 pub use env::{EnvironmentRecord, LexicalEnv, ScopeFrame, ScopeKind};
@@ -50,6 +50,21 @@ pub fn js_execute_bytes_with_seed_and_limits(
     )
 }
 
+#[wasm_bindgen]
+pub fn js_execute_module_bytes_with_seed(
+    bytes: &[u8],
+    seed: &str,
+    externals: Box<[JsValue]>,
+) -> Result<JsValue, String> {
+    execute_module_bytes_with_seed_and_limits(
+        bytes,
+        seed,
+        externals.into_vec(),
+        DEFAULT_MAX_CALL_DEPTH,
+        DEFAULT_MAX_RECURSIVE_CALL_DEPTH,
+    )
+}
+
 fn execute_bytes_with_seed_and_limits(
     bytes: &[u8],
     seed: &str,
@@ -68,6 +83,31 @@ fn execute_bytes_with_seed_and_limits(
     )
     .map(|value| value.to_string())
     .map_err(|err| err.to_string())
+}
+
+fn execute_module_bytes_with_seed_and_limits(
+    bytes: &[u8],
+    seed: &str,
+    externals: Vec<JsValue>,
+    max_call_depth: usize,
+    max_recursive_call_depth: usize,
+) -> Result<JsValue, String> {
+    let module =
+        BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
+    let is_module = module.kind == BytecodeModuleKind::Module;
+    let host_bridge = HostBridge::from_js_values(normalize_js_externals(&module, externals));
+    let value = Executor::run_with_host_bridge_and_limits(
+        &module,
+        host_bridge,
+        max_call_depth,
+        max_recursive_call_depth,
+    )
+    .map_err(|err| err.to_string())?;
+    if is_module {
+        value_to_js_value(&value, &HostBridge::empty()).map_err(|err| err.to_string())
+    } else {
+        Ok(JsValue::UNDEFINED)
+    }
 }
 
 fn normalize_js_externals(module: &BytecodeModule, mut externals: Vec<JsValue>) -> Vec<JsValue> {
