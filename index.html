@@ -207,9 +207,9 @@
       width: 100%;
       height: 28px;
       display: grid;
-      grid-template-columns: 16px minmax(0, 1fr);
+      grid-template-columns: 16px minmax(0, 1fr) 22px;
       align-items: center;
-      gap: 7px;
+      gap: 6px;
       padding: 0 7px;
       border: 1px solid transparent;
       border-radius: 5px;
@@ -241,6 +241,36 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .file-delete {
+      width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: #728091;
+      padding: 0;
+      font-size: 14px;
+      line-height: 1;
+      opacity: 0;
+    }
+
+    .file-item:hover .file-delete,
+    .file-delete:focus-visible {
+      opacity: 1;
+    }
+
+    .file-delete:hover {
+      background: #3a252b;
+      color: var(--danger);
+    }
+
+    .file-delete-placeholder {
+      width: 20px;
+      height: 20px;
     }
 
     .editor-area {
@@ -301,7 +331,9 @@
     }
 
     .editor-sync-status.waiting {
-      color: #b8c2cc;
+      border-color: #3a414b;
+      background: #1a1e24;
+      color: #c7d0db;
     }
 
     .editor-sync-status.loading {
@@ -315,6 +347,13 @@
 
     .editor-sync-status.loading .sync-spinner {
       display: block;
+    }
+
+    .editor-sync-status.running {
+      border-color: #1d5f9f;
+      background: #0d2138;
+      color: #61b6ff;
+      font-size: 10px;
     }
 
     .editor-sync-status.done {
@@ -1806,6 +1845,7 @@ message;`,
       const labels = {
         waiting: { text: 'ZZZ', title: 'Waiting for input to settle' },
         loading: { text: '', title: 'Compiling and rendering' },
+        running: { text: 'RUN', title: 'Running preview bytecode' },
         done: { text: '✓', title: 'Preview rendered' },
       };
       const stateInfo = labels[stateName] || labels.waiting;
@@ -3326,12 +3366,18 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
           if (right === 'index.html') return 1;
           return left.localeCompare(right);
         });
-      fileList.innerHTML = files.map(([name, file]) => `
-        <button class="file-item${name === state.activeFile ? ' active' : ''}" type="button" data-file="${escapeHtml(name)}" title="${escapeHtml(name)}">
+      fileList.innerHTML = files.map(([name, file]) => {
+        const canDelete = file.type === 'js';
+        return `
+        <div class="file-item${name === state.activeFile ? ' active' : ''}" role="button" tabindex="0" data-file="${escapeHtml(name)}" title="${escapeHtml(name)}">
           <span class="file-icon">${file.type === 'html' ? 'H' : 'JS'}</span>
           <span class="file-name">${escapeHtml(name)}</span>
-        </button>
-      `).join('');
+          ${canDelete
+            ? `<button class="file-delete" type="button" data-delete-file="${escapeHtml(name)}" title="删除 ${escapeHtml(name)}" aria-label="删除 ${escapeHtml(name)}">×</button>`
+            : '<span class="file-delete-placeholder"></span>'}
+        </div>
+      `;
+      }).join('');
     }
 
     function selectVirtualFile(name) {
@@ -3352,6 +3398,52 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       }
       build({ hotReload: false });
       editor.focus();
+    }
+
+    function fallbackFileAfterDelete(name) {
+      if (name !== state.activeFile) return state.activeFile;
+      if (state.files[state.entryFile] && state.entryFile !== name) {
+        return state.entryFile;
+      }
+      return Object.entries(state.files)
+        .filter(([fileName, file]) => fileName !== name && file.type === 'js')
+        .map(([fileName]) => fileName)
+        .sort((left, right) => left.localeCompare(right))[0] || 'index.html';
+    }
+
+    function deleteVirtualFile(name) {
+      const file = state.files[name];
+      if (!file || file.type !== 'js') return;
+      const jsFiles = Object.entries(state.files).filter(([, source]) => source.type === 'js');
+      if (jsFiles.length <= 1) {
+        showToast('至少保留一个 JS 文件');
+        return;
+      }
+      if (!window.confirm(`删除 ${name}？`)) return;
+      saveActiveFile();
+      const nextFile = fallbackFileAfterDelete(name);
+      delete state.files[name];
+      if (state.entryFile === name) {
+        state.entryFile = nextFile === 'index.html'
+          ? Object.keys(state.files).find((fileName) => state.files[fileName].type === 'js') || ''
+          : nextFile;
+      }
+      if (state.activeFile === name) {
+        state.activeFile = nextFile;
+        editor.value = state.files[nextFile]?.content || '';
+        hideCompletions();
+        updateEditorStats();
+        syncOutputMode();
+        setActiveConfigView('javascript');
+        if (state.files[nextFile]?.type === 'html') {
+          setActiveView('preview');
+        } else if (state.activeView === 'preview') {
+          setActiveView('ir');
+        }
+        build({ hotReload: false });
+      }
+      renderFileList();
+      showToast('File deleted');
     }
 
     function createVirtualJsFile() {
@@ -3654,7 +3746,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       let compiler = null;
       let artifact = null;
       try {
-        setEditorSyncState('loading');
+        setEditorSyncState('running');
         await waitForNextPaint();
         saveActiveFile();
         renderPreviewHtml();
@@ -3838,6 +3930,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         setStatus('ready', hotReload ? 'Compiled' : 'File compiled');
         setActiveView(state.activeView);
         if (hotReload) {
+          setEditorSyncState('running');
           schedulePreviewSync();
         } else {
           setEditorSyncState('done');
@@ -4069,10 +4162,24 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
     newJsFileBtn.addEventListener('click', createVirtualJsFile);
 
     fileList.addEventListener('click', (event) => {
+      const deleteButton = event.target.closest('[data-delete-file]');
+      if (deleteButton) {
+        event.stopPropagation();
+        deleteVirtualFile(deleteButton.dataset.deleteFile);
+        return;
+      }
       const item = event.target.closest('[data-file]');
       if (item) {
         selectVirtualFile(item.dataset.file);
       }
+    });
+
+    fileList.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const item = event.target.closest('[data-file]');
+      if (!item || event.target.closest('[data-delete-file]')) return;
+      event.preventDefault();
+      selectVirtualFile(item.dataset.file);
     });
 
     [maxCallDepthInput, maxRecursiveDepthInput].forEach((input) => {

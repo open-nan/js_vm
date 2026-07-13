@@ -10,6 +10,7 @@
     "test:diff": "node tests/index.js diff",
     "test:fuzz": "node tests/index.js fuzz",
     "precommit": "node tests/index.js precommit",
+    "compile:runtime": "node scripts/compile-runtime-package.js",
     "hooks:install": "git config core.hooksPath .githooks",
     "update:js-fuzzer": "node tests/index.js update-js-fuzzer",
     "pages:prepare": "node scripts/prepare-pages.js",
