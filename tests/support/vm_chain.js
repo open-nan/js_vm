@@ -270,6 +270,7 @@ async function loadVmPackages() {
     js_encoding_seed_from_rows: compilerPkg.js_encoding_seed_from_rows,
     js_encoding_seed_for_seed_and_bytes: compilerPkg.js_encoding_seed_for_seed_and_bytes,
     js_execute_bytes_with_seed: runtimePkg.js_execute_bytes_with_seed,
+    js_execute_module_bytes_with_seed: runtimePkg.js_execute_module_bytes_with_seed,
   };
 }
 
@@ -343,6 +344,25 @@ function runVmSourceWithPackages(vm, source, options = {}) {
               options.expect,
             )}, got ${JSON.stringify(result)}\nseed=${seed}`,
           );
+        }
+        if (options.moduleExpect !== undefined) {
+          if (typeof vm.js_execute_module_bytes_with_seed !== 'function') {
+            throw new Error('runtime does not export js_execute_module_bytes_with_seed');
+          }
+          const moduleValue = vm.js_execute_module_bytes_with_seed(
+            bytes,
+            seed,
+            externValuesForSlots(externSlots, options.externEnvironment),
+          );
+          const [property, expectedValue] = String(options.moduleExpect).split('=');
+          const actualValue = moduleValue?.[property];
+          if (String(actualValue) !== expectedValue) {
+            throw new Error(
+              `${options.id || 'source'} failed on ${rows.label}: expected module.${property}=${JSON.stringify(
+                expectedValue,
+              )}, got ${JSON.stringify(String(actualValue))}\nseed=${seed}`,
+            );
+          }
         }
       } finally {
         artifact.free();

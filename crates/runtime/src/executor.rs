@@ -16,7 +16,9 @@ use crate::value::{
     ClassValue, ExternalRefValue, FunctionValue, ModuleValue, Value, array_value, object_value,
 };
 use js_sys::{Array as JsArray, Function as JsFunction};
-use js_token_core::{BytecodeInstruction, BytecodeModule, BytecodeOp, BytecodeOperand};
+use js_token_core::{
+    BytecodeInstruction, BytecodeModule, BytecodeModuleKind, BytecodeOp, BytecodeOperand,
+};
 use std::{cell::Cell, cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -139,7 +141,13 @@ impl Executor {
         executor.load_scope_metadata(module)?;
         executor.hoist_function_declarations(module, 0, module.instructions.len())?;
         match executor.execute_range(module, 0, module.instructions.len())? {
-            Flow::Value(value) | Flow::Return(value) => Ok(value),
+            Flow::Value(value) | Flow::Return(value) => {
+                if module.kind == BytecodeModuleKind::Module {
+                    executor.module_namespace_value()
+                } else {
+                    Ok(value)
+                }
+            }
             Flow::Throw(value) => Err(ExecuteError::Thrown(value)),
         }
     }
@@ -169,6 +177,13 @@ impl Executor {
                 Value::ExternalRef(ExternalRefValue::new(index as u32, name.clone())),
             );
         }
+    }
+
+    fn module_namespace_value(&self) -> Result<Value, ExecuteError> {
+        Ok(Value::JsValue(vm_module_to_js_value(ModuleValue {
+            source: "module".to_string(),
+            exports: self.exports.clone(),
+        })?))
     }
 
     fn load_scope_metadata(&mut self, module: &BytecodeModule) -> Result<(), ExecuteError> {
@@ -388,8 +403,11 @@ impl Executor {
                 BytecodeOp::Export => {
                     let count = count_operand(instruction, 1)? as usize;
                     for index in 0..count {
-                        let name = self.read_name(module, operand(instruction, 2 + index)?)?;
-                        self.exports.insert(name.clone(), self.get_name(&name));
+                        let exported_name = self
+                            .read_constant_string(module, operand(instruction, 2 + index * 2)?)?;
+                        let value =
+                            self.read_value(module, operand(instruction, 3 + index * 2)?)?;
+                        self.exports.insert(exported_name, value);
                     }
                 }
                 BytecodeOp::TryStart => {

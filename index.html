@@ -151,7 +151,7 @@
     .main {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(360px, 48%) minmax(380px, 52%);
+      grid-template-columns: 170px minmax(340px, 44%) minmax(380px, 1fr);
     }
 
     .editor-pane,
@@ -163,8 +163,91 @@
       background: var(--panel);
     }
 
+    .file-manager,
     .editor-pane {
       border-right: 1px solid var(--line);
+    }
+
+    .file-manager {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      background: #12161a;
+    }
+
+    .file-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .file-head button {
+      width: 24px;
+      height: 24px;
+      border-radius: 5px;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .file-list {
+      min-height: 0;
+      overflow: auto;
+      padding: 6px;
+    }
+
+    .file-item {
+      width: 100%;
+      height: 28px;
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      align-items: center;
+      gap: 7px;
+      padding: 0 7px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: #cbd4df;
+      text-align: left;
+      font-size: 12px;
+    }
+
+    .file-item:hover {
+      background: #1b2026;
+      border-color: #2a333d;
+    }
+
+    .file-item.active {
+      background: #24323a;
+      border-color: #34515b;
+      color: #ffffff;
+    }
+
+    .file-icon {
+      color: var(--accent);
+      text-align: center;
+      font-size: 11px;
+    }
+
+    .file-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .editor-area {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
     }
 
     .pane-head {
@@ -182,6 +265,69 @@
       font-weight: 650;
       letter-spacing: 0;
       color: #cfd8e3;
+    }
+
+    .editor-head-right {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .editor-sync-status {
+      width: 42px;
+      height: 22px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid #2d3540;
+      border-radius: 999px;
+      background: #151a20;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .editor-sync-status .sync-spinner {
+      display: none;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #394652;
+      border-top-color: var(--accent-2);
+      border-radius: 50%;
+      animation: sync-spin 0.75s linear infinite;
+    }
+
+    .editor-sync-status.waiting {
+      color: #b8c2cc;
+    }
+
+    .editor-sync-status.loading {
+      border-color: #574322;
+      color: var(--accent-2);
+    }
+
+    .editor-sync-status.loading .sync-text {
+      display: none;
+    }
+
+    .editor-sync-status.loading .sync-spinner {
+      display: block;
+    }
+
+    .editor-sync-status.done {
+      border-color: #1f6e52;
+      background: #10251d;
+      color: #45d483;
+      font-size: 13px;
+    }
+
+    @keyframes sync-spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .editor-tabs {
@@ -292,6 +438,19 @@
 
     .tok-punct {
       color: #8d99a6;
+    }
+
+    .tok-html-tag {
+      color: #6fb7ff;
+    }
+
+    .tok-html-attr {
+      color: #f5d76e;
+    }
+
+    .tok-html-entity,
+    .tok-html-doctype {
+      color: #d9a8ff;
     }
 
     .completion-menu {
@@ -415,6 +574,24 @@
 
     .output-wrap.bytes-mode {
       grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 32%);
+    }
+
+    .preview-frame {
+      display: none;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #ffffff;
+    }
+
+    .preview-frame.active {
+      display: block;
+    }
+
+    .output-pane.html-output-mode .tab:not([data-view="preview"]),
+    .output-pane.html-output-mode .meta-grid,
+    .output-pane.html-output-mode .bytes-seed {
+      display: none;
     }
 
     .meta-grid {
@@ -991,7 +1168,12 @@
 
       .main {
         grid-template-columns: 1fr;
-        grid-template-rows: 52vh 58vh;
+        grid-template-rows: 180px 52vh 58vh;
+      }
+
+      .file-manager {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
       }
 
       .editor-pane {
@@ -1013,102 +1195,110 @@
         <span id="wasmState">WASM loading</span>
       </div>
       <div class="actions">
-        <select id="exampleSelect" aria-label="示例">
-          <option value="basic">基础执行</option>
-          <option value="extern">外部对象</option>
-          <option value="class">类与方法</option>
-          <option value="module">模块语法</option>
-          <option value="exception">异常</option>
-        </select>
         <label class="limit-control">Depth <input id="maxCallDepthInput" type="number" min="1" max="4096" value="128"></label>
         <label class="limit-control">Recursion <input id="maxRecursiveDepthInput" type="number" min="1" max="1024" value="8"></label>
         <button id="downloadPkgBtn" type="button">下载运行包</button>
-        <button id="clearBtn" class="icon" type="button" title="清空控制台">×</button>
       </div>
     </header>
 
     <main class="main">
+      <aside class="file-manager" aria-label="资源管理器">
+        <div class="file-head">
+          <span>Files</span>
+          <button id="newJsFileBtn" type="button" title="新增 JS 文件">+</button>
+        </div>
+        <div id="fileList" class="file-list"></div>
+      </aside>
+
       <section class="editor-pane">
         <div class="pane-head">
           <div class="editor-tabs" role="tablist" aria-label="编辑区">
             <button class="config-tab active" type="button" data-config-view="javascript">JavaScript</button>
             <button class="config-tab" type="button" data-config-view="opcodes">Obfuscation</button>
           </div>
-          <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
-        </div>
-        <div id="editorShell" class="editor-shell active">
-          <pre id="lineNumbers" class="line-numbers">1</pre>
-          <div class="editor-stack">
-            <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
-            <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
-            <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
-          </div>
-        </div>
-        <div id="opcodePanel" class="config-view opcode-panel">
-          <div class="opcode-toolbar">
-            <span id="opcodeStatus">Obfuscation map</span>
-            <div class="opcode-actions">
-              <button id="shuffleOpcodesBtn" type="button">Randomize</button>
-              <button id="resetOpcodesBtn" type="button">重置</button>
+          <div class="editor-head-right">
+            <div class="pane-title" id="cursorInfo">Ln 1, Col 1</div>
+            <div id="editorSyncStatus" class="editor-sync-status waiting" title="Waiting">
+              <span class="sync-text">ZZZ</span>
+              <span class="sync-spinner" aria-hidden="true"></span>
             </div>
           </div>
-          <div class="opcode-seed">
-            <span>Seed</span>
-            <div class="seed-row">
-              <input id="opcodeSeedInput" class="seed-input" type="text" value="(build pending)" spellcheck="false">
-              <span class="seed-placeholder"></span>
+        </div>
+        <div class="editor-area">
+          <div id="editorShell" class="editor-shell active">
+            <pre id="lineNumbers" class="line-numbers">1</pre>
+            <div class="editor-stack">
+              <pre id="highlightLayer" class="highlight-layer" aria-hidden="true"></pre>
+              <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+              <div id="completionMenu" class="completion-menu" role="listbox" aria-label="JS 补全"></div>
             </div>
           </div>
-          <div class="opcode-table-wrap">
-            <table class="opcode-table tag-table extern-obfuscation-table">
-              <caption class="table-caption">externs</caption>
-              <thead>
-                <tr>
-                  <th>value</th>
-                  <th>HostBridge slot</th>
-                </tr>
-              </thead>
-              <tbody id="externSlotTableBody"></tbody>
-            </table>
-            <table class="opcode-table tag-table">
-              <caption class="table-caption">opcodes</caption>
-              <thead>
-                <tr>
-                  <th>code</th>
-                  <th>指令名称</th>
-                  <th class="opcode-split"></th>
-                  <th>code</th>
-                  <th>指令名称</th>
-                </tr>
-              </thead>
-              <tbody id="opcodeTableBody"></tbody>
-            </table>
-            <table class="opcode-table tag-table">
-              <caption class="table-caption">operand_tags</caption>
-              <thead>
-                <tr>
-                  <th>code</th>
-                  <th>名称</th>
-                  <th class="opcode-split"></th>
-                  <th>code</th>
-                  <th>名称</th>
-                </tr>
-              </thead>
-              <tbody id="operandTagTableBody"></tbody>
-            </table>
-            <table class="opcode-table tag-table">
-              <caption class="table-caption">constant_tags</caption>
-              <thead>
-                <tr>
-                  <th>code</th>
-                  <th>名称</th>
-                  <th class="opcode-split"></th>
-                  <th>code</th>
-                  <th>名称</th>
-                </tr>
-              </thead>
-              <tbody id="constantTagTableBody"></tbody>
-            </table>
+          <div id="opcodePanel" class="config-view opcode-panel">
+            <div class="opcode-toolbar">
+              <span id="opcodeStatus">Obfuscation map</span>
+              <div class="opcode-actions">
+                <button id="shuffleOpcodesBtn" type="button">Randomize</button>
+                <button id="resetOpcodesBtn" type="button">重置</button>
+              </div>
+            </div>
+            <div class="opcode-seed">
+              <span>Seed</span>
+              <div class="seed-row">
+                <input id="opcodeSeedInput" class="seed-input" type="text" value="(build pending)" spellcheck="false">
+                <span class="seed-placeholder"></span>
+              </div>
+            </div>
+            <div class="opcode-table-wrap">
+              <table class="opcode-table tag-table extern-obfuscation-table">
+                <caption class="table-caption">externs</caption>
+                <thead>
+                  <tr>
+                    <th>value</th>
+                    <th>HostBridge slot</th>
+                  </tr>
+                </thead>
+                <tbody id="externSlotTableBody"></tbody>
+              </table>
+              <table class="opcode-table tag-table">
+                <caption class="table-caption">opcodes</caption>
+                <thead>
+                  <tr>
+                    <th>code</th>
+                    <th>指令名称</th>
+                    <th class="opcode-split"></th>
+                    <th>code</th>
+                    <th>指令名称</th>
+                  </tr>
+                </thead>
+                <tbody id="opcodeTableBody"></tbody>
+              </table>
+              <table class="opcode-table tag-table">
+                <caption class="table-caption">operand_tags</caption>
+                <thead>
+                  <tr>
+                    <th>code</th>
+                    <th>名称</th>
+                    <th class="opcode-split"></th>
+                    <th>code</th>
+                    <th>名称</th>
+                  </tr>
+                </thead>
+                <tbody id="operandTagTableBody"></tbody>
+              </table>
+              <table class="opcode-table tag-table">
+                <caption class="table-caption">constant_tags</caption>
+                <thead>
+                  <tr>
+                    <th>code</th>
+                    <th>名称</th>
+                    <th class="opcode-split"></th>
+                    <th>code</th>
+                    <th>名称</th>
+                  </tr>
+                </thead>
+                <tbody id="constantTagTableBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
@@ -1120,6 +1310,7 @@
             <button class="tab" type="button" data-view="bytecode">Bytecode</button>
             <button class="tab" type="button" data-view="bytes">Hex</button>
             <button class="tab" type="button" data-view="profile">Profile</button>
+            <button class="tab" type="button" data-view="preview">Preview</button>
           </div>
           <div class="pane-title" id="timingInfo">Compile 0ms</div>
         </div>
@@ -1140,6 +1331,7 @@
             </div>
           </div>
           <pre id="output" class="output" tabindex="0"></pre>
+          <iframe id="previewFrame" class="preview-frame" title="Preview"></iframe>
           <div class="console-panel" aria-label="运行日志">
             <div class="console-head">
               <strong>Console</strong>
@@ -1178,51 +1370,37 @@
       js_encoding_seed_from_rows,
     } = compilerPkg;
 
-    const examples = {
-      basic: `function fib(n) {
-  if (n < 2) return n;
-  return fib(n - 1) + fib(n - 2);
-}
+    const initialFiles = {
+      'index.html': {
+        type: 'html',
+        readonlyName: true,
+        content: `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; color: #1f2933; }
+    #app { padding: 18px; border: 1px solid #d7dee8; border-radius: 8px; background: #f7fafc; }
+  </style>
+</head>
+<body>
+  <div id="app">Preview waiting for VM output...</div>
+</body>
+</html>`,
+      },
+      'main.js': {
+        type: 'js',
+        content: `import { message } from "./message.js";
 
-const value = fib(6);
-value;`,
-      extern: `console.log("vm boot");
-console.log(1 + 2);
-
-const title = window.title;
-console.log(title);
-42;`,
-      class: `class Counter {
-  constructor(value) {
-    this.value = value;
-  }
-
-  inc() {
-    this.value = this.value + 1;
-    return this.value;
-  }
-}
-
-const counter = new Counter(3);
-counter.inc();`,
-      module: `import def, { value as importedValue } from "pkg";
-
-export class Box {
-  get() {
-    return importedValue;
-  }
-}
-
-export default def;`,
-      exception: `try {
-  throw "boom";
-} catch (err) {
-  console.log(err);
-} finally {
-  console.log("done");
-}
-
-7;`,
+const app = document.getElementById("app");
+app.textContent = message;
+console.log(message);
+message;`,
+      },
+      'message.js': {
+        type: 'js',
+        content: `export const message = "Hello from multi-file JS VM";`,
+      },
     };
 
     const state = {
@@ -1249,6 +1427,8 @@ export default def;`,
       },
       ready: false,
       timer: 0,
+      previewTimer: 0,
+      lastEditAt: 0,
       opcodeRows: [],
       operandTagRows: [],
       constantTagRows: [],
@@ -1258,6 +1438,11 @@ export default def;`,
       selectedConstantTagRows: [],
       selectedExternRows: [],
       activeConfigView: 'javascript',
+      files: Object.fromEntries(
+        Object.entries(initialFiles).map(([name, file]) => [name, { ...file }]),
+      ),
+      activeFile: 'main.js',
+      entryFile: 'main.js',
       logs: [],
       byteTokens: [],
       bytesHtml: '',
@@ -1273,7 +1458,9 @@ export default def;`,
       runDuration: 0,
       opcodeSeed: '',
       compiledBytes: null,
+      compiledFile: '',
       compiledExternSlots: [],
+      compiledRuntimeFiles: [],
     };
 
     const editor = document.getElementById('editor');
@@ -1281,18 +1468,21 @@ export default def;`,
     const highlightLayer = document.getElementById('highlightLayer');
     const completionMenu = document.getElementById('completionMenu');
     const lineNumbers = document.getElementById('lineNumbers');
+    const fileList = document.getElementById('fileList');
+    const newJsFileBtn = document.getElementById('newJsFileBtn');
     const outputWrap = document.getElementById('outputWrap');
+    const outputPane = document.querySelector('.output-pane');
     const output = document.getElementById('output');
+    const previewFrame = document.getElementById('previewFrame');
     const consoleLog = document.getElementById('consoleLog');
     const logInfo = document.getElementById('logInfo');
     const downloadPkgBtn = document.getElementById('downloadPkgBtn');
-    const clearBtn = document.getElementById('clearBtn');
-    const exampleSelect = document.getElementById('exampleSelect');
     const maxCallDepthInput = document.getElementById('maxCallDepthInput');
     const maxRecursiveDepthInput = document.getElementById('maxRecursiveDepthInput');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
     const wasmState = document.getElementById('wasmState');
+    const editorSyncStatus = document.getElementById('editorSyncStatus');
     const cursorInfo = document.getElementById('cursorInfo');
     const sizeInfo = document.getElementById('sizeInfo');
     const lineInfo = document.getElementById('lineInfo');
@@ -1315,10 +1505,11 @@ export default def;`,
     const shuffleOpcodesBtn = document.getElementById('shuffleOpcodesBtn');
     const toast = document.getElementById('toast');
 
-    editor.value = examples.basic;
+    editor.value = state.files[state.activeFile].content;
 
     const textEncoder = new TextEncoder();
     const VIRTUAL_BUFFER = 24;
+    const PREVIEW_SYNC_DELAY_MS = 2000;
     const SEED_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~';
     let seedInputTimer = null;
     window.__jsVmHostLog = (level, message) => {
@@ -1611,6 +1802,23 @@ export default def;`,
       statusText.textContent = text;
     }
 
+    function setEditorSyncState(stateName) {
+      const labels = {
+        waiting: { text: 'ZZZ', title: 'Waiting for input to settle' },
+        loading: { text: '', title: 'Compiling and rendering' },
+        done: { text: '✓', title: 'Preview rendered' },
+      };
+      const stateInfo = labels[stateName] || labels.waiting;
+      editorSyncStatus.className = `editor-sync-status ${stateName}`;
+      editorSyncStatus.querySelector('.sync-text').textContent = stateInfo.text;
+      editorSyncStatus.title = stateInfo.title;
+      editorSyncStatus.setAttribute('aria-label', stateInfo.title);
+    }
+
+    function waitForNextPaint() {
+      return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
     function showToast(text) {
       toast.textContent = text;
       toast.classList.add('show');
@@ -1769,8 +1977,136 @@ export default def;`,
       return html || ' ';
     }
 
+    function highlightHtmlTag(tag) {
+      let html = '';
+      let index = 0;
+      let tagNameSeen = false;
+
+      while (index < tag.length) {
+        const char = tag[index];
+        const next = tag[index + 1] || '';
+
+        if (index === 0 && char === '<') {
+          if (next === '/') {
+            html += span('tok-punct', '</');
+            index += 2;
+          } else {
+            html += span('tok-punct', '<');
+            index += 1;
+          }
+          continue;
+        }
+
+        if (char === '/' && next === '>') {
+          html += span('tok-punct', '/>');
+          index += 2;
+          continue;
+        }
+
+        if (char === '>') {
+          html += span('tok-punct', '>');
+          index += 1;
+          continue;
+        }
+
+        if (char === '"' || char === "'") {
+          const stop = readQuoted(tag, index, char);
+          html += span('tok-string', tag.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/\s/.test(char)) {
+          html += escapeHtml(char);
+          index += 1;
+          continue;
+        }
+
+        if (char === '=') {
+          html += span('tok-operator', char);
+          index += 1;
+          continue;
+        }
+
+        if (/[A-Za-z_:@-]/.test(char)) {
+          let stop = index + 1;
+          while (stop < tag.length && /[A-Za-z0-9_:@.-]/.test(tag[stop])) stop += 1;
+          const name = tag.slice(index, stop);
+          html += span(tagNameSeen ? 'tok-html-attr' : 'tok-html-tag', name);
+          tagNameSeen = true;
+          index = stop;
+          continue;
+        }
+
+        html += span('tok-punct', char);
+        index += 1;
+      }
+
+      return html;
+    }
+
+    function highlightHtml(source) {
+      let html = '';
+      let index = 0;
+
+      while (index < source.length) {
+        if (source.startsWith('<!--', index)) {
+          const end = source.indexOf('-->', index + 4);
+          const stop = end === -1 ? source.length : end + 3;
+          html += span('tok-comment', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (/^<!doctype/i.test(source.slice(index, index + 9))) {
+          const end = source.indexOf('>', index + 2);
+          const stop = end === -1 ? source.length : end + 1;
+          html += span('tok-html-doctype', source.slice(index, stop));
+          index = stop;
+          continue;
+        }
+
+        if (source[index] === '<') {
+          let cursor = index + 1;
+          let quote = '';
+          while (cursor < source.length) {
+            const char = source[cursor];
+            if (quote) {
+              if (char === quote) quote = '';
+            } else if (char === '"' || char === "'") {
+              quote = char;
+            } else if (char === '>') {
+              cursor += 1;
+              break;
+            }
+            cursor += 1;
+          }
+          html += highlightHtmlTag(source.slice(index, cursor));
+          index = cursor;
+          continue;
+        }
+
+        if (source[index] === '&') {
+          const match = source.slice(index).match(/^&(?:#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]+);/);
+          if (match) {
+            html += span('tok-html-entity', match[0]);
+            index += match[0].length;
+            continue;
+          }
+        }
+
+        html += escapeHtml(source[index]);
+        index += 1;
+      }
+
+      return html || ' ';
+    }
+
     function updateHighlight() {
-      highlightLayer.innerHTML = highlightJavaScript(editor.value);
+      const file = activeVirtualFile();
+      highlightLayer.innerHTML = file?.type === 'html'
+        ? highlightHtml(editor.value)
+        : highlightJavaScript(editor.value);
       highlightLayer.scrollTop = editor.scrollTop;
       highlightLayer.scrollLeft = editor.scrollLeft;
     }
@@ -1791,7 +2127,7 @@ export default def;`,
       cursorInfo.textContent = `Ln ${line}, Col ${col}`;
       sizeInfo.textContent = `${text.length} chars · ${formatByteSize(jsBytes)}`;
       lineInfo.textContent = `${lines} lines`;
-      metricJavaScriptBytes.textContent = formatByteSize(jsBytes);
+      updateJavaScriptMetric();
       updateHighlight();
     }
 
@@ -2285,68 +2621,141 @@ export default def;`,
       return Array.from(bytes, (byte) => byte.toString()).join(', ');
     }
 
-    function runtimeRunnerModuleCode() {
-      const seed = bytesSeedInput.value.trim();
-      if (!state.compiledBytes || !seed) {
-        throw new Error('missing compiled bytecode or seed');
-      }
-      const externSlots = state.compiledExternSlots.length
-        ? state.compiledExternSlots
-        : externSlotsForBytecode();
+    function runtimeLoaderModuleCode() {
       const maxCallDepth = readPositiveInt(maxCallDepthInput.value, 128);
       const maxRecursiveCallDepth = readPositiveInt(maxRecursiveDepthInput.value, 8);
-      return `\<!DOCTYPE html\>
-\<html lang="en"\>
-\<head\>
-    \<meta charset="UTF-8"\>
-    \<meta name="viewport" content="width=device-width, initial-scale=1.0"\>
-    \<title\>Document\</title\>
-\</head\>
-\<body\>
-    
-\</body\>
-\<script type="module"\>
-    // JS VM runtime package:
-    // Put the downloaded executor pkg folder next to this HTML file as ./pkg/executor/.
-    // GitHub Pages runtime URL: https://open-nan.github.io/js_vm/pkg/executor/
-    import init, {
-        js_execute_bytes_with_seed,
-        js_execute_bytes_with_seed_and_limits
-    } from './js_vm_runtime.js';
-    const seed = ${JSON.stringify(seed)};
-    const externNames = ${JSON.stringify(externSlots)};
-    const maxCallDepth = ${JSON.stringify(maxCallDepth)};
-    const maxRecursiveCallDepth = ${JSON.stringify(maxRecursiveCallDepth)};
-    const encoding = seed.split('-').slice(2).join('-');
-    async function loadBin(url) {
-        const res = await fetch(url)
-        if (!res.ok) {
-            throw new Error('err:' + res.status + res.statusText)
-        }
-        const buffer = await res.arrayBuffer()
-        return new Uint8Array(buffer)
+      return `// JS VM multi-bin runtime loader.
+// Keep this file next to manifest.json, js_vm_runtime.js and js_vm_runtime_bg.wasm.
+import init, {
+  js_execute_bytes_with_seed,
+  js_execute_bytes_with_seed_and_limits,
+} from './js_vm_runtime.js';
+
+const maxCallDepth = ${JSON.stringify(maxCallDepth)};
+const maxRecursiveCallDepth = ${JSON.stringify(maxRecursiveCallDepth)};
+
+async function loadJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(\`failed to load \${url}: \${response.status} \${response.statusText}\`);
+  }
+  return response.json();
+}
+
+async function loadBin(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(\`failed to load \${url}: \${response.status} \${response.statusText}\`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function resolveExternal(name) {
+  const parts = String(name).split('.');
+  let current = globalThis;
+  for (const part of parts) {
+    if (current == null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {};
+
+await init(new URL('./js_vm_runtime_bg.wasm', import.meta.url));
+const manifest = await loadJson(new URL('./manifest.json', import.meta.url));
+const execute = typeof js_execute_bytes_with_seed_and_limits === 'function'
+  ? (bytes, seed, externs) => js_execute_bytes_with_seed_and_limits(
+    bytes,
+    seed,
+    externs,
+    maxCallDepth,
+    maxRecursiveCallDepth,
+  )
+  : (bytes, seed, externs) => js_execute_bytes_with_seed(bytes, seed, externs);
+
+for (const module of manifest.modules) {
+  const bytes = await loadBin(new URL(module.bin, import.meta.url));
+  const externs = module.externs.map(resolveExternal);
+  module.result = execute(bytes, module.seed, externs);
+}
+
+console.log('[js-vm]', {
+  entry: manifest.entry,
+  modules: manifest.modules.length,
+  results: manifest.modules.map((module) => ({ file: module.file, result: module.result })),
+});
+
+export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
     }
-    function resolveExternal(name) {
-        const parts = String(name).split('.')
-        let current = globalThis
-        for (const part of parts) {
-            if (current == null) return undefined
-            current = current[part]
-        }
-        return current
+
+    function previewHtmlWithRuntimeLoader() {
+      const preview = state.files['index.html'];
+      const html = preview?.content || '<!doctype html><div id="app"></div>';
+      const script = '<script type="module" src="./js-vm-loader.js"></' + 'script>';
+      if (/<\/body>/i.test(html)) {
+        return html.replace(/<\/body>/i, `  ${script}\n</body>`);
+      }
+      return `${html}\n${script}\n`;
     }
-    const [bytes] = await Promise.all([
-        loadBin('./code.bin'),
-        init('./js_vm_runtime_bg.wasm')
-    ])
-    const externs = externNames.map(resolveExternal)
-    const execute = js_execute_bytes_with_seed_and_limits || js_execute_bytes_with_seed
-    const result = execute === js_execute_bytes_with_seed_and_limits
-        ? execute(bytes, seed, externs, maxCallDepth, maxRecursiveCallDepth)
-        : execute(bytes, seed, externs);
-    console.log('[js-vm]', { result, seed, encoding });
-\</script\>
-\</html\>`;
+
+    function encodingSeedFromCurrentRowsOnly(bytes = new Uint8Array()) {
+      const rows = encodingRowNames();
+      return js_encoding_seed_from_rows(
+        rows.opcodes,
+        rows.operandTags,
+        rows.constantTags,
+        bytes,
+      );
+    }
+
+    function packagePathForVirtualFile(prefix, file, suffix = '') {
+      return `${prefix}/${normalizeVirtualPath(file)}${suffix}`;
+    }
+
+    function compileRuntimePackageFiles() {
+      saveActiveFile();
+      renderPreviewHtml();
+      const ordered = virtualModuleOrder(state.entryFile);
+      const baseSeed = encodingSeedFromCurrentRowsOnly();
+      const modules = [];
+      for (const file of ordered) {
+        const source = transformVirtualBinModule(file);
+        const compiler = new Compiler(source);
+        const externs = compiler.extern_slots();
+        const artifact = compiler.to_bytecode_artifact(baseSeed, externs);
+        const bytes = new Uint8Array(artifact.bytes());
+        const seed = js_encoding_seed_for_seed_and_bytes(baseSeed, bytes);
+        artifact.free();
+        compiler.free();
+        modules.push({
+          file,
+          source,
+          bin: packagePathForVirtualFile('bytecode', file, '.bin'),
+          sourcePath: packagePathForVirtualFile('sources', file),
+          bytes,
+          seed,
+          externs,
+        });
+      }
+      state.compiledRuntimeFiles = modules;
+      return {
+        manifest: {
+          format: 'js-vm-runtime-package',
+          version: 1,
+          entry: state.entryFile,
+          preview: 'index.html',
+          moduleCount: modules.length,
+          modules: modules.map((module) => ({
+            file: module.file,
+            bin: module.bin,
+            source: module.sourcePath,
+            seed: module.seed,
+            externs: module.externs,
+          })),
+        },
+        modules,
+      };
     }
 
     async function downloadTextFile(filename, text) {
@@ -2410,20 +2819,25 @@ export default def;`,
 
     async function downloadRuntimePackage() {
       try {
-        const moduleCode = runtimeRunnerModuleCode();
-        const script = `<script type="module">\n${moduleCode}\n</` + 'script>';
+        const runtimePackage = compileRuntimePackageFiles();
+        const loaderCode = runtimeLoaderModuleCode();
+        const script = '<script type="module" src="./js-vm-loader.js"></' + 'script>';
         const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
         const copied = await copyRunnerScript(script);
-        const [jsVmRuntime, jsVmRuntimeBg, jsVmRunner] = await Promise.all([
+        const [jsVmRuntime, jsVmRuntimeBg] = await Promise.all([
           downloadRemoteFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
           downloadRemoteFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
-          downloadTextFile('index.html', moduleCode)
         ]);
         const zip = new JSZip()
         zip.file('js_vm_runtime.js', jsVmRuntime.text())
         zip.file('js_vm_runtime_bg.wasm', jsVmRuntimeBg.arrayBuffer())
-        zip.file('index.html', jsVmRunner.text())
-        zip.file('code.bin', state.compiledBytes)
+        zip.file('index.html', previewHtmlWithRuntimeLoader())
+        zip.file('js-vm-loader.js', loaderCode)
+        zip.file('manifest.json', JSON.stringify(runtimePackage.manifest, null, 2))
+        for (const module of runtimePackage.modules) {
+          zip.file(module.sourcePath, state.files[module.file].content)
+          zip.file(module.bin, module.bytes)
+        }
         // 创建下载链接
         const zipBlob = await zip.generateAsync({
           type: 'blob',
@@ -2441,12 +2855,13 @@ export default def;`,
         // 清理
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
+        appendLog('compile', `Downloaded runtime pkg with ${runtimePackage.modules.length} bytecode bins`);
         if (copied) {
-          appendLog('compile', 'Downloaded runtime pkg files and copied runner script to clipboard');
+          appendLog('compile', 'Copied multi-bin loader script to clipboard');
           showToast('Runtime ready');
         } else {
-          appendLog('error', 'Clipboard Error\nBrowser rejected clipboard write; js-vm-runner.js was downloaded instead');
-          showToast('Downloaded');
+          appendLog('warn', 'Clipboard Warning\nBrowser rejected clipboard write; runtime package was still downloaded');
+          showToast('Runtime downloaded');
         }
       } catch (err) {
         appendLog('error', `Download Error\n${formatLogValue(err)}`);
@@ -2576,13 +2991,23 @@ export default def;`,
     }
 
     function setActiveView(view) {
+      syncOutputMode();
+      if (activeVirtualFile()?.type === 'html') {
+        view = 'preview';
+      }
       state.activeView = view;
       document.querySelectorAll('.tab').forEach((tab) => {
         tab.classList.toggle('active', tab.dataset.view === view);
       });
+      const isPreview = view === 'preview';
       outputWrap.classList.toggle('bytes-mode', view === 'bytes');
       bytesSeedPanel.classList.toggle('active', view === 'bytes');
-      output.classList.remove('hidden');
+      previewFrame.classList.toggle('active', isPreview);
+      output.classList.toggle('hidden', isPreview);
+      if (isPreview) {
+        output.classList.remove('hex-output', 'virtual-output', 'error');
+        return;
+      }
       output.classList.toggle('hex-output', view === 'bytes' && state.bytesHtml && !state.viewErrors[view]);
       output.classList.toggle('error', state.viewErrors[view]);
       if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
@@ -2676,8 +3101,23 @@ export default def;`,
       }
     }
 
+    function updateJavaScriptMetric() {
+      const metric = metricJavaScriptBytes.closest('.metric');
+      if (activeVirtualFile()?.type === 'html') {
+        metric.style.display = 'none';
+        metricJavaScriptBytes.textContent = '';
+      } else {
+        metric.style.display = '';
+        metricJavaScriptBytes.textContent = formatByteSize(byteLength(editor.value));
+      }
+    }
+
+    function syncOutputMode() {
+      outputPane.classList.toggle('html-output-mode', activeVirtualFile()?.type === 'html');
+    }
+
     function updateMetrics(bytes, externs) {
-      metricJavaScriptBytes.textContent = formatByteSize(byteLength(editor.value));
+      updateJavaScriptMetric();
       metricIr.textContent = `${lineCount(state.views.ir)} lines`;
       metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
       metricBytes.textContent = formatByteSize(bytes.length);
@@ -2754,11 +3194,14 @@ export default def;`,
 
     function createHostEnvironment(hostLogs) {
       const hostConsole = createHostConsole(hostLogs);
+      const hostWindow = previewFrame.contentWindow || window;
+      const hostDocument = hostWindow.document || document;
       return {
         console: hostConsole,
-        window,
-        globalThis: window,
-        self: window,
+        window: hostWindow,
+        document: hostDocument,
+        globalThis: hostWindow,
+        self: hostWindow,
         Object,
         Array,
         Date,
@@ -2775,6 +3218,9 @@ export default def;`,
         isFinite,
         parseFloat,
         parseInt,
+        HTMLElement: hostWindow.HTMLElement,
+        Node: hostWindow.Node,
+        Event: hostWindow.Event,
       };
     }
 
@@ -2839,6 +3285,316 @@ export default def;`,
       renderLogs();
     }
 
+    function activeVirtualFile() {
+      return state.files[state.activeFile];
+    }
+
+    function saveActiveFile() {
+      const file = activeVirtualFile();
+      if (file) {
+        file.content = editor.value;
+      }
+    }
+
+    function normalizeVirtualPath(path) {
+      const parts = [];
+      for (const part of String(path).replace(/\\/g, '/').split('/')) {
+        if (!part || part === '.') continue;
+        if (part === '..') {
+          parts.pop();
+        } else {
+          parts.push(part);
+        }
+      }
+      return parts.join('/');
+    }
+
+    function dirname(path) {
+      const index = path.lastIndexOf('/');
+      return index < 0 ? '' : path.slice(0, index);
+    }
+
+    function resolveVirtualImport(fromFile, specifier) {
+      if (!specifier.startsWith('./') && !specifier.startsWith('../')) return null;
+      return normalizeVirtualPath(`${dirname(fromFile)}/${specifier}`);
+    }
+
+    function renderFileList() {
+      const files = Object.entries(state.files)
+        .sort(([left], [right]) => {
+          if (left === 'index.html') return -1;
+          if (right === 'index.html') return 1;
+          return left.localeCompare(right);
+        });
+      fileList.innerHTML = files.map(([name, file]) => `
+        <button class="file-item${name === state.activeFile ? ' active' : ''}" type="button" data-file="${escapeHtml(name)}" title="${escapeHtml(name)}">
+          <span class="file-icon">${file.type === 'html' ? 'H' : 'JS'}</span>
+          <span class="file-name">${escapeHtml(name)}</span>
+        </button>
+      `).join('');
+    }
+
+    function selectVirtualFile(name) {
+      if (!state.files[name] || name === state.activeFile) return;
+      saveActiveFile();
+      window.clearTimeout(state.timer);
+      state.activeFile = name;
+      editor.value = state.files[name].content;
+      hideCompletions();
+      updateEditorStats();
+      renderFileList();
+      syncOutputMode();
+      setActiveConfigView('javascript');
+      if (state.files[name].type === 'html') {
+        setActiveView('preview');
+      } else if (state.activeView === 'preview') {
+        setActiveView('ir');
+      }
+      build({ hotReload: false });
+      editor.focus();
+    }
+
+    function createVirtualJsFile() {
+      saveActiveFile();
+      const rawName = window.prompt('JS 文件名', `module-${Object.keys(state.files).length}.js`);
+      if (!rawName) return;
+      let name = normalizeVirtualPath(rawName.trim());
+      if (!name.endsWith('.js')) name += '.js';
+      if (!name || name === 'index.html' || state.files[name]) {
+        showToast('文件名不可用');
+        return;
+      }
+      state.files[name] = {
+        type: 'js',
+        content: `export const value = "${name}";\n`,
+      };
+      selectVirtualFile(name);
+    }
+
+    function renderPreviewHtml() {
+      const preview = state.files['index.html'];
+      const html = preview?.content || '<!doctype html><div id="app"></div>';
+      const doc = previewFrame.contentDocument;
+      if (!doc) {
+        previewFrame.srcdoc = html;
+        return;
+      }
+      doc.open();
+      doc.write(html);
+      doc.close();
+    }
+
+    function buildActiveSource() {
+      saveActiveFile();
+      const file = activeVirtualFile();
+      if (file?.type === 'html') {
+        return {
+          file: state.activeFile,
+          source: bundleVirtualJavaScript(state.entryFile),
+        };
+      }
+      return {
+        file: state.activeFile,
+        source: bundleVirtualJavaScript(state.activeFile),
+      };
+    }
+
+    function virtualModuleOrder(entryFile) {
+      const ordered = [];
+      const seen = new Set();
+      const visit = (file) => {
+        const normalized = normalizeVirtualPath(file);
+        const source = state.files[normalized];
+        if (!source || source.type !== 'js') {
+          throw new Error(`missing virtual JS module: ${normalized}`);
+        }
+        if (seen.has(normalized)) return;
+        seen.add(normalized);
+        for (const specifier of localImportSpecifiers(source.content)) {
+          const resolved = resolveVirtualImport(normalized, specifier);
+          if (resolved) visit(resolved);
+        }
+        ordered.push(normalized);
+      };
+      visit(entryFile);
+      return ordered;
+    }
+
+    function bundleVirtualJavaScript(entryFile) {
+      const ordered = virtualModuleOrder(entryFile);
+      const moduleNames = new Map();
+      const moduleName = (file) => {
+        if (!moduleNames.has(file)) {
+          moduleNames.set(file, `__vm_module_${moduleNames.size}`);
+        }
+        return moduleNames.get(file);
+      };
+      const chunks = ordered.map((file) => transformVirtualModule(file, moduleName));
+      return [
+        `// Bundled virtual files: ${ordered.join(', ')}`,
+        ...chunks,
+        `// Entry: ${entryFile}`,
+        `${moduleName(entryFile)};`,
+      ].join('\n\n');
+    }
+
+    function localImportSpecifiers(source) {
+      const specifiers = [];
+      const importRe = /^\s*import(?:\s+[\s\S]*?\s+from)?\s*["']([^"']+)["'];?\s*$/gm;
+      for (const match of source.matchAll(importRe)) {
+        specifiers.push(match[1]);
+      }
+      return specifiers;
+    }
+
+    function transformVirtualModule(file, moduleName) {
+      const source = state.files[file].content;
+      const exportsName = `__vm_exports_${moduleName(file).replace('__vm_module_', '')}`;
+      const deferredExports = [];
+      const lines = source.split(/\r?\n/);
+      const out = [`const ${moduleName(file)} = (() => {`, `  const ${exportsName} = {};`];
+      for (const line of lines) {
+        const importMatch = line.match(/^\s*import\s+([\s\S]+?)\s+from\s+["']([^"']+)["'];?\s*$/);
+        const sideEffectImportMatch = line.match(/^\s*import\s+["']([^"']+)["'];?\s*$/);
+        if (importMatch) {
+          const resolved = resolveVirtualImport(file, importMatch[2]);
+          if (!resolved) {
+            out.push(`  ${line}`);
+          } else {
+            out.push(...importBindingLines(importMatch[1].trim(), moduleName(resolved)).map((value) => `  ${value}`));
+          }
+          continue;
+        }
+        if (sideEffectImportMatch) {
+          const resolved = resolveVirtualImport(file, sideEffectImportMatch[1]);
+          if (!resolved) out.push(`  ${line}`);
+          continue;
+        }
+        const exportDecl = line.match(/^(\s*)export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
+        if (exportDecl) {
+          out.push(`${exportDecl[1]}${exportDecl[2]} ${exportDecl[3]}${exportDecl[4]}`);
+          out.push(`${exportDecl[1]}${exportsName}[${JSON.stringify(exportDecl[3])}] = ${exportDecl[3]};`);
+          continue;
+        }
+        const exportNamedFn = line.match(/^(\s*)export\s+(function|class)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
+        if (exportNamedFn) {
+          out.push(`${exportNamedFn[1]}${exportNamedFn[2]} ${exportNamedFn[3]}${exportNamedFn[4]}`);
+          deferredExports.push(`${exportsName}[${JSON.stringify(exportNamedFn[3])}] = ${exportNamedFn[3]};`);
+          continue;
+        }
+        const exportDefault = line.match(/^(\s*)export\s+default\s+([\s\S]+?);?\s*$/);
+        if (exportDefault) {
+          out.push(`${exportDefault[1]}const __vm_default = ${exportDefault[2].replace(/;$/, '')};`);
+          out.push(`${exportDefault[1]}${exportsName}.default = __vm_default;`);
+          continue;
+        }
+        const exportList = line.match(/^\s*export\s+\{([\s\S]+)\};?\s*$/);
+        if (exportList) {
+          out.push(...exportList[1].split(',').map((part) => {
+            const [local, exported = local] = part.trim().split(/\s+as\s+/);
+            return `  ${exportsName}[${JSON.stringify(exported.trim())}] = ${local.trim()};`;
+          }));
+          continue;
+        }
+        out.push(`  ${line}`);
+      }
+      out.push(...deferredExports.map((value) => `  ${value}`));
+      out.push(`  return ${exportsName};`);
+      out.push('})();');
+      return out.join('\n');
+    }
+
+    function transformVirtualBinModule(file) {
+      const source = state.files[file].content;
+      const moduleKey = JSON.stringify(file);
+      const exportsName = '__vm_exports';
+      const deferredExports = [];
+      const lines = source.split(/\r?\n/);
+      const out = [
+        'globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {};',
+        `globalThis.__JS_VM_MODULES__[${moduleKey}] = (() => {`,
+        `  const ${exportsName} = {};`,
+      ];
+      for (const line of lines) {
+        const importMatch = line.match(/^\s*import\s+([\s\S]+?)\s+from\s+["']([^"']+)["'];?\s*$/);
+        const sideEffectImportMatch = line.match(/^\s*import\s+["']([^"']+)["'];?\s*$/);
+        if (importMatch) {
+          const resolved = resolveVirtualImport(file, importMatch[2]);
+          if (!resolved) {
+            out.push(`  ${line}`);
+          } else {
+            out.push(...importBindingLines(
+              importMatch[1].trim(),
+              `globalThis.__JS_VM_MODULES__[${JSON.stringify(resolved)}]`,
+            ).map((value) => `  ${value}`));
+          }
+          continue;
+        }
+        if (sideEffectImportMatch) {
+          const resolved = resolveVirtualImport(file, sideEffectImportMatch[1]);
+          if (!resolved) out.push(`  ${line}`);
+          continue;
+        }
+        const exportDecl = line.match(/^(\s*)export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
+        if (exportDecl) {
+          out.push(`${exportDecl[1]}${exportDecl[2]} ${exportDecl[3]}${exportDecl[4]}`);
+          out.push(`${exportDecl[1]}${exportsName}[${JSON.stringify(exportDecl[3])}] = ${exportDecl[3]};`);
+          continue;
+        }
+        const exportNamedFn = line.match(/^(\s*)export\s+(function|class)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
+        if (exportNamedFn) {
+          out.push(`${exportNamedFn[1]}${exportNamedFn[2]} ${exportNamedFn[3]}${exportNamedFn[4]}`);
+          deferredExports.push(`${exportsName}[${JSON.stringify(exportNamedFn[3])}] = ${exportNamedFn[3]};`);
+          continue;
+        }
+        const exportDefault = line.match(/^(\s*)export\s+default\s+([\s\S]+?);?\s*$/);
+        if (exportDefault) {
+          out.push(`${exportDefault[1]}const __vm_default = ${exportDefault[2].replace(/;$/, '')};`);
+          out.push(`${exportDefault[1]}${exportsName}.default = __vm_default;`);
+          continue;
+        }
+        const exportList = line.match(/^\s*export\s+\{([\s\S]+)\};?\s*$/);
+        if (exportList) {
+          out.push(...exportList[1].split(',').map((part) => {
+            const [local, exported = local] = part.trim().split(/\s+as\s+/);
+            return `  ${exportsName}[${JSON.stringify(exported.trim())}] = ${local.trim()};`;
+          }));
+          continue;
+        }
+        out.push(`  ${line}`);
+      }
+      out.push(...deferredExports.map((value) => `  ${value}`));
+      out.push(`  return ${exportsName};`);
+      out.push('})();');
+      out.push(`globalThis.__JS_VM_MODULES__[${moduleKey}];`);
+      return out.join('\n');
+    }
+
+    function importBindingLines(clause, moduleVariable) {
+      const lines = [];
+      if (clause.startsWith('* as ')) {
+        lines.push(`const ${clause.slice(5).trim()} = ${moduleVariable};`);
+        return lines;
+      }
+      const namedStart = clause.indexOf('{');
+      if (namedStart >= 0) {
+        const defaultPart = clause.slice(0, namedStart).replace(/,$/, '').trim();
+        const namedPart = clause.slice(namedStart + 1, clause.lastIndexOf('}'));
+        if (defaultPart) {
+          lines.push(`const ${defaultPart} = ${moduleVariable}.default;`);
+        }
+        for (const part of namedPart.split(',')) {
+          const item = part.trim();
+          if (!item) continue;
+          const [imported, local = imported] = item.split(/\s+as\s+/);
+          lines.push(`const ${local.trim()} = ${moduleVariable}[${JSON.stringify(imported.trim())}];`);
+        }
+        return lines;
+      }
+      lines.push(`const ${clause.trim()} = ${moduleVariable}.default;`);
+      return lines;
+    }
+
     function requestInfo(input, init) {
       if (input instanceof Request) {
         return {
@@ -2854,6 +3610,9 @@ export default def;`,
 
     function syncOpcodesToBytes() {
       window.clearTimeout(state.timer);
+      window.clearTimeout(state.previewTimer);
+      state.lastEditAt = performance.now();
+      setEditorSyncState('waiting');
       state.activeView = 'bytes';
       build();
       if (!state.ready) {
@@ -2872,6 +3631,60 @@ export default def;`,
       Object.keys(state.viewErrors).forEach((view) => {
         state.viewErrors[view] = false;
       });
+    }
+
+    function cancelPreviewSync() {
+      window.clearTimeout(state.previewTimer);
+      state.previewTimer = 0;
+    }
+
+    function schedulePreviewSync() {
+      cancelPreviewSync();
+      if (!state.ready) return;
+      const quietFor = state.lastEditAt ? performance.now() - state.lastEditAt : PREVIEW_SYNC_DELAY_MS;
+      const delay = Math.max(0, PREVIEW_SYNC_DELAY_MS - quietFor);
+      state.previewTimer = window.setTimeout(syncPreview, delay);
+    }
+
+    async function syncPreview() {
+      cancelPreviewSync();
+      if (!state.ready) return;
+
+      const started = performance.now();
+      let compiler = null;
+      let artifact = null;
+      try {
+        setEditorSyncState('loading');
+        await waitForNextPaint();
+        saveActiveFile();
+        renderPreviewHtml();
+        appendLog('compile', 'Syncing preview');
+        const source = bundleVirtualJavaScript(state.entryFile);
+        compiler = new Compiler(source);
+        const externs = compiler.extern_slots();
+        const configSeed = encodingSeedFromCurrentRowsOnly();
+        artifact = compiler.to_bytecode_artifact(configSeed, externs);
+        const bytes = artifact.bytes();
+        const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
+        const run = executeBytecode(bytes, seed, externs);
+        state.runDuration = run.duration || performance.now() - started;
+        renderLogs();
+        setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Preview synced' : 'Preview runtime error');
+        if (run.ok) {
+          setEditorSyncState('done');
+        } else {
+          setEditorSyncState('waiting');
+        }
+      } catch (err) {
+        appendLog('error', `Preview Error\n${formatLogValue(err)}`);
+        state.runDuration = performance.now() - started;
+        renderLogs();
+        setStatus('error', 'Preview sync failed');
+        setEditorSyncState('waiting');
+      } finally {
+        artifact?.free?.();
+        compiler?.free?.();
+      }
     }
 
     function executeBytecode(bytes, seed, externSlots = state.compiledExternSlots) {
@@ -2970,19 +3783,27 @@ export default def;`,
       }
     }
 
-    function build() {
+    async function build(options = {}) {
       if (!state.ready) return;
+      const hotReload = options.hotReload !== false;
 
       const compileStarted = performance.now();
       disposeCompiler();
       state.compileDuration = 0;
       state.runDuration = 0;
+      if (hotReload) {
+        cancelPreviewSync();
+      }
       resetLogs();
 
       try {
+        setEditorSyncState('loading');
+        await waitForNextPaint();
         resetViewErrors();
         appendLog('compile', 'Compiling JavaScript to IR and bytecode');
-        const compiler = new Compiler(editor.value);
+        const buildTarget = buildActiveSource();
+        const { file: compiledFile, source } = buildTarget;
+        const compiler = new Compiler(source);
         const externs = compiler.extern_slots();
         syncExternRows(externs);
         const externSlots = externSlotsForBytecode();
@@ -2991,7 +3812,10 @@ export default def;`,
         const bytes = artifact.bytes();
         const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
         const nextByteTokens = Array.from(bytes);
-        const changedBytes = changedByteIndexes(state.byteTokens, nextByteTokens);
+        const sameCompiledFile = state.compiledFile === compiledFile;
+        const changedBytes = sameCompiledFile
+          ? changedByteIndexes(state.byteTokens, nextByteTokens)
+          : new Set();
         const compileDuration = performance.now() - compileStarted;
         state.compiler = compiler;
         state.views.ir = compiler.to_text();
@@ -3001,19 +3825,28 @@ export default def;`,
         state.bytesHtml = renderHexView(nextByteTokens, changedBytes);
         state.byteTokens = nextByteTokens;
         state.compiledBytes = bytes;
+        state.compiledFile = compiledFile;
         state.compiledExternSlots = externSlots;
         artifact.free();
         syncSeedInputs(seed);
-
-        const run = executeBytecode(bytes, seed, externSlots);
         state.compileDuration = compileDuration;
-        state.runDuration = run.duration;
+        state.runDuration = 0;
         timingInfo.textContent = `Compile ${Math.round(compileDuration)}ms`;
+        appendLog('compile', hotReload ? 'Preview will sync after 2s idle' : 'File switch compile only');
         renderLogs();
         updateMetrics(bytes, externs);
-        setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Auto built' : 'Runtime error');
+        setStatus('ready', hotReload ? 'Compiled' : 'File compiled');
         setActiveView(state.activeView);
+        if (hotReload) {
+          schedulePreviewSync();
+        } else {
+          setEditorSyncState('done');
+        }
       } catch (err) {
+        if (hotReload) {
+          cancelPreviewSync();
+        }
+        setEditorSyncState('waiting');
         const message = `Compile Error\n${String(err)}`;
         state.views.ir = message;
         state.views.bytecode = message;
@@ -3022,6 +3855,7 @@ export default def;`,
         state.bytesHtml = '';
         state.byteTokens = [];
         state.compiledBytes = null;
+        state.compiledFile = '';
         state.compiledExternSlots = [];
         state.compileDuration = performance.now() - compileStarted;
         state.runDuration = 0;
@@ -3042,16 +3876,35 @@ export default def;`,
       }
     }
 
-    function scheduleBuild() {
+    function scheduleBuild(options = {}) {
+      const hotReload = options.hotReload !== false;
       window.clearTimeout(state.timer);
-      setStatus('', 'Waiting for input');
-      state.timer = window.setTimeout(build, 360);
+      if (hotReload) {
+        cancelPreviewSync();
+        state.lastEditAt = performance.now();
+        setEditorSyncState('waiting');
+        setStatus('', 'Waiting for input');
+      } else {
+        setStatus('', 'Switching file');
+      }
+      state.timer = window.setTimeout(() => build({ hotReload }), 360);
     }
 
     editor.addEventListener('input', () => {
+      saveActiveFile();
       updateEditorSelectionState();
       updateEditorStats();
       showCompletions(false);
+      if (activeVirtualFile()?.type === 'html') {
+        cancelPreviewSync();
+        state.lastEditAt = performance.now();
+        setEditorSyncState('waiting');
+        resetLogs();
+        appendLog('compile', 'Preview will sync after 2s idle');
+        setStatus('', 'Preview pending');
+        schedulePreviewSync();
+        return;
+      }
       scheduleBuild();
     });
 
@@ -3213,9 +4066,13 @@ export default def;`,
 
     downloadPkgBtn.addEventListener('click', downloadRuntimePackage);
 
-    clearBtn.addEventListener('click', () => {
-      resetLogs();
-      showToast('Cleared');
+    newJsFileBtn.addEventListener('click', createVirtualJsFile);
+
+    fileList.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-file]');
+      if (item) {
+        selectVirtualFile(item.dataset.file);
+      }
     });
 
     [maxCallDepthInput, maxRecursiveDepthInput].forEach((input) => {
@@ -3223,18 +4080,12 @@ export default def;`,
       input.addEventListener('change', build);
     });
 
-    exampleSelect.addEventListener('change', () => {
-      editor.value = examples[exampleSelect.value];
-      hideCompletions();
-      updateEditorStats();
-      build();
-      editor.focus();
-    });
-
     window.addEventListener('beforeunload', disposeCompiler);
 
     updateEditorStats();
     renderLogs();
+    renderFileList();
+    renderPreviewHtml();
     renderOpcodeTable();
     setActiveConfigView('javascript');
     setStatus('', 'Initializing');
