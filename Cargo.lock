@@ -337,6 +337,14 @@ name = "js_token_core"
 version = "0.1.0"
 
 [[package]]
+name = "js_vm_cli"
+version = "0.1.0"
+dependencies = [
+ "js_token_core",
+ "js_vm_compiler",
+]
+
+[[package]]
 name = "js_vm_compiler"
 version = "0.1.0"
 dependencies = [

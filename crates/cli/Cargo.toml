@@ -1,0 +1,12 @@
+[package]
+name = "js_vm_cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "js-vm"
+path = "src/main.rs"
+
+[dependencies]
+js_token_core.workspace = true
+js_vm_compiler = { path = "../compiler" }

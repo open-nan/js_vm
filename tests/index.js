@@ -69,7 +69,7 @@ async function main(nextCommand, args) {
 async function runAll(mode) {
   log.step(mode === 'precommit' ? 'Running pre-commit checks' : 'Running full test chain');
   await runStep('Rust unit tests', () => runCommand('Rust unit tests', 'cargo', ['test']));
-  await runStep('Build wasm packages', () => runCommand('Build wasm packages', process.execPath, ['scripts/build-wasm.js']));
+  await runStep('Build wasm packages', () => runCommand('Build wasm packages', 'cargo', ['run', '-p', 'js_vm_cli', '--', 'wasm']));
   await runStep('JS VM corpus', () => runCorpusSuite());
   await runStep('Differential tests', () => runDifferentialSuite(parseDifferentialArgs([])));
   await runStep('Fuzz smoke', () => runFuzz(['--r=1', '--seeds=1', '--case-log=failures']));
@@ -79,7 +79,7 @@ async function runAll(mode) {
 async function runUnit() {
   log.step('Running unit test chain');
   await runStep('Rust unit tests', () => runCommand('Rust unit tests', 'cargo', ['test']));
-  await runStep('Build wasm packages', () => runCommand('Build wasm packages', process.execPath, ['scripts/build-wasm.js']));
+  await runStep('Build wasm packages', () => runCommand('Build wasm packages', 'cargo', ['run', '-p', 'js_vm_cli', '--', 'wasm']));
   await runStep('JS VM corpus', () => runCorpusSuite());
   log.finish('Unit test chain passed');
 }

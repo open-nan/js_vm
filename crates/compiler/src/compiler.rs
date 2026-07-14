@@ -120,6 +120,57 @@ impl CompilerArtifact {
     }
 }
 
+pub struct NativeCompilerArtifact {
+    pub ir_text: String,
+    pub bytecode_text: String,
+    pub bytes_profile_text: String,
+    pub bytes: Vec<u8>,
+    pub extern_slots: Vec<String>,
+}
+
+pub fn compile_source_to_artifact(
+    source: &str,
+    seed: Option<&str>,
+    extern_slots: &[String],
+) -> Result<NativeCompilerArtifact, String> {
+    let ir = compile_to_ir(source)?;
+    let mut module = ir.to_bytecode();
+    if !extern_slots.is_empty() {
+        if extern_slots.len() != ir.extern_slots.len() {
+            return Err(format!(
+                "extern slot count mismatch: expected {}, got {}",
+                ir.extern_slots.len(),
+                extern_slots.len()
+            ));
+        }
+        remap_external_operands(&mut module, &ir.extern_slots, extern_slots)?;
+        module.extern_slots = extern_slots.to_vec();
+    }
+    let encoding = match seed {
+        Some(seed) if !seed.is_empty() => {
+            EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?
+        }
+        _ => EncodingConfig::default(),
+    };
+    let bytes = module
+        .to_bytes_with_encoding(&encoding)
+        .map_err(|err| err.to_string())?;
+    let bytes_profile_text = module
+        .bytes_profile_text_with_encoding(&encoding)
+        .map_err(|err| err.to_string())?;
+    Ok(NativeCompilerArtifact {
+        ir_text: ir.to_text(),
+        bytecode_text: module.to_text(),
+        bytes_profile_text,
+        bytes,
+        extern_slots: if extern_slots.is_empty() {
+            ir.extern_slots
+        } else {
+            extern_slots.to_vec()
+        },
+    })
+}
+
 pub fn encoding_names_from_seed(seed: &str) -> Result<Vec<String>, String> {
     let encoding = EncodingConfig::from_seed(seed).map_err(|err| err.to_string())?;
     Ok(encoding.names().flatten())

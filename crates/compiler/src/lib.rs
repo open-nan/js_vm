@@ -1,7 +1,10 @@
 mod compiler;
 mod parse;
 
-use compiler::{encoding_names_from_seed, encoding_seed_for_seed_and_bytes};
+pub use compiler::{
+    NativeCompilerArtifact, compile_source_to_artifact, encoding_names_from_seed,
+    encoding_seed_for_seed_and_bytes,
+};
 use js_token_core::{EncodingConfig, EncodingNames};
 use wasm_bindgen::prelude::*;
 

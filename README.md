@@ -138,14 +138,35 @@ npm test
 
 任意一步失败都会阻止 commit。
 
-## Build wasm
+## Build CLI
 
 ```bash
 npm run build:wasm
 ```
 
 Release 构建开启了 `opt-level = "z"`、LTO、单 codegen unit、`panic = "abort"` 和 symbol strip。
-脚本会让 `wasm-pack` 先生成 web 目标，再用 `wasm-opt -Oz` 做二次体积优化。
+Rust CLI 会让 `wasm-pack` 先生成 web 目标，再用 `wasm-opt -Oz` 做二次体积优化。
+
+也可以直接使用 Rust 构建命令：
+
+```bash
+cargo run -p js_vm_cli -- wasm --target web
+cargo run -p js_vm_cli -- package ./examples/app --out ./dist/runtime --platform all --clean
+cargo run -p js_vm_cli -- all -- ./examples/app --out ./dist/runtime --platform web --clean
+```
+
+`package` 会把目录下的 `.js/.ts` 编译成分文件运行时包：
+
+```text
+manifest.json
+js-vm-loader.js
+js-vm-loader.web.js
+js-vm-loader.node.mjs
+js_vm_runtime.js
+js_vm_runtime_bg.wasm
+bytecode/**/*.bin
+sources/**/*
+```
 
 ## GitHub Pages
 
