@@ -58,6 +58,14 @@ async function main(nextCommand, args) {
     runFuzz(['--r=1', '--seeds=1', '--case-log=failures', ...args]);
     return;
   }
+  if (nextCommand === 'test262') {
+    runCommand('Test262 conformance profile', process.execPath, ['tests/test262-runner.js', ...args]);
+    return;
+  }
+  if (nextCommand === 'update-test262') {
+    runCommand('Update Test262', process.execPath, ['tests/update-test262.js', ...args]);
+    return;
+  }
   if (nextCommand === 'update-js-fuzzer') {
     runCommand('Update js_fuzzer', process.execPath, ['tests/update-js-fuzzer.js', ...args]);
     return;
@@ -316,6 +324,10 @@ function normalizeCommand(command) {
     ['fuzz:differential', 'fuzz-diff'],
     ['fuzz-smoke', 'fuzz-smoke'],
     ['quick', 'fuzz-smoke'],
+    ['test262', 'test262'],
+    ['conformance', 'test262'],
+    ['update-test262', 'update-test262'],
+    ['update:test262', 'update-test262'],
     ['update-js-fuzzer', 'update-js-fuzzer'],
     ['update:fuzzer', 'update-js-fuzzer'],
     ['help', 'help'],
@@ -337,13 +349,16 @@ Commands:
   fuzz                Run the in-memory JS fuzzer. Pass Fuzz.js options after the command.
   fuzz:diff           Run fuzz with --differential.
   fuzz-smoke          Run a short fuzz smoke: --r=1 --seeds=1 --case-log=failures.
+  test262             Run the Test262 conformance profile under tests/test262.
   precommit           Same chain as all, intended for git hooks.
+  update-test262      Update tests/.vendor/test262 from TC39.
   update-js-fuzzer    Update tests/.vendor/js_fuzzer.
 
 Examples:
   npm test
   npm run test:unit
   npm run test:diff -- --timeout-ms=1000
+  npm run test:test262 -- --max-cases=50
   npm run test:fuzz -- --threads=8 --time=30s --error=3
   npm run test:fuzz -- --differential --threads=8 --time=30s`);
 }

@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-07-16T08:16:03.650Z",
+  "targets": [
+    {
+      "key": "runtime-browser",
+      "label": "Runtime Browser",
+      "wasm": {
+        "path": "pkg/executor/js_vm_runtime_bg.wasm",
+        "exists": true,
+        "rawBytes": 261538,
+        "gzipBytes": 113343,
+        "mtimeMs": 1784189748862
+      },
+      "js": {
+        "path": "pkg/executor/js_vm_runtime.js",
+        "exists": true,
+        "rawBytes": 18404,
+        "gzipBytes": 3753,
+        "mtimeMs": 1784189749545
+      },
+      "totalRawBytes": 279942,
+      "totalGzipBytes": 117096
+    },
+    {
+      "key": "runtime-node",
+      "label": "Runtime Node",
+      "wasm": {
+        "path": "pkg/executor-node/js_vm_runtime_node_bg.wasm",
+        "exists": true,
+        "rawBytes": 354054,
+        "gzipBytes": 148995,
+        "mtimeMs": 1784189749543
+      },
+      "js": {
+        "path": "pkg/executor-node/js_vm_runtime_node.js",
+        "exists": true,
+        "rawBytes": 16015,
+        "gzipBytes": 3067,
+        "mtimeMs": 1784189749545
+      },
+      "totalRawBytes": 370069,
+      "totalGzipBytes": 152062
+    },
+    {
+      "key": "compiler",
+      "label": "Compiler",
+      "wasm": {
+        "path": "pkg/compiler/js_vm_compiler_bg.wasm",
+        "exists": true,
+        "rawBytes": 826426,
+        "gzipBytes": 335310,
+        "mtimeMs": 1784189748357
+      },
+      "js": {
+        "path": "pkg/compiler/js_vm_compiler.js",
+        "exists": true,
+        "rawBytes": 18946,
+        "gzipBytes": 3643,
+        "mtimeMs": 1784189749544
+      },
+      "totalRawBytes": 845372,
+      "totalGzipBytes": 338953
+    }
+  ]
+}

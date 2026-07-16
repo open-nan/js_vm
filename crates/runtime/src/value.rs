@@ -1,9 +1,5 @@
 use crate::env::LexicalEnv;
-use crate::host::{
-    HostBridge, can_represent_value_as_js, js_value_display, js_value_is_truthy,
-    js_value_to_number, value_to_js_value,
-};
-use js_sys::{Array as JsArray, Object as JsObject, Reflect};
+use crate::host::HostValue;
 use js_token_core::BytecodeOperand;
 use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
 use wasm_bindgen::JsValue;
@@ -42,6 +38,7 @@ impl ExternalRefValue {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
+    BigInt(String),
     String(String),
     Symbol(String),
     Bool(bool),
@@ -56,6 +53,7 @@ pub enum Value {
     ExternalRef(ExternalRefValue),
     Class(ClassValue),
     Module(ModuleValue),
+    GeneratorState(Rc<RefCell<GeneratorState>>),
     Null,
     #[default]
     Undefined,
@@ -66,6 +64,7 @@ pub struct FunctionValue {
     pub name: Option<String>,
     pub params: Vec<BytecodeOperand>,
     pub has_return: bool,
+    pub is_generator: bool,
     pub body_start: usize,
     pub body_end: usize,
     pub env: LexicalEnv,
@@ -78,6 +77,7 @@ impl PartialEq for FunctionValue {
         self.name == other.name
             && self.params == other.params
             && self.has_return == other.has_return
+            && self.is_generator == other.is_generator
             && self.body_start == other.body_start
             && self.body_end == other.body_end
             && self.end_pc == other.end_pc
@@ -87,6 +87,28 @@ impl PartialEq for FunctionValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeFunctionValue {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratorState {
+    pub initialized: bool,
+    pub done: bool,
+    pub pc: usize,
+    pub resume_dst: Option<u32>,
+    pub registers: Vec<Value>,
+    pub lexical_env: LexicalEnv,
+    pub last_value: Value,
+}
+
+impl PartialEq for GeneratorState {
+    fn eq(&self, other: &Self) -> bool {
+        self.initialized == other.initialized
+            && self.done == other.done
+            && self.pc == other.pc
+            && self.resume_dst == other.resume_dst
+            && self.registers == other.registers
+            && self.last_value == other.last_value
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,32 +126,10 @@ pub struct ModuleValue {
 }
 
 pub(crate) fn array_value(items: Vec<Value>) -> Value {
-    if items.iter().all(can_represent_value_as_js) {
-        let array = JsArray::new();
-        for item in &items {
-            let Ok(value) = value_to_js_value(item, &HostBridge::empty()) else {
-                return Value::Array(Rc::new(RefCell::new(items)));
-            };
-            array.push(&value);
-        }
-        return Value::JsValue(array.into());
-    }
     Value::Array(Rc::new(RefCell::new(items)))
 }
 
 pub(crate) fn object_value(props: BTreeMap<String, Value>) -> Value {
-    if props.values().all(can_represent_value_as_js) {
-        let object = JsObject::new();
-        for (key, value) in &props {
-            let Ok(value) = value_to_js_value(value, &HostBridge::empty()) else {
-                return Value::Object(Rc::new(RefCell::new(props)));
-            };
-            if Reflect::set(&object, &JsValue::from_str(key), &value).is_err() {
-                return Value::Object(Rc::new(RefCell::new(props)));
-            }
-        }
-        return Value::JsValue(object.into());
-    }
     Value::Object(Rc::new(RefCell::new(props)))
 }
 
@@ -137,10 +137,11 @@ impl Value {
     pub(crate) fn is_truthy(&self) -> bool {
         match self {
             Value::Number(value) => *value != 0.0 && !value.is_nan(),
+            Value::BigInt(value) => value != "0",
             Value::String(value) => !value.is_empty(),
             Value::Symbol(_) => true,
             Value::Bool(value) => *value,
-            Value::JsValue(value) | Value::BoundJsFunction(value, _) => js_value_is_truthy(value),
+            Value::JsValue(value) | Value::BoundJsFunction(value, _) => value.is_truthy(),
             Value::Array(_)
             | Value::Object(_)
             | Value::Function(_)
@@ -149,7 +150,8 @@ impl Value {
             | Value::BoundNativeFunction(_, _)
             | Value::ExternalRef(_)
             | Value::Class(_)
-            | Value::Module(_) => true,
+            | Value::Module(_)
+            | Value::GeneratorState(_) => true,
             Value::Null | Value::Undefined => false,
         }
     }
@@ -157,10 +159,11 @@ impl Value {
     pub(crate) fn to_number(&self) -> f64 {
         match self {
             Value::Number(value) => *value,
+            Value::BigInt(value) => value.parse().unwrap_or(f64::NAN),
             Value::String(value) => value.parse().unwrap_or(f64::NAN),
             Value::Symbol(_) => f64::NAN,
             Value::Bool(value) => f64::from(*value as u8),
-            Value::JsValue(value) | Value::BoundJsFunction(value, _) => js_value_to_number(value),
+            Value::JsValue(value) | Value::BoundJsFunction(value, _) => value.to_number(),
             Value::Null => 0.0,
             Value::Array(_)
             | Value::Object(_)
@@ -171,6 +174,7 @@ impl Value {
             | Value::ExternalRef(_)
             | Value::Class(_)
             | Value::Module(_)
+            | Value::GeneratorState(_)
             | Value::Undefined => f64::NAN,
         }
     }
@@ -180,11 +184,12 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Number(value) => write!(f, "{value}"),
+            Value::BigInt(value) => write!(f, "{value}"),
             Value::String(value) => write!(f, "{value}"),
             Value::Symbol(value) => write!(f, "Symbol({value})"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::JsValue(value) | Value::BoundJsFunction(value, _) => {
-                write!(f, "{}", js_value_display(value))
+                write!(f, "{}", value.display())
             }
             Value::Array(items) => {
                 let items = items
@@ -216,6 +221,7 @@ impl fmt::Display for Value {
                 class.name.as_deref().unwrap_or("<anonymous>")
             ),
             Value::Module(module) => write!(f, "module {}", module.source),
+            Value::GeneratorState(_) => write!(f, "[generator state]"),
             Value::Null => write!(f, "null"),
             Value::Undefined => write!(f, "undefined"),
         }

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JS VM Workbench</title>
+  <script src="./vendor/monaco/vs/loader.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -391,7 +392,27 @@
       display: grid;
     }
 
-    .line-numbers {
+    .editor-shell.monaco-ready {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .editor-shell.monaco-ready .editor-stack {
+      grid-column: 1 / -1;
+      width: 100%;
+      height: 100%;
+    }
+
+    .editor-shell.monaco-ready #lineNumbers,
+    .editor-shell.monaco-ready .highlight-layer,
+    .editor-shell.monaco-ready #editor {
+      display: none;
+    }
+
+    .editor-shell.large-file .highlight-layer {
+      display: none;
+    }
+
+    #lineNumbers {
       margin: 0;
       padding: 14px 10px 14px 0;
       box-sizing: border-box;
@@ -408,6 +429,33 @@
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+    }
+
+    .monaco-host {
+      height: 100%;
+      width: 100%;
+      background: #111417;
+      color: var(--code);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .monaco-host,
+    .monaco-host * {
+      box-sizing: content-box;
+    }
+
+    .monaco-editor,
+    .monaco-editor-background,
+    .monaco-editor .margin {
+      background: #111417 !important;
+    }
+
+    .monaco-editor .margin {
+      border-right: 1px solid #222830;
+    }
+
+    .monaco-editor .line-numbers {
+      color: #64707d !important;
     }
 
     .highlight-layer {
@@ -576,6 +624,11 @@
     }
 
     #editor.has-selection {
+      color: var(--code);
+      -webkit-text-fill-color: var(--code);
+    }
+
+    .editor-shell.large-file #editor {
       color: var(--code);
       -webkit-text-fill-color: var(--code);
     }
@@ -1500,6 +1553,15 @@ message;`,
       compiledFile: '',
       compiledExternSlots: [],
       compiledRuntimeFiles: [],
+      editorLineCount: 1,
+      lineNumbersRenderedFor: 0,
+      highlightSourceKey: '',
+      largeEditorMode: false,
+      monacoOptionsKey: '',
+      declaredCompletionCache: {
+        key: '',
+        items: [],
+      },
     };
 
     const editor = document.getElementById('editor');
@@ -1548,9 +1610,16 @@ message;`,
 
     const textEncoder = new TextEncoder();
     const VIRTUAL_BUFFER = 24;
+    const LARGE_EDITOR_CHAR_LIMIT = 60 * 1024;
+    const LARGE_EDITOR_LINE_LIMIT = 2400;
+    const HUGE_EDITOR_CHAR_LIMIT = 180 * 1024;
     const PREVIEW_SYNC_DELAY_MS = 2000;
     const SEED_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~';
     let seedInputTimer = null;
+    let monacoEditor = null;
+    let monacoEditorReady = null;
+    let monacoResizeObserver = null;
+    let suppressMonacoInput = false;
     window.__jsVmHostLog = (level, message) => {
       const target = typeof console[level] === 'function' ? console[level] : console.log;
       target.call(console, message);
@@ -1569,6 +1638,322 @@ message;`,
     function readPositiveInt(value, fallback) {
       const parsed = Number.parseInt(value, 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    function isLargeEditorSource(text = editor.value) {
+      return text.length > LARGE_EDITOR_CHAR_LIMIT || state.editorLineCount > LARGE_EDITOR_LINE_LIMIT;
+    }
+
+    function isHugeEditorSource(text = editor.value) {
+      return text.length > HUGE_EDITOR_CHAR_LIMIT;
+    }
+
+    function monacoLanguageForActiveFile() {
+      if (isLargeEditorSource()) return 'plaintext';
+      return activeVirtualFile()?.type === 'html' ? 'html' : 'javascript';
+    }
+
+    function syncMonacoMode() {
+      if (!monacoEditor || !window.monaco) return;
+      const large = isLargeEditorSource();
+      const huge = isHugeEditorSource();
+      const language = monacoLanguageForActiveFile();
+      const optionsKey = `${state.activeFile}:${large}:${huge}:${language}`;
+      if (state.monacoOptionsKey === optionsKey) return;
+      state.monacoOptionsKey = optionsKey;
+      state.largeEditorMode = large;
+      editorShell.classList.toggle('large-file', large);
+      window.monaco.editor.setModelLanguage(monacoEditor.getModel(), language);
+      monacoEditor.updateOptions({
+        lineNumbers: huge ? 'off' : 'on',
+        lineNumbersMinChars: 4,
+        lineDecorationsWidth: 8,
+        folding: !large,
+        glyphMargin: false,
+        minimap: { enabled: false },
+        occurrencesHighlight: large ? 'off' : 'singleFile',
+        renderLineHighlight: large ? 'none' : 'line',
+        selectionHighlight: !large,
+        quickSuggestions: !large,
+        suggestOnTriggerCharacters: !large,
+        wordBasedSuggestions: large ? 'off' : 'currentDocument',
+      });
+    }
+
+    function resetMonacoViewport() {
+      if (!monacoEditor) return;
+      monacoEditor.setScrollTop(0);
+      monacoEditor.setScrollLeft(0);
+    }
+
+    function refreshMonacoLayout(options = {}) {
+      if (!monacoEditor) return;
+      const reset = options.reset === true;
+      const run = () => {
+        if (!monacoEditor) return;
+        monacoEditor.layout();
+        if (reset) {
+          resetMonacoViewport();
+        }
+      };
+      requestAnimationFrame(run);
+      window.setTimeout(run, 80);
+      window.setTimeout(run, 360);
+      window.setTimeout(run, 1200);
+    }
+
+    function setNativeEditorValue(value) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+      descriptor?.set?.call(editor, value);
+    }
+
+    function installMonacoCompatibility(instance) {
+      const offsetToPosition = (index) => {
+        const model = instance.getModel();
+        return model.getPositionAt(Math.max(0, Number(index) || 0));
+      };
+      const positionToOffset = (position) => instance.getModel().getOffsetAt(position);
+      const define = (name, descriptor) => {
+        try {
+          Object.defineProperty(editor, name, { configurable: true, ...descriptor });
+        } catch (_err) {
+          // Browsers may keep some native textarea fields non-configurable.
+        }
+      };
+
+      define('value', {
+        get: () => instance.getValue(),
+        set: (value) => {
+          const nextValue = String(value ?? '');
+          suppressMonacoInput = true;
+          if (nextValue.length > LARGE_EDITOR_CHAR_LIMIT) {
+            state.monacoOptionsKey = '';
+          }
+          instance.setValue(nextValue);
+          setNativeEditorValue(nextValue);
+          syncMonacoMode();
+          refreshMonacoLayout({ reset: true });
+          suppressMonacoInput = false;
+        },
+      });
+      define('selectionStart', {
+        get: () => {
+          const selection = instance.getSelection();
+          return positionToOffset(selection.getStartPosition());
+        },
+        set: (value) => {
+          const selection = instance.getSelection();
+          const end = positionToOffset(selection.getEndPosition());
+          const startPosition = offsetToPosition(value);
+          const endPosition = offsetToPosition(Math.max(Number(value) || 0, end));
+          instance.setSelection(new window.monaco.Selection(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column,
+          ));
+        },
+      });
+      define('selectionEnd', {
+        get: () => {
+          const selection = instance.getSelection();
+          return positionToOffset(selection.getEndPosition());
+        },
+        set: (value) => {
+          const selection = instance.getSelection();
+          const start = positionToOffset(selection.getStartPosition());
+          const startPosition = offsetToPosition(Math.min(start, Number(value) || 0));
+          const endPosition = offsetToPosition(value);
+          instance.setSelection(new window.monaco.Selection(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column,
+          ));
+        },
+      });
+      define('scrollTop', {
+        get: () => instance.getScrollTop(),
+        set: (value) => instance.setScrollTop(value),
+      });
+      define('scrollLeft', {
+        get: () => instance.getScrollLeft(),
+        set: (value) => instance.setScrollLeft(value),
+      });
+      define('clientWidth', {
+        get: () => instance.getDomNode().clientWidth,
+      });
+
+      editor.setRangeText = (replacement, start = editor.selectionStart, end = editor.selectionEnd, mode = 'preserve') => {
+        const startPosition = offsetToPosition(start);
+        const endPosition = offsetToPosition(end);
+        instance.executeEdits('js-vm', [{
+          range: new window.monaco.Range(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column,
+          ),
+          text: String(replacement),
+          forceMoveMarkers: true,
+        }]);
+        const cursor = mode === 'end' ? start + String(replacement).length : start;
+        instance.setPosition(offsetToPosition(cursor));
+      };
+      editor.focus = () => instance.focus();
+    }
+
+    function configureMonacoLoader() {
+      const baseUrl = new URL('./vendor/monaco/', window.location.href).href;
+      const vsUrl = new URL('vs/', baseUrl).href;
+      const workerMainUrl = new URL('vs/base/worker/workerMain.js', baseUrl).href;
+      window.MonacoEnvironment = {
+        baseUrl,
+        getWorkerUrl() {
+          const source = `
+            self.require = { baseUrl: ${JSON.stringify(baseUrl)} };
+            self.MonacoEnvironment = { baseUrl: ${JSON.stringify(baseUrl)} };
+            importScripts(${JSON.stringify(workerMainUrl)});
+          `;
+          return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
+        },
+      };
+      window.require.config({
+        paths: { vs: vsUrl.replace(/\/$/, '') },
+        ignoreDuplicateModules: ['vs/editor/editor.main'],
+      });
+    }
+
+    function initMonacoEditor() {
+      if (monacoEditor || monacoEditorReady || !window.require) return monacoEditorReady;
+      configureMonacoLoader();
+      monacoEditorReady = new Promise((resolve, reject) => {
+        window.require(['vs/editor/editor.main'], () => {
+          if (monacoEditor) {
+            resolve(monacoEditor);
+            return;
+          }
+        window.monaco.editor.defineTheme('js-vm-dark', {
+          base: 'vs-dark',
+          inherit: true,
+          rules: [],
+          colors: {
+            'editor.background': '#111417',
+            'editorGutter.background': '#111417',
+            'editorLineNumber.foreground': '#64707d',
+            'editorLineNumber.activeForeground': '#9aa7b4',
+          },
+        });
+        const host = document.createElement('div');
+        host.className = 'monaco-host';
+        const editorStack = editorShell.querySelector('.editor-stack');
+        editorStack.appendChild(host);
+        monacoEditor = window.monaco.editor.create(host, {
+          value: editor.value,
+          language: monacoLanguageForActiveFile(),
+          theme: 'js-vm-dark',
+          automaticLayout: true,
+          fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+          fontSize: 13,
+          lineHeight: 20,
+          tabSize: 2,
+          insertSpaces: true,
+          detectIndentation: false,
+          minimap: { enabled: false },
+          lineNumbersMinChars: 4,
+          lineDecorationsWidth: 8,
+          scrollBeyondLastLine: false,
+          renderWhitespace: 'none',
+          wordWrap: 'off',
+          largeFileOptimizations: true,
+          quickSuggestions: false,
+          suggestOnTriggerCharacters: false,
+          wordBasedSuggestions: 'off',
+          folding: false,
+          glyphMargin: false,
+          overviewRulerLanes: 0,
+          renderLineHighlight: 'line',
+        });
+        installMonacoCompatibility(monacoEditor);
+        editorShell.classList.add('monaco-ready');
+        syncMonacoMode();
+        refreshMonacoLayout({ reset: true });
+        if (typeof ResizeObserver === 'function') {
+          monacoResizeObserver?.disconnect();
+          monacoResizeObserver = new ResizeObserver(() => refreshMonacoLayout());
+          monacoResizeObserver.observe(editorShell);
+          monacoResizeObserver.observe(editorStack);
+        }
+        document.fonts?.ready?.then(() => refreshMonacoLayout());
+        monacoEditor.onDidChangeModelContent(() => {
+          setNativeEditorValue(monacoEditor.getValue());
+          if (!suppressMonacoInput) {
+            editor.dispatchEvent(new Event('input'));
+          }
+        });
+        monacoEditor.onDidChangeCursorPosition(() => {
+          updateEditorSelectionState();
+          updateEditorStats();
+          if (state.completion.open) {
+            positionCompletionMenu(state.completion.from);
+          }
+        });
+        monacoEditor.onDidScrollChange(() => {
+          if (state.completion.open) {
+            positionCompletionMenu(state.completion.from);
+          }
+        });
+        monacoEditor.onKeyDown((event) => {
+          const key = event.browserEvent.key;
+          const ctrlOrMeta = event.browserEvent.ctrlKey || event.browserEvent.metaKey;
+          if (ctrlOrMeta && key === ' ') {
+            event.preventDefault();
+            showCompletions(true);
+            return;
+          }
+          if (ctrlOrMeta && key === 'Enter') {
+            event.preventDefault();
+            build();
+            return;
+          }
+          if (state.completion.open) {
+            if (key === 'ArrowDown') {
+              event.preventDefault();
+              moveCompletion(1);
+              return;
+            }
+            if (key === 'ArrowUp') {
+              event.preventDefault();
+              moveCompletion(-1);
+              return;
+            }
+            if (key === 'Enter' || key === 'Tab') {
+              event.preventDefault();
+              acceptCompletion();
+              return;
+            }
+            if (key === 'Escape') {
+              event.preventDefault();
+              hideCompletions();
+              return;
+            }
+          }
+          if (key === 'Tab') {
+            event.preventDefault();
+            editor.setRangeText('  ', editor.selectionStart, editor.selectionEnd, 'end');
+          }
+        });
+        monacoEditor.onKeyUp((event) => {
+          const key = event.browserEvent.key;
+          if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(key)) {
+            showCompletions(false);
+          }
+        });
+        updateEditorStats({ contentChanged: true });
+          resolve(monacoEditor);
+        }, reject);
+      });
+      return monacoEditorReady;
     }
 
     function lineHeightOf(element) {
@@ -1740,6 +2125,8 @@ message;`,
       ['BINARY_REG_CONST', 53],
       ['LOAD_LOCAL_SMALL', 54],
       ['STORE_LOCAL_SMALL', 55],
+      ['OBJECT_REST', 56],
+      ['YIELD', 57],
     ].map(([name, code]) => ({ name, code }));
 
     state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
@@ -1762,6 +2149,7 @@ message;`,
       ['bool', 2],
       ['null', 3],
       ['undefined', 4],
+      ['bigint', 5],
     ].map(([name, code]) => ({ name, code }));
 
     state.operandTagRows = defaultOperandTagRows.map((row) => ({ ...row }));
@@ -1818,21 +2206,38 @@ message;`,
       { label: 'catch', kind: 'method', insert: 'catch((err) => err)' },
     ];
 
-    function baseCompletions() {
-      const declared = Array.from(new Set(
-        editor.value.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g) || [],
+    function completionScanSource(text) {
+      if (!isLargeEditorSource(text)) return text;
+      const cursor = editor.selectionStart;
+      const radius = 16 * 1024;
+      return text.slice(Math.max(0, cursor - radius), Math.min(text.length, cursor + radius));
+    }
+
+    function declaredCompletions() {
+      const text = editor.value;
+      const key = `${state.activeFile}:${text.length}:${editor.selectionStart}:${isLargeEditorSource(text) ? 'near' : 'all'}`;
+      if (state.declaredCompletionCache.key === key) {
+        return state.declaredCompletionCache.items;
+      }
+      const source = completionScanSource(text);
+      const items = Array.from(new Set(
+        source.match(/\b[A-Za-z_$][A-Za-z0-9_$]*\b/g) || [],
       ))
         .filter((word) => !keywordSet.has(word) && !controlSet.has(word) && !literalSet.has(word))
         .slice(0, 80)
         .map((label) => ({ label, kind: builtinSet.has(label) ? 'builtin' : 'local' }));
+      state.declaredCompletionCache = { key, items };
+      return items;
+    }
 
+    function baseCompletions() {
       return [
         ...Array.from(controlSet, (label) => ({ label, kind: 'control' })),
         ...Array.from(keywordSet, (label) => ({ label, kind: 'keyword' })),
         ...Array.from(literalSet, (label) => ({ label, kind: 'literal' })),
         ...Array.from(builtinSet, (label) => ({ label, kind: 'builtin' })),
         ...snippetCompletions,
-        ...declared,
+        ...declaredCompletions(),
       ];
     }
 
@@ -2143,44 +2548,97 @@ message;`,
     }
 
     function updateHighlight() {
+      if (monacoEditor) return;
       const file = activeVirtualFile();
-      highlightLayer.innerHTML = file?.type === 'html'
-        ? highlightHtml(editor.value)
-        : highlightJavaScript(editor.value);
+      const text = editor.value;
+      const large = isLargeEditorSource(text);
+      editorShell.classList.toggle('large-file', large);
+      if (large) {
+        highlightLayer.textContent = '';
+        state.highlightSourceKey = '';
+        return;
+      }
+      const key = `${state.activeFile}:${file?.type || ''}:${text.length}:${text}`;
+      if (state.highlightSourceKey !== key) {
+        highlightLayer.innerHTML = file?.type === 'html'
+          ? highlightHtml(text)
+          : highlightJavaScript(text);
+        state.highlightSourceKey = key;
+      }
       highlightLayer.scrollTop = editor.scrollTop;
       highlightLayer.scrollLeft = editor.scrollLeft;
     }
 
     function updateLineNumbers(lines) {
+      if (monacoEditor) return;
+      if (state.lineNumbersRenderedFor === lines) {
+        lineNumbers.scrollTop = editor.scrollTop;
+        return;
+      }
       lineNumbers.textContent = Array.from({ length: lines }, (_, index) => index + 1).join('\n');
+      state.lineNumbersRenderedFor = lines;
       lineNumbers.scrollTop = editor.scrollTop;
     }
 
-    function updateEditorStats() {
+    function countLines(text) {
+      if (!text) return 1;
+      let lines = 1;
+      for (let index = 0; index < text.length; index += 1) {
+        if (text.charCodeAt(index) === 10) lines += 1;
+      }
+      return lines;
+    }
+
+    function cursorPosition(text, cursor) {
+      let line = 1;
+      let columnStart = 0;
+      for (let index = 0; index < cursor; index += 1) {
+        if (text.charCodeAt(index) === 10) {
+          line += 1;
+          columnStart = index + 1;
+        }
+      }
+      return { line, col: cursor - columnStart + 1 };
+    }
+
+    function updateEditorStats(options = {}) {
+      const contentChanged = options.contentChanged === true;
       const text = editor.value;
-      const beforeCursor = text.slice(0, editor.selectionStart);
-      const lines = text.split('\n').length;
-      const line = beforeCursor.split('\n').length;
-      const col = beforeCursor.length - beforeCursor.lastIndexOf('\n');
-      const jsBytes = byteLength(text);
-      updateLineNumbers(lines);
-      cursorInfo.textContent = `Ln ${line}, Col ${col}`;
-      sizeInfo.textContent = `${text.length} chars · ${formatByteSize(jsBytes)}`;
-      lineInfo.textContent = `${lines} lines`;
+      if (contentChanged) {
+        state.editorLineCount = monacoEditor ? monacoEditor.getModel().getLineCount() : countLines(text);
+        state.declaredCompletionCache = { key: '', items: [] };
+        syncMonacoMode();
+      }
+      const position = monacoEditor
+        ? {
+          line: monacoEditor.getPosition().lineNumber,
+          col: monacoEditor.getPosition().column,
+        }
+        : cursorPosition(text, editor.selectionStart);
+      const large = isLargeEditorSource(text);
+      const jsBytes = large ? text.length : byteLength(text);
+      updateLineNumbers(state.editorLineCount);
+      cursorInfo.textContent = `Ln ${position.line}, Col ${position.col}`;
+      sizeInfo.textContent = `${text.length} chars · ${large ? '~' : ''}${formatByteSize(jsBytes)}`;
+      lineInfo.textContent = `${state.editorLineCount} lines`;
       updateJavaScriptMetric();
-      updateHighlight();
+      if (contentChanged) {
+        updateHighlight();
+      }
     }
 
     function completionContext() {
       const text = editor.value;
       const cursor = editor.selectionStart;
-      const beforeCursor = text.slice(0, cursor);
+      const beforeCursor = monacoEditor
+        ? monacoEditor.getModel().getLineContent(monacoEditor.getPosition().lineNumber).slice(0, monacoEditor.getPosition().column - 1)
+        : text.slice(0, cursor);
       const match = beforeCursor.match(/[A-Za-z_$][A-Za-z0-9_$]*$/);
       const prefix = match ? match[0] : '';
       const from = cursor - prefix.length;
       const isProperty = text[from - 1] === '.';
       const objectMatch = isProperty
-        ? text.slice(0, from - 1).match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*$/)
+        ? beforeCursor.slice(0, -prefix.length - 1).match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*$/)
         : null;
       return {
         prefix,
@@ -2247,6 +2705,18 @@ message;`,
     }
 
     function positionCompletionMenu(from) {
+      if (monacoEditor) {
+        const model = monacoEditor.getModel();
+        const position = model.getPositionAt(from);
+        const coords = monacoEditor.getScrolledVisiblePosition(position);
+        const rect = monacoEditor.getDomNode().getBoundingClientRect();
+        const maxLeft = Math.max(8, rect.width - 240);
+        const left = coords ? coords.left : 8;
+        const top = coords ? coords.top + coords.height : 8;
+        completionMenu.style.left = `${Math.min(Math.max(8, left), maxLeft)}px`;
+        completionMenu.style.top = `${Math.max(8, top)}px`;
+        return;
+      }
       const before = editor.value.slice(0, from);
       const line = before.split('\n').length;
       const col = before.length - before.lastIndexOf('\n') - 1;
@@ -2271,6 +2741,10 @@ message;`,
     }
 
     function showCompletions(explicit = false) {
+      if (isLargeEditorSource() && !explicit) {
+        hideCompletions();
+        return;
+      }
       const context = completionContext();
       const items = completionsForContext(context, explicit);
       if (!items.length) {
@@ -2323,23 +2797,26 @@ message;`,
       editor.selectionStart = cursor;
       editor.selectionEnd = cursor;
       hideCompletions();
-      updateEditorStats();
+      updateEditorStats({ contentChanged: true });
       scheduleBuild();
       editor.focus();
       return true;
     }
 
     function syncScroll() {
-      updateLineNumbers(editor.value.split('\n').length);
-      updateHighlight();
+      if (monacoEditor) return;
+      lineNumbers.scrollTop = editor.scrollTop;
+      highlightLayer.scrollTop = editor.scrollTop;
+      highlightLayer.scrollLeft = editor.scrollLeft;
       if (state.completion.open) {
         positionCompletionMenu(state.completion.from);
       }
     }
 
     function updateEditorSelectionState() {
-      const hasSelection =
-        document.activeElement === editor && editor.selectionStart !== editor.selectionEnd;
+      const hasSelection = monacoEditor
+        ? monacoEditor.hasTextFocus() && !monacoEditor.getSelection().isEmpty()
+        : document.activeElement === editor && editor.selectionStart !== editor.selectionEnd;
       editor.classList.toggle('has-selection', hasSelection);
       editorShell.querySelector('.editor-stack')?.classList.toggle('has-selection', hasSelection);
     }
@@ -3050,6 +3527,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       }
       output.classList.toggle('hex-output', view === 'bytes' && state.bytesHtml && !state.viewErrors[view]);
       output.classList.toggle('error', state.viewErrors[view]);
+      refreshMonacoLayout();
       if (view === 'bytes' && state.bytesHtml && !state.viewErrors[view]) {
         output.classList.remove('virtual-output');
         output.innerHTML = state.bytesHtml;
@@ -3136,6 +3614,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       cursorInfo.style.visibility = view === 'javascript' ? 'visible' : 'hidden';
       if (view === 'javascript') {
         editor.focus();
+        refreshMonacoLayout();
       } else {
         hideCompletions();
       }
@@ -3148,7 +3627,9 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         metricJavaScriptBytes.textContent = '';
       } else {
         metric.style.display = '';
-        metricJavaScriptBytes.textContent = formatByteSize(byteLength(editor.value));
+        const text = editor.value;
+        const large = isLargeEditorSource(text);
+        metricJavaScriptBytes.textContent = `${large ? '~' : ''}${formatByteSize(large ? text.length : byteLength(text))}`;
       }
     }
 
@@ -3251,6 +3732,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         String,
         TypeError,
         Number,
+        BigInt,
         Boolean,
         Symbol,
         Math,
@@ -3387,7 +3869,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       state.activeFile = name;
       editor.value = state.files[name].content;
       hideCompletions();
-      updateEditorStats();
+      state.highlightSourceKey = '';
+      updateEditorStats({ contentChanged: true });
       renderFileList();
       syncOutputMode();
       setActiveConfigView('javascript');
@@ -3432,7 +3915,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         state.activeFile = nextFile;
         editor.value = state.files[nextFile]?.content || '';
         hideCompletions();
-        updateEditorStats();
+        state.highlightSourceKey = '';
+        updateEditorStats({ contentChanged: true });
         syncOutputMode();
         setActiveConfigView('javascript');
         if (state.files[nextFile]?.type === 'html') {
@@ -3929,6 +4413,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         updateMetrics(bytes, externs);
         setStatus('ready', hotReload ? 'Compiled' : 'File compiled');
         setActiveView(state.activeView);
+        refreshMonacoLayout();
         if (hotReload) {
           setEditorSyncState('running');
           schedulePreviewSync();
@@ -3966,12 +4451,19 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         renderLogs();
         setStatus('error', 'Compile error');
         setActiveView(state.activeView);
+        refreshMonacoLayout();
       }
     }
 
     function scheduleBuild(options = {}) {
       const hotReload = options.hotReload !== false;
       window.clearTimeout(state.timer);
+      if (hotReload && activeVirtualFile()?.type !== 'html' && isLargeEditorSource()) {
+        cancelPreviewSync();
+        setEditorSyncState('waiting');
+        setStatus('', 'Large file edited · press Ctrl/⌘+Enter to compile');
+        return;
+      }
       if (hotReload) {
         cancelPreviewSync();
         state.lastEditAt = performance.now();
@@ -3980,13 +4472,16 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       } else {
         setStatus('', 'Switching file');
       }
-      state.timer = window.setTimeout(() => build({ hotReload }), 360);
+      const delay = 360;
+      state.timer = window.setTimeout(() => build({ hotReload }), delay);
     }
+
+    initMonacoEditor();
 
     editor.addEventListener('input', () => {
       saveActiveFile();
       updateEditorSelectionState();
-      updateEditorStats();
+      updateEditorStats({ contentChanged: true });
       showCompletions(false);
       if (activeVirtualFile()?.type === 'html') {
         cancelPreviewSync();
@@ -4051,7 +4546,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         const start = editor.selectionStart;
         const end = editor.selectionEnd;
         editor.setRangeText('  ', start, end, 'end');
-        updateEditorStats();
+        saveActiveFile();
+        updateEditorStats({ contentChanged: true });
         scheduleBuild();
       }
 
@@ -4189,7 +4685,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
 
     window.addEventListener('beforeunload', disposeCompiler);
 
-    updateEditorStats();
+    updateEditorStats({ contentChanged: true });
     renderLogs();
     renderFileList();
     renderPreviewHtml();
@@ -4199,8 +4695,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
 
     try {
       await Promise.all([
-        initCompiler('./pkg/compiler/js_vm_compiler_bg.wasm?v=jsvalue-runtime'),
-        initExecutor('./pkg/executor/js_vm_runtime_bg.wasm?v=jsvalue-runtime'),
+        initCompiler({ module_or_path: './pkg/compiler/js_vm_compiler_bg.wasm?v=jsvalue-runtime' }),
+        initExecutor({ module_or_path: './pkg/executor/js_vm_runtime_bg.wasm?v=jsvalue-runtime' }),
       ]);
       state.ready = true;
       wasmState.textContent = 'WASM ready';

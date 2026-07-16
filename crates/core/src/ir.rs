@@ -459,6 +459,15 @@ pub enum IrInstructionKind {
         /// 对象属性列表。
         properties: Vec<IrObjectProperty>,
     },
+    /// 对象 rest binding，如 `{ a, ...rest } = value`。
+    ObjectRest {
+        /// 目标寄存器。
+        dst: RegisterId,
+        /// 源对象值。
+        source: IrValue,
+        /// 需要排除的静态属性名。
+        excluded: Vec<String>,
+    },
     /// 创建函数对象。
     CreateFunction {
         /// 目标寄存器。
@@ -681,6 +690,10 @@ pub enum IrUnaryOp {
     Not,
     /// 按位非 `~`。
     BitNot,
+    /// 自增 `++`。
+    Increment,
+    /// 自减 `--`。
+    Decrement,
     /// `typeof`。
     TypeOf,
     /// `void`。
@@ -1420,6 +1433,15 @@ impl fmt::Display for IrInstructionKind {
                 write_display_list(f, properties)?;
                 f.write_str("}")
             }
+            IrInstructionKind::ObjectRest {
+                dst,
+                source,
+                excluded,
+            } => {
+                write!(f, "{dst} = object_rest {source} except [")?;
+                write_display_list(f, excluded)?;
+                f.write_str("]")
+            }
             IrInstructionKind::CreateFunction {
                 dst,
                 function,
@@ -1581,6 +1603,8 @@ impl fmt::Display for IrUnaryOp {
             IrUnaryOp::Minus => "-",
             IrUnaryOp::Not => "!",
             IrUnaryOp::BitNot => "~",
+            IrUnaryOp::Increment => "++",
+            IrUnaryOp::Decrement => "--",
             IrUnaryOp::TypeOf => "typeof",
             IrUnaryOp::Void => "void",
             IrUnaryOp::Delete => "delete",

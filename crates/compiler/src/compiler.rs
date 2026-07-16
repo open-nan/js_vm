@@ -195,12 +195,7 @@ fn compile_to_ir_with_externals(source: &str, externals: &[String]) -> Result<Ir
             js_token_core::IrModuleKind::Module
         }
         Program::Script(script) => {
-            for stmt in &script.body {
-                ctx.predeclare_stmt(stmt);
-            }
-            for stmt in &script.body {
-                ctx.lower_stmt(stmt);
-            }
+            ctx.lower_script(&script);
             js_token_core::IrModuleKind::Script
         }
     };

@@ -4,6 +4,7 @@ dist/
 tests/.vendor/
 tests/.issues/
 tests/db/
+tests/test262/reports/
 .DS_Store
 **/.DS_Store
 .vscode/

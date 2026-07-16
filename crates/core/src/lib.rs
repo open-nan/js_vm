@@ -14,6 +14,7 @@ enum LowerValue {
     LocalSlot(u32),
     Number(f64),
     String(String),
+    BigInt(String),
     Bool(bool),
     Null,
     Undefined,
@@ -79,6 +80,11 @@ enum LowerInstruction {
         dst: String,
         props: Vec<(String, LowerValue)>,
     },
+    ObjectRest {
+        dst: String,
+        source: LowerValue,
+        excluded: Vec<String>,
+    },
     Call {
         dst: String,
         callee: LowerValue,
@@ -97,12 +103,14 @@ enum LowerInstruction {
     Function {
         name: String,
         params: Vec<LowerBinding>,
+        is_generator: bool,
         body: Vec<LowerInstruction>,
     },
     FunctionExpr {
         dst: String,
         name: Option<String>,
         params: Vec<LowerBinding>,
+        is_generator: bool,
         body: Vec<LowerInstruction>,
     },
     Class {
@@ -143,6 +151,11 @@ enum LowerInstruction {
         test: LowerValue,
         label: String,
     },
+    Yield {
+        dst: Option<String>,
+        value: Option<LowerValue>,
+        delegate: bool,
+    },
     Unsupported(String),
 }
 
@@ -160,6 +173,7 @@ impl IrModule {
 pub enum BytecodeConstant {
     Number(f64),
     String(String),
+    BigInt(String),
     Bool(bool),
     Null,
     Undefined,
@@ -169,6 +183,7 @@ impl fmt::Display for BytecodeConstant {
         match self {
             BytecodeConstant::Number(value) => write!(f, "{value}"),
             BytecodeConstant::String(value) => write!(f, "{value:?}"),
+            BytecodeConstant::BigInt(value) => write!(f, "{value}n"),
             BytecodeConstant::Bool(value) => write!(f, "{value}"),
             BytecodeConstant::Null => write!(f, "null"),
             BytecodeConstant::Undefined => write!(f, "undefined"),
@@ -235,6 +250,8 @@ pub enum BytecodeOp {
     BinaryRegConst = 53,
     LoadLocalSmall = 54,
     StoreLocalSmall = 55,
+    ObjectRest = 56,
+    Yield = 57,
 }
 
 impl BytecodeOp {
@@ -296,6 +313,8 @@ impl BytecodeOp {
             BytecodeOp::BinaryRegConst,
             BytecodeOp::LoadLocalSmall,
             BytecodeOp::StoreLocalSmall,
+            BytecodeOp::ObjectRest,
+            BytecodeOp::Yield,
         ]
     }
 
@@ -357,6 +376,8 @@ impl BytecodeOp {
             BytecodeOp::BinaryRegConst => "BINARY_REG_CONST",
             BytecodeOp::LoadLocalSmall => "LOAD_LOCAL_SMALL",
             BytecodeOp::StoreLocalSmall => "STORE_LOCAL_SMALL",
+            BytecodeOp::ObjectRest => "OBJECT_REST",
+            BytecodeOp::Yield => "YIELD",
         }
     }
 
@@ -615,6 +636,7 @@ impl Default for EncodingConfig {
             ("bool", 2),
             ("null", 3),
             ("undefined", 4),
+            ("bigint", 5),
         ]
         .into_iter()
         .map(|(name, tag)| (name.to_string(), tag))
@@ -799,7 +821,7 @@ impl EncodingConfig {
         ] {
             self.operand_tag(key)?;
         }
-        for key in ["number", "string", "bool", "null", "undefined"] {
+        for key in ["number", "string", "bool", "null", "undefined", "bigint"] {
             self.constant_tag(key)?;
         }
         Ok(())
@@ -1148,6 +1170,10 @@ impl BytecodeModule {
                     bytes.push(encoding.constant_tag("string")?);
                     write_constant_string(&mut bytes, value);
                 }
+                BytecodeConstant::BigInt(value) => {
+                    bytes.push(encoding.constant_tag("bigint")?);
+                    write_constant_string(&mut bytes, value);
+                }
                 BytecodeConstant::Bool(value) => {
                     bytes.push(encoding.constant_tag("bool")?);
                     bytes.push(u8::from(*value));
@@ -1232,6 +1258,10 @@ impl BytecodeModule {
                 }
                 BytecodeConstant::String(value) => {
                     bytes.push(encoding.constant_tag("string")?);
+                    write_constant_string(&mut bytes, value);
+                }
+                BytecodeConstant::BigInt(value) => {
+                    bytes.push(encoding.constant_tag("bigint")?);
                     write_constant_string(&mut bytes, value);
                 }
                 BytecodeConstant::Bool(value) => {
@@ -1519,6 +1549,36 @@ fn write_instruction_operands(
                 )?;
             }
             Ok(())
+        }
+        BytecodeOp::ObjectRest => {
+            write_operand(
+                bytes,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 1)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            let count = count_at(instruction, 2)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            write_repeated_operands(
+                bytes,
+                instruction,
+                3,
+                count,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 3 + count)
         }
         BytecodeOp::Call | BytecodeOp::New => {
             write_operand(
@@ -2497,6 +2557,35 @@ fn profile_instruction_operands(
             }
             Ok(())
         }
+        BytecodeOp::ObjectRest => {
+            profile_operand(
+                profile,
+                operand_at(instruction, 0)?,
+                OperandKind::Register,
+                encoding,
+            )?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 1)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            let count = count_at(instruction, 2)?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 2)?,
+                OperandKind::Count,
+                encoding,
+            )?;
+            profile_repeated_operands(
+                profile,
+                instruction,
+                3,
+                count,
+                OperandKind::Constant,
+                encoding,
+            )
+        }
         op => {
             let schema = fixed_operand_schema(op);
             ensure_operand_len(instruction, schema.len())?;
@@ -2687,6 +2776,21 @@ fn read_instruction_operands(
                 operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
             }
         }
+        BytecodeOp::ObjectRest => {
+            operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            let count = read_operand(cursor, OperandKind::Count, encoding)?;
+            let count_value =
+                bounded_dynamic_count(cursor, count.payload(), "object rest excluded key")?;
+            operands.push(count);
+            read_repeated_operands(
+                cursor,
+                &mut operands,
+                count_value,
+                OperandKind::Constant,
+                encoding,
+            )?;
+        }
         BytecodeOp::Call | BytecodeOp::New => {
             operands.push(read_operand(cursor, OperandKind::Register, encoding)?);
             operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
@@ -2864,9 +2968,11 @@ fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
         BytecodeOp::Jump => &[Count],
         BytecodeOp::JumpIfFalse => &[Value, Count],
         BytecodeOp::JumpIfFalseReg => &[Register, Count],
+        BytecodeOp::Yield => &[OptionalValue, OptionalValue],
         BytecodeOp::Unsupported => &[Constant],
         BytecodeOp::Array
         | BytecodeOp::Object
+        | BytecodeOp::ObjectRest
         | BytecodeOp::Call
         | BytecodeOp::New
         | BytecodeOp::Template
@@ -3297,11 +3403,11 @@ fn lower_ir_instruction(
         IrInstructionKind::Declare(declaration) => {
             out.push(LowerInstruction::Declare {
                 kind: declaration.kind.to_string(),
-                name: lower_local_binding(function, declaration.local),
+                name: lower_local_binding(module, function, declaration.local),
             });
             if let Some(init) = &declaration.init {
                 out.push(LowerInstruction::StoreName {
-                    name: lower_local_binding(function, declaration.local),
+                    name: lower_local_binding(module, function, declaration.local),
                     src: lower_ir_value(module, function, init),
                 });
             }
@@ -3416,12 +3522,22 @@ fn lower_ir_instruction(
                 props,
             });
         }
+        IrInstructionKind::ObjectRest {
+            dst,
+            source,
+            excluded,
+        } => out.push(LowerInstruction::ObjectRest {
+            dst: register_name(*dst),
+            source: lower_ir_value(module, function, source),
+            excluded: excluded.clone(),
+        }),
         IrInstructionKind::CreateFunction { dst, function, .. } => {
             if let Some(ir_function) = module.functions.get(function.0) {
                 out.push(LowerInstruction::FunctionExpr {
                     dst: register_name(*dst),
                     name: ir_function.name.clone(),
-                    params: function_param_bindings(ir_function),
+                    params: function_param_bindings(module, ir_function),
+                    is_generator: ir_function.flags.is_generator,
                     body: lower_function_body(module, *function, ir_function),
                 });
             } else {
@@ -3437,7 +3553,8 @@ fn lower_ir_instruction(
                         .name
                         .clone()
                         .unwrap_or_else(|| function.to_string()),
-                    params: function_param_bindings(ir_function),
+                    params: function_param_bindings(module, ir_function),
+                    is_generator: ir_function.flags.is_generator,
                     body: lower_function_body(module, *function, ir_function),
                 });
             } else {
@@ -3517,20 +3634,13 @@ fn lower_ir_instruction(
             value,
             delegate,
         } => {
-            out.push(LowerInstruction::Marker(format!(
-                "yield{} {}",
-                if *delegate { "*" } else { "" },
-                value
+            out.push(LowerInstruction::Yield {
+                dst: dst.map(register_name),
+                value: value
                     .as_ref()
-                    .map(|value| lower_ir_value_text(module, function, value))
-                    .unwrap_or_default()
-            )));
-            if let Some(dst) = dst {
-                out.push(LowerInstruction::Move {
-                    dst: register_name(*dst),
-                    src: LowerValue::Undefined,
-                });
-            }
+                    .map(|value| lower_ir_value(module, function, value)),
+                delegate: *delegate,
+            });
         }
         IrInstructionKind::EnterScope(scope) => {
             let kind = function
@@ -3556,7 +3666,7 @@ fn lower_ir_instruction(
         }
         IrInstructionKind::EnterCatch { param } => {
             out.push(LowerInstruction::CatchStart(
-                param.map(|param| lower_local_binding(function, param)),
+                param.map(|param| lower_local_binding(module, function, param)),
             ));
         }
         IrInstructionKind::EnterFinally => {
@@ -3625,7 +3735,7 @@ fn lower_ir_load(
     match src {
         IrPlace::Local(local) => out.push(LowerInstruction::LoadName {
             dst: register_name(dst),
-            name: lower_local_binding(function, *local),
+            name: lower_local_binding(module, function, *local),
         }),
         IrPlace::External(external) => out.push(LowerInstruction::LoadName {
             dst: register_name(dst),
@@ -3653,7 +3763,7 @@ fn lower_ir_store(
 ) {
     match dst {
         IrPlace::Local(local) => out.push(LowerInstruction::StoreName {
-            name: lower_local_binding(function, *local),
+            name: lower_local_binding(module, function, *local),
             src: lower_ir_value(module, function, src),
         }),
         IrPlace::External(external) => out.push(LowerInstruction::StoreName {
@@ -3675,7 +3785,7 @@ fn lower_ir_store(
 
 fn lower_place_as_value(module: &IrModule, function: &IrFunction, place: &IrPlace) -> LowerValue {
     match place {
-        IrPlace::Local(local) => lower_local_value(function, *local),
+        IrPlace::Local(local) => lower_local_value(module, function, *local),
         IrPlace::External(external) => LowerValue::Name(extern_name(module, *external)),
         IrPlace::Member(member) => property_key_value(module, function, &member.property),
         IrPlace::SuperMember(property) => property_key_value(module, function, property),
@@ -3688,7 +3798,7 @@ fn lower_ir_value(module: &IrModule, function: &IrFunction, value: &IrValue) -> 
         IrValue::Null => LowerValue::Null,
         IrValue::Bool(value) => LowerValue::Bool(*value),
         IrValue::Const(constant) => lower_ir_const(module, *constant),
-        IrValue::Local(local) => lower_local_value(function, *local),
+        IrValue::Local(local) => lower_local_value(module, function, *local),
         IrValue::Register(register) => LowerValue::Register(register_name(*register)),
         IrValue::Function(function) => LowerValue::Name(function_name(module, *function)),
         IrValue::Class(class) => LowerValue::Name(
@@ -3713,6 +3823,7 @@ fn lower_ir_value_text(module: &IrModule, function: &IrFunction, value: &IrValue
         LowerValue::LocalSlot(slot) => format!("local#{slot}"),
         LowerValue::Number(value) => value.to_string(),
         LowerValue::String(value) => format!("{value:?}"),
+        LowerValue::BigInt(value) => format!("{value}n"),
         LowerValue::Bool(value) => value.to_string(),
         LowerValue::Null => "null".to_string(),
         LowerValue::Undefined => "undefined".to_string(),
@@ -3724,7 +3835,7 @@ fn lower_ir_const(module: &IrModule, id: ConstId) -> LowerValue {
         Some(IrConst::String(value)) => LowerValue::String(value.clone()),
         Some(IrConst::Int(value)) => LowerValue::Number(*value as f64),
         Some(IrConst::Float(value)) => LowerValue::Number(*value),
-        Some(IrConst::BigInt(value)) => LowerValue::String(format!("{value}n")),
+        Some(IrConst::BigInt(value)) => LowerValue::BigInt(value.clone()),
         Some(IrConst::Regex { pattern, flags }) => {
             LowerValue::String(format!("/{pattern}/{flags}"))
         }
@@ -3762,11 +3873,11 @@ fn property_key_name(module: &IrModule, function: &IrFunction, key: &IrPropertyK
     }
 }
 
-fn function_param_bindings(function: &IrFunction) -> Vec<LowerBinding> {
+fn function_param_bindings(module: &IrModule, function: &IrFunction) -> Vec<LowerBinding> {
     function
         .params
         .iter()
-        .map(|param| lower_local_binding(function, param.local))
+        .map(|param| lower_local_binding(module, function, param.local))
         .collect()
 }
 
@@ -3785,10 +3896,13 @@ fn local_name(function: &IrFunction, id: LocalId) -> Option<String> {
         .and_then(|local| local.name.clone())
 }
 
-fn lower_local_binding(function: &IrFunction, id: LocalId) -> LowerBinding {
+fn lower_local_binding(module: &IrModule, function: &IrFunction, id: LocalId) -> LowerBinding {
     match function.locals.get(id.0) {
         Some(local) if local.name.as_deref() == Some("arguments") => {
             LowerBinding::Name("arguments".to_string())
+        }
+        Some(local) if ir_function_uses_direct_eval(module, function) => {
+            LowerBinding::Name(local.name.clone().unwrap_or_else(|| id.to_string()))
         }
         Some(local) if local.kind == IrBindingKind::Function => {
             LowerBinding::Name(local.name.clone().unwrap_or_else(|| id.to_string()))
@@ -3800,10 +3914,51 @@ fn lower_local_binding(function: &IrFunction, id: LocalId) -> LowerBinding {
     }
 }
 
-fn lower_local_value(function: &IrFunction, id: LocalId) -> LowerValue {
-    match lower_local_binding(function, id) {
+fn lower_local_value(module: &IrModule, function: &IrFunction, id: LocalId) -> LowerValue {
+    match lower_local_binding(module, function, id) {
         LowerBinding::Name(name) => LowerValue::Name(name),
         LowerBinding::LocalSlot(slot) => LowerValue::LocalSlot(slot),
+    }
+}
+
+fn ir_function_uses_direct_eval(module: &IrModule, function: &IrFunction) -> bool {
+    function
+        .blocks
+        .iter()
+        .any(|block| ir_instructions_use_direct_eval(module, &block.instructions))
+}
+
+fn ir_instructions_use_direct_eval(module: &IrModule, instructions: &[IrInstruction]) -> bool {
+    instructions
+        .iter()
+        .any(|instruction| ir_instruction_uses_direct_eval(module, &instruction.kind))
+}
+
+fn ir_instruction_uses_direct_eval(module: &IrModule, kind: &IrInstructionKind) -> bool {
+    match kind {
+        IrInstructionKind::Call(call) => ir_value_is_eval(module, &call.callee),
+        IrInstructionKind::Load { src, .. } => ir_place_is_eval(module, src),
+        _ => false,
+    }
+}
+
+fn ir_value_is_eval(module: &IrModule, value: &IrValue) -> bool {
+    match value {
+        IrValue::External(external) => module
+            .extern_slots
+            .get(external.0)
+            .is_some_and(|name| name == "eval"),
+        _ => false,
+    }
+}
+
+fn ir_place_is_eval(module: &IrModule, place: &IrPlace) -> bool {
+    match place {
+        IrPlace::External(external) => module
+            .extern_slots
+            .get(external.0)
+            .is_some_and(|name| name == "eval"),
+        _ => false,
     }
 }
 
@@ -4142,7 +4297,7 @@ impl BytecodeBuilder {
                 self.emit(BytecodeOp::LoadName, vec![dst, name]);
             }
             LowerInstruction::StoreName { name, src } => {
-                let name = self.binding_operand(name);
+                let name = self.binding_ref_operand(name);
                 let src = self.value_operand(src);
                 self.emit(BytecodeOp::StoreName, vec![name, src]);
             }
@@ -4208,6 +4363,19 @@ impl BytecodeBuilder {
                 }
                 self.emit(BytecodeOp::Object, operands);
             }
+            LowerInstruction::ObjectRest {
+                dst,
+                source,
+                excluded,
+            } => {
+                let mut operands = vec![
+                    self.register_operand(dst),
+                    self.value_operand(source),
+                    BytecodeOperand::Count(excluded.len() as u32),
+                ];
+                operands.extend(excluded.iter().map(|key| self.string_constant_operand(key)));
+                self.emit(BytecodeOp::ObjectRest, operands);
+            }
             LowerInstruction::Call { dst, callee, args } => {
                 let mut operands = vec![
                     self.register_operand(dst),
@@ -4236,9 +4404,15 @@ impl BytecodeBuilder {
                 operands.extend(exprs.iter().map(|expr| self.value_operand(expr)));
                 self.emit(BytecodeOp::Template, operands);
             }
-            LowerInstruction::Function { name, params, body } => {
+            LowerInstruction::Function {
+                name,
+                params,
+                is_generator,
+                body,
+            } => {
                 let scope = self.function_scope(params, body, Some(name));
-                let function = self.function_entry(Some(name), params, body, Some(&scope));
+                let function =
+                    self.function_entry(Some(name), params, body, Some(&scope), *is_generator);
                 self.emit(
                     BytecodeOp::FunctionStart,
                     vec![BytecodeOperand::Function(function)],
@@ -4254,10 +4428,12 @@ impl BytecodeBuilder {
                 dst,
                 name,
                 params,
+                is_generator,
                 body,
             } => {
                 let scope = self.function_scope(params, body, name.as_deref());
-                let function = self.function_entry(name.as_deref(), params, body, Some(&scope));
+                let function =
+                    self.function_entry(name.as_deref(), params, body, Some(&scope), *is_generator);
                 self.emit(
                     BytecodeOp::FunctionExprStart,
                     vec![
@@ -4405,6 +4581,21 @@ impl BytecodeBuilder {
                 let label = self.label_operand(label);
                 self.emit(BytecodeOp::JumpIfFalse, vec![test, label]);
             }
+            LowerInstruction::Yield {
+                dst,
+                value,
+                delegate: _,
+            } => {
+                let value = value
+                    .as_ref()
+                    .map(|value| self.value_operand(value))
+                    .unwrap_or(BytecodeOperand::None);
+                let dst = dst
+                    .as_ref()
+                    .map(|dst| self.register_operand(dst))
+                    .unwrap_or(BytecodeOperand::None);
+                self.emit(BytecodeOp::Yield, vec![value, dst]);
+            }
             LowerInstruction::Unsupported(message) => {
                 let message = self.string_constant_operand(message);
                 self.emit(BytecodeOp::Unsupported, vec![message]);
@@ -4425,6 +4616,9 @@ impl BytecodeBuilder {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Number(*value)))
             }
             LowerValue::String(value) => self.string_constant_operand(value),
+            LowerValue::BigInt(value) => {
+                BytecodeOperand::Constant(self.constant(BytecodeConstant::BigInt(value.clone())))
+            }
             LowerValue::Bool(value) => {
                 BytecodeOperand::Constant(self.constant(BytecodeConstant::Bool(*value)))
             }
@@ -4489,6 +4683,7 @@ impl BytecodeBuilder {
         params: &[LowerBinding],
         body: &[LowerInstruction],
         scope: Option<&NameScope>,
+        is_generator: bool,
     ) -> u32 {
         let name = name.map(|name| {
             let scoped = self.scoped_name(name);
@@ -4505,7 +4700,7 @@ impl BytecodeBuilder {
             params,
             body_start: 0,
             body_end: 0,
-            flags: function_flags(has_return),
+            flags: function_flags(has_return, is_generator),
             has_return,
         });
         id
@@ -4611,10 +4806,12 @@ impl BytecodeBuilder {
         collect_local_scope_names(body, &mut names, &mut seen);
         let captured = captured_by_nested_functions(body, &seen);
         let function_declarations = function_declaration_names(body);
+        let preserve_all_names = contains_direct_eval(body);
 
         let mut local_slot = 0;
         for name in names {
-            let captured = captured.contains(&name)
+            let captured = preserve_all_names
+                || captured.contains(&name)
                 || function_declarations.contains(&name)
                 || self.module_export_names.contains(&name);
             if captured {
@@ -4634,9 +4831,11 @@ impl BytecodeBuilder {
         collect_local_scope_names(body, &mut names, &mut seen);
         let captured = captured_by_nested_functions(body, &seen);
         let function_declarations = function_declaration_names(body);
+        let preserve_all_names = contains_direct_eval(body);
         let mut local_slot = 0;
         for name in names {
-            if captured.contains(&name)
+            if preserve_all_names
+                || captured.contains(&name)
                 || function_declarations.contains(&name)
                 || self.module_export_names.contains(&name)
             {
@@ -4676,8 +4875,12 @@ fn register_id(register: &str) -> u32 {
         .unwrap_or(0)
 }
 
-fn function_flags(has_return: bool) -> u32 {
-    u32::from(has_return)
+const FUNCTION_FLAG_HAS_RETURN: u32 = 1 << 0;
+const FUNCTION_FLAG_GENERATOR: u32 = 1 << 1;
+
+fn function_flags(has_return: bool, is_generator: bool) -> u32 {
+    u32::from(has_return) * FUNCTION_FLAG_HAS_RETURN
+        | u32::from(is_generator) * FUNCTION_FLAG_GENERATOR
 }
 
 fn remap_instruction_boundary(boundary: usize, removed: &BTreeSet<usize>) -> u32 {
@@ -4889,6 +5092,28 @@ fn collect_local_scope_names(
     }
 }
 
+fn contains_direct_eval(instructions: &[LowerInstruction]) -> bool {
+    instructions.iter().any(|instruction| match instruction {
+        LowerInstruction::Call {
+            callee: LowerValue::Name(name),
+            ..
+        } => name == "eval",
+        LowerInstruction::Try {
+            body,
+            catch_body,
+            finally_body,
+            ..
+        } => {
+            contains_direct_eval(body)
+                || contains_direct_eval(catch_body)
+                || contains_direct_eval(finally_body)
+        }
+        LowerInstruction::Scope { body, .. } => contains_direct_eval(body),
+        LowerInstruction::Function { .. } | LowerInstruction::FunctionExpr { .. } => false,
+        _ => false,
+    })
+}
+
 fn function_declaration_names(instructions: &[LowerInstruction]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_function_declaration_names(instructions, &mut names);
@@ -4930,7 +5155,9 @@ fn captured_by_nested_functions(
     let mut captured = BTreeSet::new();
     for instruction in instructions {
         match instruction {
-            LowerInstruction::Function { name, params, body } => {
+            LowerInstruction::Function {
+                name, params, body, ..
+            } => {
                 let shadowed = function_shadowed_names(Some(name), params, body);
                 collect_name_refs(body, local_names, &shadowed, &mut captured);
             }
@@ -4993,6 +5220,11 @@ fn collect_name_refs(
             | LowerInstruction::Unary { arg: src, .. }
             | LowerInstruction::Throw(src)
             | LowerInstruction::Pop(src) => collect_value_ref(src, local_names, shadowed, captured),
+            LowerInstruction::Yield { value, .. } => {
+                if let Some(value) = value {
+                    collect_value_ref(value, local_names, shadowed, captured);
+                }
+            }
             LowerInstruction::Binary { left, right, .. } => {
                 collect_value_ref(left, local_names, shadowed, captured);
                 collect_value_ref(right, local_names, shadowed, captured);
@@ -5025,7 +5257,9 @@ fn collect_name_refs(
                     collect_value_ref(expr, local_names, shadowed, captured);
                 }
             }
-            LowerInstruction::Function { name, params, body } => {
+            LowerInstruction::Function {
+                name, params, body, ..
+            } => {
                 let child_shadowed =
                     merge_shadowed(shadowed, &function_shadowed_names(Some(name), params, body));
                 collect_name_refs(body, local_names, &child_shadowed, captured)
@@ -5304,6 +5538,8 @@ const OPERATOR_NAMES: &[&str] = &[
     ">>>",
     "!",
     "~",
+    "++",
+    "--",
     "typeof",
     "void",
     "delete",
@@ -5315,6 +5551,7 @@ fn constant_key(constant: &BytecodeConstant) -> String {
     match constant {
         BytecodeConstant::Number(value) => format!("n:{value:?}"),
         BytecodeConstant::String(value) => format!("s:{value}"),
+        BytecodeConstant::BigInt(value) => format!("bi:{value}"),
         BytecodeConstant::Bool(value) => format!("b:{value}"),
         BytecodeConstant::Null => "null".to_string(),
         BytecodeConstant::Undefined => "undefined".to_string(),
@@ -5434,7 +5671,7 @@ fn default_operand_tag_keys() -> Vec<String> {
 }
 
 fn default_constant_tag_keys() -> Vec<String> {
-    ["number", "string", "bool", "null", "undefined"]
+    ["number", "string", "bool", "null", "undefined", "bigint"]
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -5704,6 +5941,9 @@ impl<'a> ByteReader<'a> {
         }
         if tag == encoding.constant_tag("string")? {
             return Ok(BytecodeConstant::String(self.read_constant_string()?));
+        }
+        if tag == encoding.constant_tag("bigint")? {
+            return Ok(BytecodeConstant::BigInt(self.read_constant_string()?));
         }
         if tag == encoding.constant_tag("bool")? {
             return Ok(BytecodeConstant::Bool(self.read_u8()? != 0));
@@ -6241,6 +6481,7 @@ mod tests {
                 LowerInstruction::Function {
                     name: "named".to_string(),
                     params: vec![LowerBinding::Name("value".to_string())],
+                    is_generator: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                         "value".to_string(),
                     )))],
@@ -6252,6 +6493,7 @@ mod tests {
                         LowerBinding::Name("left".to_string()),
                         LowerBinding::Name("right".to_string()),
                     ],
+                    is_generator: false,
                     body: vec![LowerInstruction::Return(None)],
                 },
                 LowerInstruction::Class {
@@ -6292,6 +6534,7 @@ mod tests {
                     LowerBinding::Name("left".to_string()),
                     LowerBinding::Name("right".to_string()),
                 ],
+                is_generator: false,
                 body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                     "left".to_string(),
                 )))],
@@ -6565,6 +6808,7 @@ mod tests {
                     dst: "t700".to_string(),
                     name: Some("inner".to_string()),
                     params: Vec::new(),
+                    is_generator: false,
                     body: vec![
                         LowerInstruction::LoadConst {
                             dst: "t400".to_string(),
@@ -6602,6 +6846,7 @@ mod tests {
                     dst: "t0".to_string(),
                     name: Some("outer".to_string()),
                     params: Vec::new(),
+                    is_generator: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Number(1.0)))],
                 },
                 LowerInstruction::Jump("late".to_string()),
@@ -6610,6 +6855,7 @@ mod tests {
                     dst: "t2".to_string(),
                     name: Some("factory".to_string()),
                     params: Vec::new(),
+                    is_generator: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Number(2.0)))],
                 },
                 LowerInstruction::Call {
@@ -6913,11 +7159,13 @@ mod tests {
                 LowerInstruction::Function {
                     name: "first".to_string(),
                     params: vec![LowerBinding::LocalSlot(1)],
+                    is_generator: false,
                     body: function_body.clone(),
                 },
                 LowerInstruction::Function {
                     name: "second".to_string(),
                     params: vec![LowerBinding::LocalSlot(1)],
+                    is_generator: false,
                     body: function_body,
                 },
             ],
@@ -6946,6 +7194,7 @@ mod tests {
                 dst: "0".to_string(),
                 name: None,
                 params: vec![LowerBinding::Name("window".to_string())],
+                is_generator: false,
                 body: vec![
                     LowerInstruction::LoadName {
                         dst: "1".to_string(),

@@ -98,7 +98,7 @@ fn print_help() {
             "Package options:",
             "  --out <dir>          Output runtime package directory. Default: <folder>/js-vm-runtime",
             "  --entry <file>       Entry js/ts file relative to folder. Default: index/main lookup",
-            "  --platform <value>   web, node, or all. Default: web",
+            "  --platform <value>   web/browser/h5,node,nodejs,all. Default: web",
             "  --clean              Remove output directory before writing",
             "  --depth <n>          Runtime max call depth. Default: 128",
             "  --recursion <n>      Runtime max recursive call depth. Default: 8",
@@ -266,6 +266,7 @@ fn build_wasm(options: WasmOptions) -> Result<(), String> {
     println!("STEP Building wasm packages target={}", options.target);
     remove_dir_if_exists(&root.join("pkg/compiler"))?;
     remove_dir_if_exists(&root.join("pkg/executor"))?;
+    remove_dir_if_exists(&root.join("pkg/executor-node"))?;
     let mut common = vec!["build".to_string()];
     if options.release {
         common.push("--release".to_string());
@@ -293,11 +294,26 @@ fn build_wasm(options: WasmOptions) -> Result<(), String> {
         common
             .iter()
             .chain([
-                &"crates/runtime".to_string(),
+                &"crates/runtime/bin/browser".to_string(),
                 &"--target".to_string(),
                 &options.target,
                 &"--out-dir".to_string(),
-                &"../../pkg/executor".to_string(),
+                &"../../../../pkg/executor".to_string(),
+            ])
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    )?;
+    run_command(
+        &root,
+        "wasm-pack",
+        common
+            .iter()
+            .chain([
+                &"crates/runtime/bin/node".to_string(),
+                &"--target".to_string(),
+                &"nodejs".to_string(),
+                &"--out-dir".to_string(),
+                &"../../../../pkg/executor-node".to_string(),
             ])
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -306,16 +322,24 @@ fn build_wasm(options: WasmOptions) -> Result<(), String> {
         if let Some(wasm_opt) = find_command("wasm-opt") {
             optimize_wasm(&root, &wasm_opt, "pkg/compiler/js_vm_compiler_bg.wasm")?;
             optimize_wasm(&root, &wasm_opt, "pkg/executor/js_vm_runtime_bg.wasm")?;
+            optimize_wasm(
+                &root,
+                &wasm_opt,
+                "pkg/executor-node/js_vm_runtime_node_bg.wasm",
+            )?;
         } else {
             println!("WARN wasm-opt not found; wasm output was built but not post-optimized");
         }
     }
     patch_wasm_bindgen_js(&root.join("pkg/compiler/js_vm_compiler.js"))?;
     patch_wasm_bindgen_js(&root.join("pkg/executor/js_vm_runtime.js"))?;
+    patch_wasm_bindgen_js(&root.join("pkg/executor-node/js_vm_runtime_node.js"))?;
     print_size(&root, "pkg/compiler/js_vm_compiler_bg.wasm")?;
     print_size(&root, "pkg/compiler/js_vm_compiler.js")?;
     print_size(&root, "pkg/executor/js_vm_runtime_bg.wasm")?;
     print_size(&root, "pkg/executor/js_vm_runtime.js")?;
+    print_size(&root, "pkg/executor-node/js_vm_runtime_node_bg.wasm")?;
+    print_size(&root, "pkg/executor-node/js_vm_runtime_node.js")?;
     println!(
         "OK Wasm build completed in {}ms",
         started.elapsed().as_millis()
@@ -331,7 +355,7 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
         ));
     }
     let root = workspace_root()?;
-    ensure_runtime_exists(&root)?;
+    ensure_runtime_exists(&root, &options.platforms)?;
     let files = list_source_files(&options.input, &options.output)?;
     if files.is_empty() {
         return Err(format!(
@@ -346,7 +370,7 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
         remove_dir_if_exists(&options.output)?;
     }
     fs::create_dir_all(&options.output).map_err(|err| err.to_string())?;
-    copy_runtime(&root, &options.output)?;
+    copy_runtime(&root, &options.output, &options.platforms)?;
 
     let mut modules = Vec::new();
     let base_seed = EncodingConfig::default()
@@ -381,13 +405,13 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
         match platform {
             Platform::Web => write_output(
                 &options.output,
-                "js-vm-loader.web.js",
-                web_loader_code(&options).as_bytes(),
+                "js_vm_env_browser.js",
+                browser_env_code(&options).as_bytes(),
             )?,
             Platform::Node => write_output(
                 &options.output,
-                "js-vm-loader.node.mjs",
-                node_loader_code(&options).as_bytes(),
+                "js_vm_env_node.js",
+                node_env_code(&options).as_bytes(),
             )?,
         }
     }
@@ -395,12 +419,12 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
         Some(Platform::Web) => write_output(
             &options.output,
             "js-vm-loader.js",
-            web_loader_code(&options).as_bytes(),
+            browser_loader_code().as_bytes(),
         )?,
         Some(Platform::Node) => write_output(
             &options.output,
             "js-vm-loader.js",
-            node_loader_code(&options).as_bytes(),
+            node_loader_code().as_bytes(),
         )?,
         None => {}
     }
@@ -501,11 +525,21 @@ fn print_size(root: &Path, file: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_runtime_exists(root: &Path) -> Result<(), String> {
-    for file in [
-        "pkg/executor/js_vm_runtime.js",
-        "pkg/executor/js_vm_runtime_bg.wasm",
-    ] {
+fn ensure_runtime_exists(root: &Path, platforms: &[Platform]) -> Result<(), String> {
+    let mut files = Vec::new();
+    if platforms.contains(&Platform::Web) {
+        files.extend([
+            "pkg/executor/js_vm_runtime.js",
+            "pkg/executor/js_vm_runtime_bg.wasm",
+        ]);
+    }
+    if platforms.contains(&Platform::Node) {
+        files.extend([
+            "pkg/executor-node/js_vm_runtime_node.js",
+            "pkg/executor-node/js_vm_runtime_node_bg.wasm",
+        ]);
+    }
+    for file in files {
         if !root.join(file).is_file() {
             return Err(format!("{file} is missing; run npm run build:wasm first"));
         }
@@ -513,15 +547,31 @@ fn ensure_runtime_exists(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_runtime(root: &Path, output: &Path) -> Result<(), String> {
-    for (from, to) in [
-        ("pkg/executor/js_vm_runtime.js", "js_vm_runtime.js"),
-        (
-            "pkg/executor/js_vm_runtime_bg.wasm",
-            "js_vm_runtime_bg.wasm",
-        ),
-        ("pkg/executor/package.json", "package.json"),
-    ] {
+fn copy_runtime(root: &Path, output: &Path, platforms: &[Platform]) -> Result<(), String> {
+    let mut files = Vec::new();
+    if platforms.contains(&Platform::Web) {
+        files.extend([
+            ("pkg/executor/js_vm_runtime.js", "js_vm_runtime_browser.js"),
+            (
+                "pkg/executor/js_vm_runtime_bg.wasm",
+                "js_vm_runtime_browser_bg.wasm",
+            ),
+            ("pkg/executor/package.json", "package.json"),
+        ]);
+    }
+    if platforms.contains(&Platform::Node) {
+        files.extend([
+            (
+                "pkg/executor-node/js_vm_runtime_node.js",
+                "js_vm_runtime_node.js",
+            ),
+            (
+                "pkg/executor-node/js_vm_runtime_node_bg.wasm",
+                "js_vm_runtime_node_bg.wasm",
+            ),
+        ]);
+    }
+    for (from, to) in files {
         let source = root.join(from);
         if source.is_file() {
             fs::copy(&source, output.join(to))
@@ -880,13 +930,29 @@ fn manifest_json(entry: &str, modules: &[ModuleOutput]) -> String {
     out
 }
 
-fn web_loader_code(options: &PackageOptions) -> String {
+fn browser_loader_code() -> String {
+    r#"// JS VM browser runtime entry.
+export { default } from './js_vm_env_browser.js';
+export * from './js_vm_env_browser.js';
+"#
+    .to_string()
+}
+
+fn node_loader_code() -> String {
+    r#"// JS VM node runtime entry.
+export { default } from './js_vm_env_node.js';
+export * from './js_vm_env_node.js';
+"#
+    .to_string()
+}
+
+fn browser_env_code(options: &PackageOptions) -> String {
     format!(
-        r#"// JS VM web runtime loader.
+        r#"// JS VM browser environment package.
 import init, {{
   js_execute_bytes_with_seed,
   js_execute_bytes_with_seed_and_limits,
-}} from './js_vm_runtime.js';
+}} from './js_vm_runtime_browser.js';
 
 const maxCallDepth = {max_call_depth};
 const maxRecursiveCallDepth = {max_recursive_call_depth};
@@ -908,7 +974,7 @@ function resolveExternal(name) {{
 }}
 
 globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {{}};
-await init(new URL('./js_vm_runtime_bg.wasm', import.meta.url));
+await init({{ module_or_path: new URL('./js_vm_runtime_browser_bg.wasm', import.meta.url) }});
 const manifest = await loadJson(new URL('./manifest.json', import.meta.url));
 const execute = typeof js_execute_bytes_with_seed_and_limits === 'function'
   ? (bytes, seed, externs) => js_execute_bytes_with_seed_and_limits(bytes, seed, externs, maxCallDepth, maxRecursiveCallDepth)
@@ -926,24 +992,27 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];
     )
 }
 
-fn node_loader_code(options: &PackageOptions) -> String {
+fn node_env_code(options: &PackageOptions) -> String {
     format!(
-        r#"// JS VM Node.js runtime loader.
-import {{ readFile }} from 'node:fs/promises';
+        r#"// JS VM node environment package.
+import fs from 'node:fs/promises';
+import {{ fileURLToPath }} from 'node:url';
+import {{ dirname, join }} from 'node:path';
 import init, {{
   js_execute_bytes_with_seed,
   js_execute_bytes_with_seed_and_limits,
-}} from './js_vm_runtime.js';
+}} from './js_vm_runtime_node.js';
 
 const maxCallDepth = {max_call_depth};
 const maxRecursiveCallDepth = {max_recursive_call_depth};
+const here = dirname(fileURLToPath(import.meta.url));
 
-async function loadJson(url) {{
-  return JSON.parse(await readFile(url, 'utf8'));
+async function loadJson(file) {{
+  return JSON.parse(await fs.readFile(join(here, file), 'utf8'));
 }}
 
-async function loadBin(url) {{
-  return new Uint8Array(await readFile(url));
+async function loadBin(file) {{
+  return new Uint8Array(await fs.readFile(join(here, file)));
 }}
 
 function resolveExternal(name) {{
@@ -951,14 +1020,14 @@ function resolveExternal(name) {{
 }}
 
 globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {{}};
-await init({{ module_or_path: await readFile(new URL('./js_vm_runtime_bg.wasm', import.meta.url)) }});
-const manifest = await loadJson(new URL('./manifest.json', import.meta.url));
+await init({{ module_or_path: await fs.readFile(join(here, 'js_vm_runtime_node_bg.wasm')) }});
+const manifest = await loadJson('manifest.json');
 const execute = typeof js_execute_bytes_with_seed_and_limits === 'function'
   ? (bytes, seed, externs) => js_execute_bytes_with_seed_and_limits(bytes, seed, externs, maxCallDepth, maxRecursiveCallDepth)
   : (bytes, seed, externs) => js_execute_bytes_with_seed(bytes, seed, externs);
 
 for (const module of manifest.modules) {{
-  const bytes = await loadBin(new URL(module.bin, import.meta.url));
+  const bytes = await loadBin(module.bin);
   module.result = execute(bytes, module.seed, module.externs.map(resolveExternal));
 }}
 

@@ -1,0 +1,16 @@
+[package]
+name = "js_vm_runtime_node"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+js_token_core.workspace = true
+js_vm_runtime_core.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]

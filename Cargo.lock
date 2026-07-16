@@ -361,6 +361,26 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "js_token_core",
+ "js_vm_runtime_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "js_vm_runtime_core"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "js_token_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "js_vm_runtime_node"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "js_token_core",
+ "js_vm_runtime_core",
  "wasm-bindgen",
 ]
 

@@ -84,6 +84,17 @@ impl LexicalEnv {
         }
     }
 
+    pub(crate) fn define_var_slot_if_absent(&self, slot: u32, value: Value) {
+        if let Some(frame) = self
+            .frames
+            .iter()
+            .rev()
+            .find(|frame| matches!(frame.kind, ScopeKind::Function | ScopeKind::Global))
+        {
+            frame.record.borrow_mut().slots.entry(slot).or_insert(value);
+        }
+    }
+
     pub(crate) fn get_slot(&self, slot: u32) -> Value {
         for frame in self.frames.iter().rev() {
             if let Some(value) = frame.record.borrow().slots.get(&slot).cloned() {
@@ -116,6 +127,22 @@ impl LexicalEnv {
 
     pub(crate) fn define_global_if_absent(&self, name: String, value: Value) {
         if let Some(frame) = self.frames.first() {
+            frame
+                .record
+                .borrow_mut()
+                .bindings
+                .entry(name)
+                .or_insert(value);
+        }
+    }
+
+    pub(crate) fn define_var_if_absent(&self, name: String, value: Value) {
+        if let Some(frame) = self
+            .frames
+            .iter()
+            .rev()
+            .find(|frame| matches!(frame.kind, ScopeKind::Function | ScopeKind::Global))
+        {
             frame
                 .record
                 .borrow_mut()

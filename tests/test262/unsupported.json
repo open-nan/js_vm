@@ -1,0 +1,55 @@
+{
+  "flags": [
+    "async",
+    "CanBlockIsFalse",
+    "CanBlockIsTrue",
+    "module"
+  ],
+  "features": [
+    "Atomics",
+    "FinalizationRegistry",
+    "IsHTMLDDA",
+    "Promise",
+    "Proxy",
+    "Reflect",
+    "SharedArrayBuffer",
+    "Symbol.asyncIterator",
+    "Temporal",
+    "WeakRef",
+    "class",
+    "cross-realm",
+    "intl-enumeration",
+    "regexp-dotall",
+    "regexp-lookbehind",
+    "regexp-named-groups",
+    "regexp-unicode-property-escapes",
+    "resizable-arraybuffer",
+    "source-phase-imports",
+    "source-phase-imports-module-source"
+  ],
+  "paths": [
+    "annexB/",
+    "built-ins/Atomics/",
+    "built-ins/FinalizationRegistry/",
+    "built-ins/Promise/",
+    "built-ins/Proxy/",
+    "built-ins/Reflect/",
+    "built-ins/SharedArrayBuffer/",
+    "built-ins/Temporal/",
+    "built-ins/WeakRef/",
+    "built-ins/intl402/",
+    "intl402/",
+    "staging/intl402/"
+  ],
+  "sourcePatterns": [
+    "\\$262\\.",
+    "\\bFunction\\s*\\(",
+    "\\bAtomics\\b",
+    "\\bFinalizationRegistry\\b",
+    "\\bIntl\\b",
+    "\\bPromise\\b",
+    "\\bProxy\\b",
+    "\\bSharedArrayBuffer\\b",
+    "\\bWeakRef\\b"
+  ]
+}

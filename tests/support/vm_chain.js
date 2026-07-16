@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const nodeVm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '../..');
 
@@ -61,6 +62,8 @@ const OPCODES = [
   'BINARY_REG_CONST',
   'LOAD_LOCAL_SMALL',
   'STORE_LOCAL_SMALL',
+  'OBJECT_REST',
+  'YIELD',
 ];
 
 const OPERAND_TAGS = [
@@ -75,7 +78,7 @@ const OPERAND_TAGS = [
   'function',
 ];
 
-const CONSTANT_TAGS = ['number', 'string', 'bool', 'null', 'undefined'];
+const CONSTANT_TAGS = ['number', 'string', 'bool', 'null', 'undefined', 'bigint'];
 
 class JsVmAdapter {
   constructor(packages) {
@@ -140,6 +143,7 @@ function externSlotsForIteration(externs, iteration, baseSeed = 1337) {
 }
 
 function createDefaultHostEnvironment() {
+  const freshBigInt = createFreshBigInt();
   const hostMath = Object.create(Math);
   hostMath.random = () => 0.5;
   const emit = (level, args) => {
@@ -198,19 +202,30 @@ function createDefaultHostEnvironment() {
       return undefined;
     },
     Object,
+    Function,
     Array,
     Date,
     Error,
+    AggregateError,
+    EvalError,
     JSON,
+    RangeError,
+    ReferenceError,
+    Reflect,
     RegExp,
     String,
+    SyntaxError,
     TypeError,
+    URIError,
     Number,
+    BigInt: freshBigInt,
     Boolean,
     Symbol,
     Math: hostMath,
     encodeURIComponent,
+    eval: (source) => globalThis.eval(String(source)),
     isFinite,
+    isNaN,
     parseFloat,
     parseInt,
     hostStringPrimitive: 'hello',
@@ -225,6 +240,11 @@ function createDefaultHostEnvironment() {
     triggerAssertFalse: () => undefined,
     quit: () => undefined,
   };
+}
+
+function createFreshBigInt() {
+  const context = nodeVm.createContext({});
+  return nodeVm.runInContext('BigInt', context);
 }
 
 function resolveExternalValue(name, environment = createDefaultHostEnvironment()) {
@@ -249,8 +269,8 @@ async function loadVm() {
 async function loadVmPackages() {
   const compilerPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler.js');
   const compilerWasmPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler_bg.wasm');
-  const runtimePath = path.join(ROOT, 'pkg/executor/js_vm_runtime.js');
-  const runtimeWasmPath = path.join(ROOT, 'pkg/executor/js_vm_runtime_bg.wasm');
+  const runtimePath = path.join(ROOT, 'pkg/executor-node/js_vm_runtime_node.js');
+  const runtimeWasmPath = path.join(ROOT, 'pkg/executor-node/js_vm_runtime_node_bg.wasm');
 
   for (const file of [compilerPath, compilerWasmPath, runtimePath, runtimeWasmPath]) {
     if (!fs.existsSync(file)) {
@@ -261,9 +281,8 @@ async function loadVmPackages() {
   globalThis.__jsVmHostLog = globalThis.__jsVmHostLog || (() => {});
 
   const compilerPkg = await import(pathToFileURL(compilerPath).href);
-  const runtimePkg = await import(pathToFileURL(runtimePath).href);
+  const runtimePkg = require(runtimePath);
   await compilerPkg.default({ module_or_path: fs.readFileSync(compilerWasmPath) });
-  await runtimePkg.default({ module_or_path: fs.readFileSync(runtimeWasmPath) });
 
   return {
     Compiler: compilerPkg.Compiler,

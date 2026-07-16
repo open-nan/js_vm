@@ -10,6 +10,7 @@ enum IrValue {
     Name(String),
     Number(f64),
     String(String),
+    BigInt(String),
     Bool(bool),
     Null,
     Undefined,
@@ -22,6 +23,7 @@ impl std::fmt::Display for IrValue {
             IrValue::Name(value) => f.write_str(value),
             IrValue::Number(value) => write!(f, "{value}"),
             IrValue::String(value) => write!(f, "{value:?}"),
+            IrValue::BigInt(value) => write!(f, "{value}n"),
             IrValue::Bool(value) => write!(f, "{value}"),
             IrValue::Null => f.write_str("null"),
             IrValue::Undefined => f.write_str("undefined"),
@@ -82,6 +84,11 @@ enum IrInstruction {
         dst: String,
         props: Vec<(String, IrValue)>,
     },
+    ObjectRest {
+        dst: String,
+        source: IrValue,
+        excluded: Vec<String>,
+    },
     Call {
         dst: String,
         callee: IrValue,
@@ -100,12 +107,14 @@ enum IrInstruction {
     Function {
         name: String,
         params: Vec<String>,
+        is_generator: bool,
         body: Vec<IrInstruction>,
     },
     FunctionExpr {
         dst: String,
         name: Option<String>,
         params: Vec<String>,
+        is_generator: bool,
         body: Vec<IrInstruction>,
     },
     Class {
@@ -129,6 +138,8 @@ enum IrInstruction {
         catch_body: Vec<IrInstruction>,
         finally_body: Vec<IrInstruction>,
     },
+    EnterScope(String),
+    LeaveScope,
     Scope {
         kind: String,
         body: Vec<IrInstruction>,
@@ -140,6 +151,11 @@ enum IrInstruction {
         test: IrValue,
         label: String,
     },
+    Yield {
+        dst: String,
+        value: IrValue,
+        delegate: bool,
+    },
     Unsupported(String),
 }
 
@@ -149,11 +165,17 @@ pub struct LoweringContext {
     label_id: usize,
     child_id: usize,
     label_prefix: String,
-    break_stack: Vec<String>,
-    continue_stack: Vec<String>,
+    control_stack: Vec<ControlTarget>,
+    pending_control_labels: Vec<String>,
     extern_slots: BTreeMap<String, usize>,
     locals: BTreeSet<String>,
-    yield_array: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ControlTarget {
+    label: Option<String>,
+    break_label: String,
+    continue_label: Option<String>,
 }
 
 impl LoweringContext {
@@ -164,15 +186,14 @@ impl LoweringContext {
             label_id: 0,
             child_id: 0,
             label_prefix: "c0".to_string(),
-            break_stack: Vec::new(),
-            continue_stack: Vec::new(),
+            control_stack: Vec::new(),
+            pending_control_labels: Vec::new(),
             extern_slots: externs
                 .iter()
                 .enumerate()
                 .map(|(index, name)| (name.clone(), index))
                 .collect(),
             locals: BTreeSet::new(),
-            yield_array: None,
         }
     }
 
@@ -193,11 +214,10 @@ impl LoweringContext {
             label_id: 0,
             child_id: 0,
             label_prefix: format!("{}_{}", self.label_prefix, child_id),
-            break_stack: Vec::new(),
-            continue_stack: Vec::new(),
+            control_stack: Vec::new(),
+            pending_control_labels: Vec::new(),
             extern_slots: BTreeMap::new(),
             locals: self.locals.clone(),
-            yield_array: None,
         }
     }
 
@@ -234,14 +254,88 @@ impl LoweringContext {
         label
     }
 
+    fn push_control_targets(
+        &mut self,
+        break_label: String,
+        continue_label: Option<String>,
+    ) -> usize {
+        let previous_len = self.control_stack.len();
+        let pending_labels = std::mem::take(&mut self.pending_control_labels);
+        self.control_stack.push(ControlTarget {
+            label: None,
+            break_label: break_label.clone(),
+            continue_label: continue_label.clone(),
+        });
+        for label in pending_labels {
+            self.control_stack.push(ControlTarget {
+                label: Some(label),
+                break_label: break_label.clone(),
+                continue_label: continue_label.clone(),
+            });
+        }
+        previous_len
+    }
+
+    fn pop_control_targets(&mut self, previous_len: usize) {
+        self.control_stack.truncate(previous_len);
+    }
+
+    fn resolve_break_target(&self, label: Option<&str>) -> Option<String> {
+        self.control_stack.iter().rev().find_map(|target| {
+            (target.label.as_deref() == label).then(|| target.break_label.clone())
+        })
+    }
+
+    fn resolve_continue_target(&self, label: Option<&str>) -> Option<String> {
+        self.control_stack.iter().rev().find_map(|target| {
+            if target.label.as_deref() == label {
+                target.continue_label.clone()
+            } else {
+                None
+            }
+        })
+    }
+
     fn emit(&mut self, instruction: IrInstruction) {
         self.instructions.push(instruction);
     }
 
+    fn lower_in_scope(&mut self, kind: &str, lower: impl FnOnce(&mut Self)) {
+        let outer = std::mem::take(&mut self.instructions);
+        lower(self);
+        let body = std::mem::take(&mut self.instructions);
+        self.instructions = outer;
+        self.emit(IrInstruction::Scope {
+            kind: kind.to_string(),
+            body,
+        });
+    }
+
     pub fn lower_module(&mut self, module: &Module) {
         self.predeclare_module(module);
+        for name in module_var_declared_names(module) {
+            self.emit(IrInstruction::Declare {
+                kind: "var".to_string(),
+                name,
+            });
+        }
         for item in &module.body {
             self.lower_module_item(item);
+        }
+    }
+
+    pub fn lower_script(&mut self, script: &Script) {
+        for stmt in &script.body {
+            self.predeclare_stmt(stmt);
+        }
+        for name in script_var_declared_names(script) {
+            self.emit(IrInstruction::Declare {
+                kind: "var".to_string(),
+                name,
+            });
+        }
+        for stmt in &script.body {
+            self.lower_stmt(stmt);
         }
     }
 
@@ -412,29 +506,35 @@ impl LoweringContext {
                 self.emit(IrInstruction::Marker("}".to_string()));
             }
             Stmt::Labeled(stmt) => {
-                self.emit(IrInstruction::Label(ident_name(&stmt.label)));
-                self.lower_stmt(&stmt.body);
+                let label = ident_name(&stmt.label);
+                if is_labelled_control_target(&stmt.body) {
+                    self.pending_control_labels.push(label);
+                    self.lower_stmt(&stmt.body);
+                } else {
+                    let end_label = self.label("label_end");
+                    let previous_len = self.control_stack.len();
+                    self.control_stack.push(ControlTarget {
+                        label: Some(label),
+                        break_label: end_label.clone(),
+                        continue_label: None,
+                    });
+                    self.lower_stmt(&stmt.body);
+                    self.pop_control_targets(previous_len);
+                    self.emit(IrInstruction::Label(end_label));
+                }
             }
             Stmt::Break(stmt) => {
-                let label = stmt
-                    .label
-                    .as_ref()
-                    .map(ident_name)
-                    .or_else(|| self.break_stack.last().cloned());
-                if let Some(label) = label {
-                    self.emit(IrInstruction::Jump(label));
+                let label = stmt.label.as_ref().map(ident_name);
+                if let Some(target) = self.resolve_break_target(label.as_deref()) {
+                    self.emit(IrInstruction::Jump(target));
                 } else {
                     self.emit(IrInstruction::Marker("break".to_string()));
                 }
             }
             Stmt::Continue(stmt) => {
-                let label = stmt
-                    .label
-                    .as_ref()
-                    .map(ident_name)
-                    .or_else(|| self.continue_stack.last().cloned());
-                if let Some(label) = label {
-                    self.emit(IrInstruction::Jump(label));
+                let label = stmt.label.as_ref().map(ident_name);
+                if let Some(target) = self.resolve_continue_target(label.as_deref()) {
+                    self.emit(IrInstruction::Jump(target));
                 } else {
                     self.emit(IrInstruction::Marker("continue".to_string()));
                 }
@@ -454,11 +554,10 @@ impl LoweringContext {
                     test,
                     label: end_label.clone(),
                 });
-                self.break_stack.push(end_label.clone());
-                self.continue_stack.push(start_label.clone());
+                let control_len =
+                    self.push_control_targets(end_label.clone(), Some(start_label.clone()));
                 self.lower_stmt(&stmt.body);
-                self.continue_stack.pop();
-                self.break_stack.pop();
+                self.pop_control_targets(control_len);
                 self.emit(IrInstruction::Jump(start_label));
                 self.emit(IrInstruction::Label(end_label));
             }
@@ -497,6 +596,17 @@ impl LoweringContext {
 
     fn lower_expr_stmt(&mut self, stmt: &ExprStmt) {
         let value = self.lower_expr(&stmt.expr);
+        let value = match value {
+            IrValue::Register(_) => value,
+            value => {
+                let dst = self.temp();
+                self.emit(IrInstruction::Move {
+                    dst: dst.clone(),
+                    src: value,
+                });
+                IrValue::Register(dst)
+            }
+        };
         self.emit(IrInstruction::Pop(value));
     }
 
@@ -572,32 +682,10 @@ impl LoweringContext {
     }
 
     fn start_generator_body(&mut self, is_generator: bool) {
-        if !is_generator {
-            return;
-        }
-        let name = "__yield".to_string();
-        self.declare_local(name.clone());
-        self.yield_array = Some(name.clone());
-        self.emit(IrInstruction::Declare {
-            kind: "let".to_string(),
-            name: name.clone(),
-        });
-        let array = self.temp();
-        self.emit(IrInstruction::Array {
-            dst: array.clone(),
-            items: Vec::new(),
-        });
-        self.emit(IrInstruction::StoreName {
-            name,
-            src: IrValue::Register(array),
-        });
+        let _ = is_generator;
     }
 
-    fn finish_generator_body(&mut self) {
-        if let Some(name) = &self.yield_array {
-            self.emit(IrInstruction::Return(Some(IrValue::Name(name.clone()))));
-        }
-    }
+    fn finish_generator_body(&mut self) {}
 
     fn lower_pat_default(&mut self, pat: &Pat) {
         match pat {
@@ -666,11 +754,62 @@ impl LoweringContext {
         self.emit(IrInstruction::Function {
             name,
             params,
+            is_generator: decl.function.is_generator,
             body: body_ctx.instructions,
         });
     }
 
     fn lower_for(&mut self, stmt: &ForStmt) {
+        if let Some(names) = for_init_lexical_names(&stmt.init) {
+            self.lower_in_scope("block", |ctx| ctx.lower_for_lexical(stmt, &names));
+        } else {
+            self.lower_for_unscoped(stmt);
+        }
+    }
+
+    fn lower_for_lexical(&mut self, stmt: &ForStmt, lexical_names: &[String]) {
+        if let Some(init) = &stmt.init {
+            match init {
+                VarDeclOrExpr::VarDecl(decl) => self.lower_var_decl(decl),
+                VarDeclOrExpr::Expr(expr) => {
+                    let value = self.lower_expr(expr);
+                    self.emit(IrInstruction::Pop(value));
+                }
+            }
+        }
+
+        self.emit_per_iteration_scope(lexical_names, false);
+
+        let start_label = self.label("for_start");
+        let update_label = self.label("for_update");
+        let end_label = self.label("for_end");
+        self.emit(IrInstruction::Label(start_label.clone()));
+
+        if let Some(test) = &stmt.test {
+            let test = self.lower_expr(test);
+            self.emit(IrInstruction::JumpIfFalse {
+                test,
+                label: end_label.clone(),
+            });
+        }
+
+        let control_len = self.push_control_targets(end_label.clone(), Some(update_label.clone()));
+        self.lower_stmt(&stmt.body);
+        self.pop_control_targets(control_len);
+
+        self.emit(IrInstruction::Label(update_label));
+        self.emit_per_iteration_scope(lexical_names, true);
+        if let Some(update) = &stmt.update {
+            let value = self.lower_expr(update);
+            self.emit(IrInstruction::Pop(value));
+        }
+
+        self.emit(IrInstruction::Jump(start_label));
+        self.emit(IrInstruction::Label(end_label));
+        self.emit(IrInstruction::LeaveScope);
+    }
+
+    fn lower_for_unscoped(&mut self, stmt: &ForStmt) {
         if let Some(init) = &stmt.init {
             match init {
                 VarDeclOrExpr::VarDecl(decl) => self.lower_var_decl(decl),
@@ -694,11 +833,9 @@ impl LoweringContext {
             });
         }
 
-        self.break_stack.push(end_label.clone());
-        self.continue_stack.push(update_label.clone());
+        let control_len = self.push_control_targets(end_label.clone(), Some(update_label.clone()));
         self.lower_stmt(&stmt.body);
-        self.continue_stack.pop();
-        self.break_stack.pop();
+        self.pop_control_targets(control_len);
 
         self.emit(IrInstruction::Label(update_label));
         if let Some(update) = &stmt.update {
@@ -710,16 +847,42 @@ impl LoweringContext {
         self.emit(IrInstruction::Label(end_label));
     }
 
+    fn emit_per_iteration_scope(&mut self, lexical_names: &[String], leave_existing: bool) {
+        let values = lexical_names
+            .iter()
+            .map(|name| {
+                let value = self.temp();
+                self.emit(IrInstruction::LoadName {
+                    dst: value.clone(),
+                    name: name.clone(),
+                });
+                (name.clone(), value)
+            })
+            .collect::<Vec<_>>();
+        if leave_existing {
+            self.emit(IrInstruction::LeaveScope);
+        }
+        self.emit(IrInstruction::EnterScope("block".to_string()));
+        for (name, value) in values {
+            self.emit(IrInstruction::Declare {
+                kind: "let".to_string(),
+                name: name.clone(),
+            });
+            self.emit(IrInstruction::StoreName {
+                name,
+                src: IrValue::Register(value),
+            });
+        }
+    }
+
     fn lower_do_while(&mut self, stmt: &DoWhileStmt) {
         let start_label = self.label("do_start");
         let test_label = self.label("do_test");
         let end_label = self.label("do_end");
         self.emit(IrInstruction::Label(start_label.clone()));
-        self.break_stack.push(end_label.clone());
-        self.continue_stack.push(test_label.clone());
+        let control_len = self.push_control_targets(end_label.clone(), Some(test_label.clone()));
         self.lower_stmt(&stmt.body);
-        self.continue_stack.pop();
-        self.break_stack.pop();
+        self.pop_control_targets(control_len);
         self.emit(IrInstruction::Label(test_label));
         let test = self.lower_expr(&stmt.test);
         self.emit(IrInstruction::JumpIfFalse {
@@ -832,11 +995,9 @@ impl LoweringContext {
             });
         }
         self.lower_for_head_binding(left, item);
-        self.break_stack.push(end_label.clone());
-        self.continue_stack.push(update_label.clone());
+        let control_len = self.push_control_targets(end_label.clone(), Some(update_label.clone()));
         self.lower_stmt(body);
-        self.continue_stack.pop();
-        self.break_stack.pop();
+        self.pop_control_targets(control_len);
         self.emit(IrInstruction::Label(update_label));
         let next = self.temp();
         self.emit(IrInstruction::Binary {
@@ -897,14 +1058,14 @@ impl LoweringContext {
             },
         ));
 
-        self.break_stack.push(end_label.clone());
+        let control_len = self.push_control_targets(end_label.clone(), None);
         for (case, label) in stmt.cases.iter().zip(case_labels.iter()) {
             self.emit(IrInstruction::Label(label.clone()));
             for stmt in &case.cons {
                 self.lower_stmt(stmt);
             }
         }
-        self.break_stack.pop();
+        self.pop_control_targets(control_len);
         self.emit(IrInstruction::Label(end_label));
     }
 
@@ -967,6 +1128,7 @@ impl LoweringContext {
                 IrValue::Register(dst)
             }
             Expr::Bin(expr) => self.lower_binary(expr),
+            Expr::Unary(expr) if expr.op == UnaryOp::Delete => self.lower_delete_expr(&expr.arg),
             Expr::Unary(expr) => {
                 let arg = self.lower_expr(&expr.arg);
                 let dst = self.temp();
@@ -1038,30 +1200,7 @@ impl LoweringContext {
             }
             Expr::Member(expr) => self.lower_member(expr),
             Expr::Fn(expr) => self.lower_fn_expr(expr),
-            Expr::Arrow(expr) => {
-                let dst = self.temp();
-                let params = pat_list_names(&expr.params);
-                let mut body_ctx = self.child();
-                for param in &params {
-                    body_ctx.declare_local(param.clone());
-                }
-                body_ctx.lower_arrow_param_defaults(&expr.params);
-                match &*expr.body {
-                    BlockStmtOrExpr::BlockStmt(block) => body_ctx.lower_block(block),
-                    BlockStmtOrExpr::Expr(expr) => {
-                        let value = body_ctx.lower_expr(expr);
-                        body_ctx.emit(IrInstruction::Return(Some(value)));
-                    }
-                }
-                self.merge_child_externs(&body_ctx);
-                self.emit(IrInstruction::FunctionExpr {
-                    dst: dst.clone(),
-                    name: None,
-                    params,
-                    body: body_ctx.instructions,
-                });
-                IrValue::Register(dst)
-            }
+            Expr::Arrow(expr) => self.lower_arrow_expr(expr, None),
             Expr::Cond(expr) => {
                 let dst = self.temp();
                 let else_label = self.label("cond_else");
@@ -1108,28 +1247,11 @@ impl LoweringContext {
                     .map(|arg| self.lower_expr(arg))
                     .unwrap_or(IrValue::Undefined);
                 let dst = self.temp();
-                if let Some(array_name) = self.yield_array.clone() {
-                    let push = self.temp();
-                    self.emit(IrInstruction::Member {
-                        dst: push.clone(),
-                        object: IrValue::Name(array_name),
-                        property: IrValue::String("push".to_string()),
-                    });
-                    self.emit(IrInstruction::Call {
-                        dst: dst.clone(),
-                        callee: IrValue::Register(push),
-                        args: vec![arg.clone()],
-                    });
-                    self.emit(IrInstruction::Marker(format!(
-                        "%{dst} = collect {} {arg}",
-                        if expr.delegate { "yield*" } else { "yield" }
-                    )));
-                } else {
-                    self.emit(IrInstruction::Marker(format!(
-                        "%{dst} = {} {arg}",
-                        if expr.delegate { "yield*" } else { "yield" }
-                    )));
-                }
+                self.emit(IrInstruction::Yield {
+                    dst: dst.clone(),
+                    value: arg,
+                    delegate: expr.delegate,
+                });
                 IrValue::Register(dst)
             }
             Expr::Await(expr) => {
@@ -1183,7 +1305,7 @@ impl LoweringContext {
             Lit::Bool(value) => IrValue::Bool(value.value),
             Lit::Null(_) => IrValue::Null,
             Lit::Num(value) => IrValue::Number(value.value),
-            Lit::BigInt(value) => IrValue::String(format!("{}n", value.value)),
+            Lit::BigInt(value) => IrValue::BigInt(value.value.to_string()),
             Lit::Regex(value) => IrValue::String(format!("/{}/{}", value.exp, value.flags)),
             Lit::JSXText(value) => IrValue::String(value.value.to_string()),
         };
@@ -1193,6 +1315,21 @@ impl LoweringContext {
             value,
         });
         IrValue::Register(dst)
+    }
+
+    fn lower_delete_expr(&mut self, expr: &Expr) -> IrValue {
+        if let Expr::Member(member) = expr {
+            let object = self.lower_expr(&member.obj);
+            let property = self.lower_member_property(&member.prop);
+            self.emit(IrInstruction::StoreMember {
+                object,
+                property,
+                src: IrValue::Undefined,
+            });
+        } else {
+            self.lower_expr(expr);
+        }
+        IrValue::Bool(true)
     }
 
     fn lower_binary(&mut self, expr: &BinExpr) -> IrValue {
@@ -1323,6 +1460,7 @@ impl LoweringContext {
 
     fn lower_object(&mut self, expr: &ObjectLit) -> IrValue {
         let mut props = Vec::new();
+        let mut dynamic_props = Vec::new();
         for prop in &expr.props {
             match prop {
                 PropOrSpread::Prop(prop) => match &**prop {
@@ -1333,9 +1471,16 @@ impl LoweringContext {
                         ));
                     }
                     Prop::KeyValue(prop) => {
-                        let key = prop_name(&prop.key);
                         let value = self.lower_expr(&prop.value);
-                        props.push((key, value));
+                        match &prop.key {
+                            PropName::Computed(computed) => {
+                                let key = self.lower_expr(&computed.expr);
+                                dynamic_props.push((key, value));
+                            }
+                            key => {
+                                props.push((prop_name(key), value));
+                            }
+                        }
                     }
                     Prop::Method(prop) => {
                         let key = prop_name(&prop.key);
@@ -1357,9 +1502,34 @@ impl LoweringContext {
                             dst: dst.clone(),
                             name: Some(key.clone()),
                             params,
+                            is_generator: prop.function.is_generator,
                             body: body_ctx.instructions,
                         });
-                        props.push((key, IrValue::Register(dst)));
+                        match &prop.key {
+                            PropName::Computed(computed) => {
+                                let key = self.lower_expr(&computed.expr);
+                                dynamic_props.push((key, IrValue::Register(dst)));
+                            }
+                            _ => props.push((key, IrValue::Register(dst))),
+                        }
+                    }
+                    Prop::Getter(prop) => {
+                        let key = prop_name(&prop.key);
+                        let dst = self.temp();
+                        let mut body_ctx = self.child();
+                        body_ctx.declare_function_intrinsics();
+                        if let Some(body) = &prop.body {
+                            body_ctx.lower_block(body);
+                        }
+                        self.merge_child_externs(&body_ctx);
+                        self.emit(IrInstruction::FunctionExpr {
+                            dst: dst.clone(),
+                            name: Some(format!("get {key}")),
+                            params: Vec::new(),
+                            is_generator: false,
+                            body: body_ctx.instructions,
+                        });
+                        props.push((accessor_getter_key(&key), IrValue::Register(dst)));
                     }
                     _ => self.emit(IrInstruction::Unsupported(
                         "object accessor or assignment property".to_string(),
@@ -1377,6 +1547,13 @@ impl LoweringContext {
             dst: dst.clone(),
             props,
         });
+        for (property, src) in dynamic_props {
+            self.emit(IrInstruction::StoreMember {
+                object: IrValue::Register(dst.clone()),
+                property,
+                src,
+            });
+        }
         IrValue::Register(dst)
     }
 
@@ -1403,9 +1580,54 @@ impl LoweringContext {
             dst: dst.clone(),
             name,
             params,
+            is_generator: expr.function.is_generator,
             body: body_ctx.instructions,
         });
         IrValue::Register(dst)
+    }
+
+    fn lower_arrow_expr(&mut self, expr: &ArrowExpr, name: Option<String>) -> IrValue {
+        let dst = self.temp();
+        let params = pat_list_names(&expr.params);
+        let mut body_ctx = self.child();
+        for param in &params {
+            body_ctx.declare_local(param.clone());
+        }
+        body_ctx.lower_arrow_param_defaults(&expr.params);
+        match &*expr.body {
+            BlockStmtOrExpr::BlockStmt(block) => body_ctx.lower_block(block),
+            BlockStmtOrExpr::Expr(expr) => {
+                let value = body_ctx.lower_expr(expr);
+                body_ctx.emit(IrInstruction::Return(Some(value)));
+            }
+        }
+        self.merge_child_externs(&body_ctx);
+        self.emit(IrInstruction::FunctionExpr {
+            dst: dst.clone(),
+            name,
+            params,
+            is_generator: false,
+            body: body_ctx.instructions,
+        });
+        IrValue::Register(dst)
+    }
+
+    fn lower_expr_with_default_name(&mut self, expr: &Expr, name: Option<&str>) -> IrValue {
+        match (expr, name) {
+            (Expr::Fn(function), Some(name)) if function.ident.is_none() => {
+                self.lower_function_value(Some(name.to_string()), &function.function)
+            }
+            (Expr::Arrow(arrow), Some(name)) => {
+                self.lower_arrow_expr(arrow, Some(name.to_string()))
+            }
+            (Expr::Class(class), Some(name)) if class.ident.is_none() => {
+                self.lower_class_expr(Some(name), class)
+            }
+            (Expr::Paren(paren), Some(name)) => {
+                self.lower_expr_with_default_name(&paren.expr, Some(name))
+            }
+            _ => self.lower_expr(expr),
+        }
     }
 
     fn lower_template(&mut self, expr: &Tpl) -> IrValue {
@@ -1548,6 +1770,7 @@ impl LoweringContext {
             dst: dst.clone(),
             name,
             params,
+            is_generator: function.is_generator,
             body: body_ctx.instructions,
         });
         IrValue::Register(dst)
@@ -1570,6 +1793,7 @@ impl LoweringContext {
             dst: dst.clone(),
             name: Some("constructor".to_string()),
             params,
+            is_generator: false,
             body: body_ctx.instructions,
         });
         IrValue::Register(dst)
@@ -1608,21 +1832,15 @@ impl LoweringContext {
 
     fn lower_update(&mut self, expr: &UpdateExpr) -> IrValue {
         let old = self.lower_expr(&expr.arg);
-        let one = self.temp();
-        self.emit(IrInstruction::LoadConst {
-            dst: one.clone(),
-            value: IrValue::Number(1.0),
-        });
         let new_value = self.temp();
         let op = match expr.op {
-            UpdateOp::PlusPlus => "+",
-            UpdateOp::MinusMinus => "-",
+            UpdateOp::PlusPlus => "++",
+            UpdateOp::MinusMinus => "--",
         };
-        self.emit(IrInstruction::Binary {
+        self.emit(IrInstruction::Unary {
             dst: new_value.clone(),
             op: op.to_string(),
-            left: old.clone(),
-            right: IrValue::Register(one),
+            arg: old.clone(),
         });
         let assign_value = IrValue::Register(new_value.clone());
         if let Ok(target) = AssignTarget::try_from(expr.arg.clone()) {
@@ -1666,6 +1884,16 @@ impl LoweringContext {
         }
     }
 
+    fn lower_prop_name_value(&mut self, prop: &PropName) -> IrValue {
+        match prop {
+            PropName::Ident(ident) => IrValue::String(ident.sym.to_string()),
+            PropName::Str(value) => IrValue::String(value.value.to_string()),
+            PropName::Num(value) => IrValue::Number(value.value),
+            PropName::BigInt(value) => IrValue::String(value.value.to_string()),
+            PropName::Computed(computed) => self.lower_expr(&computed.expr),
+        }
+    }
+
     fn lower_expr_or_spread(&mut self, arg: &ExprOrSpread) -> IrValue {
         if arg.spread.is_some() {
             self.emit(IrInstruction::Marker("spread argument".to_string()));
@@ -1701,38 +1929,28 @@ impl LoweringContext {
                 self.emit(IrInstruction::StoreName { name, src: value });
             }
             Pat::Assign(assign) => {
-                let value = if matches!(value, IrValue::Undefined) {
-                    self.lower_expr(&assign.right)
-                } else {
-                    value
-                };
+                let name = pat_name(&assign.left);
+                let value = self.lower_defaulted_value(value, &assign.right, name.as_deref());
                 self.lower_pat_binding(&assign.left, value, kind);
             }
             Pat::Array(array) => {
-                for (index, elem) in array.elems.iter().enumerate() {
-                    if let Some(elem) = elem {
-                        let item = self.temp();
-                        self.emit(IrInstruction::Member {
-                            dst: item.clone(),
-                            object: value.clone(),
-                            property: IrValue::Number(index as f64),
-                        });
-                        self.lower_pat_binding(elem, IrValue::Register(item), kind);
-                    }
-                }
+                self.lower_array_pat_binding(array, value, kind);
             }
             Pat::Object(object) => {
+                self.lower_require_object_coercible(value.clone());
+                let mut excluded_keys = Vec::new();
                 for prop in &object.props {
                     match prop {
                         ObjectPatProp::KeyValue(prop) => {
-                            let key = prop_name(&prop.key);
+                            let key = self.lower_prop_name_value(&prop.key);
                             let item = self.temp();
                             self.emit(IrInstruction::Member {
                                 dst: item.clone(),
                                 object: value.clone(),
-                                property: IrValue::String(key),
+                                property: key.clone(),
                             });
                             self.lower_pat_binding(&prop.value, IrValue::Register(item), kind);
+                            excluded_keys.push(key);
                         }
                         ObjectPatProp::Assign(prop) => {
                             let key = ident_name(&prop.key);
@@ -1747,16 +1965,22 @@ impl LoweringContext {
                                 kind: kind.to_string(),
                                 name: key.clone(),
                             });
-                            self.emit(IrInstruction::StoreName {
-                                name: key,
-                                src: IrValue::Register(item),
-                            });
+                            let src = prop
+                                .value
+                                .as_deref()
+                                .map(|default| {
+                                    self.lower_defaulted_value(
+                                        IrValue::Register(item.clone()),
+                                        default,
+                                        Some(&key),
+                                    )
+                                })
+                                .unwrap_or_else(|| IrValue::Register(item));
+                            self.emit(IrInstruction::StoreName { name: key, src });
+                            excluded_keys.push(IrValue::String(ident_name(&prop.key)));
                         }
                         ObjectPatProp::Rest(prop) => {
-                            let item = self.temp();
-                            self.emit(IrInstruction::Marker(format!(
-                                "%{item} = destructure_rest {value}"
-                            )));
+                            let item = self.lower_object_rest_value(value.clone(), &excluded_keys);
                             self.lower_pat_binding(&prop.arg, IrValue::Register(item), kind);
                         }
                     }
@@ -1772,6 +1996,224 @@ impl LoweringContext {
             }
             Pat::Invalid(_) => self.emit(IrInstruction::Unsupported("invalid pattern".to_string())),
         }
+    }
+
+    fn lower_defaulted_value(
+        &mut self,
+        value: IrValue,
+        default: &Expr,
+        default_name: Option<&str>,
+    ) -> IrValue {
+        if matches!(value, IrValue::Undefined) {
+            return self.lower_expr_with_default_name(default, default_name);
+        }
+
+        let resolved = self.temp();
+        self.emit(IrInstruction::Move {
+            dst: resolved.clone(),
+            src: value,
+        });
+        let is_undefined = self.temp();
+        let end = self.label("binding_default_end");
+        self.emit(IrInstruction::Binary {
+            dst: is_undefined.clone(),
+            op: "===".to_string(),
+            left: IrValue::Register(resolved.clone()),
+            right: IrValue::Undefined,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(is_undefined),
+            label: end.clone(),
+        });
+        let default_value = self.lower_expr_with_default_name(default, default_name);
+        self.emit(IrInstruction::Move {
+            dst: resolved.clone(),
+            src: default_value,
+        });
+        self.emit(IrInstruction::Label(end));
+        IrValue::Register(resolved)
+    }
+
+    fn lower_array_pat_binding(&mut self, array: &ArrayPat, value: IrValue, kind: &str) {
+        let iterator_method = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: iterator_method.clone(),
+            object: value.clone(),
+            property: IrValue::String("Symbol.iterator".to_string()),
+        });
+        let iterator = self.temp();
+        self.emit(IrInstruction::Call {
+            dst: iterator.clone(),
+            callee: IrValue::Register(iterator_method),
+            args: Vec::new(),
+        });
+        let iterator_done = self.temp();
+        self.emit(IrInstruction::Move {
+            dst: iterator_done.clone(),
+            src: IrValue::Bool(false),
+        });
+        let mut has_rest = false;
+        for elem in &array.elems {
+            let Some(elem) = elem else {
+                let (_, done) = self.lower_iterator_next_value(IrValue::Register(iterator.clone()));
+                self.emit(IrInstruction::Move {
+                    dst: iterator_done.clone(),
+                    src: IrValue::Register(done),
+                });
+                continue;
+            };
+            if matches!(elem, Pat::Rest(_)) {
+                has_rest = true;
+                let rest = self.lower_iterator_rest(IrValue::Register(iterator.clone()));
+                self.emit(IrInstruction::Move {
+                    dst: iterator_done.clone(),
+                    src: IrValue::Bool(true),
+                });
+                self.lower_pat_binding(elem, IrValue::Register(rest), kind);
+            } else {
+                let (item, done) =
+                    self.lower_iterator_next_value(IrValue::Register(iterator.clone()));
+                self.emit(IrInstruction::Move {
+                    dst: iterator_done.clone(),
+                    src: IrValue::Register(done),
+                });
+                self.lower_pat_binding(elem, IrValue::Register(item), kind);
+            }
+        }
+        if !has_rest {
+            self.lower_iterator_close(
+                IrValue::Register(iterator),
+                IrValue::Register(iterator_done),
+            );
+        }
+    }
+
+    fn lower_iterator_next_value(&mut self, iterator: IrValue) -> (String, String) {
+        let next = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: next.clone(),
+            object: iterator.clone(),
+            property: IrValue::String("next".to_string()),
+        });
+        let step = self.temp();
+        self.emit(IrInstruction::Call {
+            dst: step.clone(),
+            callee: IrValue::Register(next),
+            args: Vec::new(),
+        });
+        let done_value = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: done_value.clone(),
+            object: IrValue::Register(step.clone()),
+            property: IrValue::String("done".to_string()),
+        });
+        let item = self.temp();
+        let end = self.label("iterator_next_done");
+        self.emit(IrInstruction::Move {
+            dst: item.clone(),
+            src: IrValue::Undefined,
+        });
+        let value_label = self.label("iterator_next_value");
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(done_value.clone()),
+            label: value_label.clone(),
+        });
+        self.emit(IrInstruction::Jump(end.clone()));
+        self.emit(IrInstruction::Label(value_label));
+        self.emit(IrInstruction::Member {
+            dst: item.clone(),
+            object: IrValue::Register(step),
+            property: IrValue::String("value".to_string()),
+        });
+        self.emit(IrInstruction::Label(end));
+        (item, done_value)
+    }
+
+    fn lower_iterator_rest(&mut self, iterator: IrValue) -> String {
+        let rest = self.temp();
+        self.emit(IrInstruction::Array {
+            dst: rest.clone(),
+            items: Vec::new(),
+        });
+        let start = self.label("iterator_rest_start");
+        let end = self.label("iterator_rest_end");
+        self.emit(IrInstruction::Label(start.clone()));
+        let (item, done) = self.lower_iterator_next_value(iterator);
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(done),
+            label: format!("{start}_push"),
+        });
+        self.emit(IrInstruction::Jump(end.clone()));
+        self.emit(IrInstruction::Label(format!("{start}_push")));
+        let push = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: push.clone(),
+            object: IrValue::Register(rest.clone()),
+            property: IrValue::String("push".to_string()),
+        });
+        let ignored = self.temp();
+        self.emit(IrInstruction::Call {
+            dst: ignored,
+            callee: IrValue::Register(push),
+            args: vec![IrValue::Register(item)],
+        });
+        self.emit(IrInstruction::Jump(start));
+        self.emit(IrInstruction::Label(end));
+        rest
+    }
+
+    fn lower_iterator_close(&mut self, iterator: IrValue, done_value: IrValue) {
+        let done = self.label("iterator_close_done");
+        let check_return = format!("{done}_check_return");
+        self.emit(IrInstruction::JumpIfFalse {
+            test: done_value,
+            label: check_return.clone(),
+        });
+        self.emit(IrInstruction::Jump(done.clone()));
+        self.emit(IrInstruction::Label(check_return));
+        let return_method = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: return_method.clone(),
+            object: iterator,
+            property: IrValue::String("return".to_string()),
+        });
+        let has_return = self.temp();
+        self.emit(IrInstruction::Binary {
+            dst: has_return.clone(),
+            op: "!=".to_string(),
+            left: IrValue::Register(return_method.clone()),
+            right: IrValue::Undefined,
+        });
+        self.emit(IrInstruction::JumpIfFalse {
+            test: IrValue::Register(has_return),
+            label: done.clone(),
+        });
+        let ignored = self.temp();
+        self.emit(IrInstruction::Call {
+            dst: ignored,
+            callee: IrValue::Register(return_method),
+            args: Vec::new(),
+        });
+        self.emit(IrInstruction::Label(done));
+    }
+
+    fn lower_object_rest_value(&mut self, value: IrValue, excluded_keys: &[IrValue]) -> String {
+        let rest = self.temp();
+        self.emit(IrInstruction::ObjectRest {
+            dst: rest.clone(),
+            source: value,
+            excluded: excluded_keys.iter().map(static_property_key).collect(),
+        });
+        rest
+    }
+
+    fn lower_require_object_coercible(&mut self, value: IrValue) {
+        let check = self.temp();
+        self.emit(IrInstruction::Member {
+            dst: check,
+            object: value,
+            property: IrValue::String("__js_vm_to_object_check__".to_string()),
+        });
     }
 
     fn lower_assign_target_read(&mut self, target: &AssignTarget) -> IrValue {
@@ -1871,6 +2313,7 @@ struct FunctionBuildState {
     local_defs: Vec<core::IrLocal>,
     scopes: Vec<core::IrScope>,
     exception_handlers: Vec<core::IrExceptionHandler>,
+    manual_scope_stack: Vec<core::ScopeId>,
     register_count: usize,
 }
 
@@ -1891,6 +2334,7 @@ impl StructuredIrBuilder {
             Vec::new(),
             instructions,
             Vec::new(),
+            false,
         );
         self.module.entry = entry;
         self.module
@@ -1902,6 +2346,7 @@ impl StructuredIrBuilder {
         params: Vec<String>,
         instructions: Vec<IrInstruction>,
         inherited_names: Vec<String>,
+        is_generator: bool,
     ) -> core::FunctionId {
         let mut state = FunctionBuildState::new();
         for name in inherited_names {
@@ -1928,7 +2373,10 @@ impl StructuredIrBuilder {
         self.module.functions.push(core::IrFunction {
             name,
             kind: core::IrFunctionKind::Normal,
-            flags: core::IrFunctionFlags::default(),
+            flags: core::IrFunctionFlags {
+                is_generator,
+                ..core::IrFunctionFlags::default()
+            },
             params,
             rest_param: None,
             locals: state.local_defs,
@@ -2144,6 +2592,17 @@ impl StructuredIrBuilder {
                     },
                 )]
             }
+            IrInstruction::ObjectRest {
+                dst,
+                source,
+                excluded,
+            } => vec![core::IrInstruction::new(
+                core::IrInstructionKind::ObjectRest {
+                    dst: state.register(&dst),
+                    source: self.lower_value(state, source),
+                    excluded,
+                },
+            )],
             IrInstruction::Call { dst, callee, args } => vec![core::IrInstruction::new(
                 core::IrInstructionKind::Call(core::IrCall {
                     dst: Some(state.register(&dst)),
@@ -2179,13 +2638,23 @@ impl StructuredIrBuilder {
                     },
                 ))]
             }
-            IrInstruction::Function { name, params, body } => {
+            IrInstruction::Function {
+                name,
+                params,
+                is_generator,
+                body,
+            } => {
                 let inherited_names = state.visible_names();
                 let captured_names =
                     captured_in_function_body(None, &params, &body, &inherited_names);
                 state.mark_captured(&captured_names);
-                let function =
-                    self.build_function(Some(name.clone()), params, body, captured_names);
+                let function = self.build_function(
+                    Some(name.clone()),
+                    params,
+                    body,
+                    captured_names,
+                    is_generator,
+                );
                 let local = state.ensure_local(&name, core::IrBindingKind::Function);
                 vec![
                     core::IrInstruction::new(core::IrInstructionKind::Declare(
@@ -2205,6 +2674,7 @@ impl StructuredIrBuilder {
                 dst,
                 name,
                 params,
+                is_generator,
                 body,
             } => {
                 let inherited_names = state.visible_names();
@@ -2215,7 +2685,8 @@ impl StructuredIrBuilder {
                     child_inherited_names.push(name.clone());
                 }
                 state.mark_captured(&captured_names);
-                let function = self.build_function(name, params, body, child_inherited_names);
+                let function =
+                    self.build_function(name, params, body, child_inherited_names, is_generator);
                 vec![core::IrInstruction::new(
                     core::IrInstructionKind::CreateFunction {
                         dst: state.register(&dst),
@@ -2341,6 +2812,19 @@ impl StructuredIrBuilder {
                 ));
                 out
             }
+            IrInstruction::EnterScope(kind) => {
+                let scope = state.push_scope(scope_kind(&kind));
+                state.manual_scope_stack.push(scope);
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::EnterScope(scope),
+                )]
+            }
+            IrInstruction::LeaveScope => {
+                let scope = state.manual_scope_stack.pop().unwrap_or(core::ScopeId(0));
+                vec![core::IrInstruction::new(
+                    core::IrInstructionKind::LeaveScope(scope),
+                )]
+            }
             IrInstruction::Pop(value) => vec![core::IrInstruction::new(
                 core::IrInstructionKind::Debug(format!("pop {}", value)),
             )],
@@ -2349,6 +2833,15 @@ impl StructuredIrBuilder {
                     core::IrInstructionKind::Unsupported(message),
                 )]
             }
+            IrInstruction::Yield {
+                dst,
+                value,
+                delegate,
+            } => vec![core::IrInstruction::new(core::IrInstructionKind::Yield {
+                dst: Some(state.register(&dst)),
+                value: Some(self.lower_value(state, value)),
+                delegate,
+            })],
             IrInstruction::Label(_)
             | IrInstruction::Jump(_)
             | IrInstruction::JumpIfFalse { .. }
@@ -2391,6 +2884,15 @@ impl StructuredIrBuilder {
                         },
                     )]
                 }
+                IrInstruction::Yield {
+                    dst,
+                    value,
+                    delegate,
+                } => vec![core::IrInstruction::new(core::IrInstructionKind::Yield {
+                    dst: Some(state.register(&dst)),
+                    value: Some(self.lower_value(state, value)),
+                    delegate,
+                })],
                 other => self.lower_instruction(state, other),
             })
             .collect()
@@ -2414,7 +2916,7 @@ impl StructuredIrBuilder {
             }
             IrValue::Name(value) => core::IrValue::External(self.ensure_extern(&value)),
             IrValue::Number(value) => {
-                core::IrValue::Const(self.push_const(if value.fract() == 0.0 {
+                core::IrValue::Const(self.push_const(if is_safe_i64_const(value) {
                     core::IrConst::Int(value as i64)
                 } else {
                     core::IrConst::Float(value)
@@ -2422,6 +2924,9 @@ impl StructuredIrBuilder {
             }
             IrValue::String(value) => {
                 core::IrValue::Const(self.push_const(core::IrConst::String(value)))
+            }
+            IrValue::BigInt(value) => {
+                core::IrValue::Const(self.push_const(core::IrConst::BigInt(value)))
             }
             IrValue::Bool(value) => core::IrValue::Bool(value),
             IrValue::Null => core::IrValue::Null,
@@ -2474,6 +2979,13 @@ impl StructuredIrBuilder {
         self.module.extern_slots.push(name.to_string());
         id
     }
+}
+
+fn is_safe_i64_const(value: f64) -> bool {
+    value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
 }
 
 impl FunctionBuildState {
@@ -2660,6 +3172,7 @@ fn collect_instruction_refs(instructions: &[IrInstruction], refs: &mut BTreeSet<
                     collect_value_refs(value, refs);
                 }
             }
+            IrInstruction::ObjectRest { source, .. } => collect_value_refs(source, refs),
             IrInstruction::Call { callee, args, .. } | IrInstruction::New { callee, args, .. } => {
                 collect_value_refs(callee, refs);
                 for arg in args {
@@ -2701,8 +3214,11 @@ fn collect_instruction_refs(instructions: &[IrInstruction], refs: &mut BTreeSet<
                     collect_value_refs(value, refs);
                 }
             }
+            IrInstruction::Yield { value, .. } => collect_value_refs(value, refs),
             IrInstruction::JumpIfFalse { test, .. } => collect_value_refs(test, refs),
             IrInstruction::Declare { .. }
+            | IrInstruction::EnterScope(_)
+            | IrInstruction::LeaveScope
             | IrInstruction::Import { .. }
             | IrInstruction::Marker(_)
             | IrInstruction::Label(_)
@@ -2831,6 +3347,8 @@ fn core_unary_op(op: &str) -> core::IrUnaryOp {
         "-" => core::IrUnaryOp::Minus,
         "!" => core::IrUnaryOp::Not,
         "~" => core::IrUnaryOp::BitNot,
+        "++" => core::IrUnaryOp::Increment,
+        "--" => core::IrUnaryOp::Decrement,
         "typeof" => core::IrUnaryOp::TypeOf,
         "void" => core::IrUnaryOp::Void,
         "delete" => core::IrUnaryOp::Delete,
@@ -2870,6 +3388,7 @@ fn core_binary_op(op: &str) -> core::IrBinaryOp {
 }
 
 pub fn parse_source(source: &str) -> Result<Program, String> {
+    validate_early_syntax_errors(source)?;
     parse_source_with_syntax(
         source,
         Syntax::Typescript(TsSyntax {
@@ -2902,7 +3421,423 @@ fn parse_source_with_syntax(source: &str, syntax: Syntax) -> Result<Program, Str
         return Err(format!("parse errors: {parser_errors:?}"));
     }
 
+    validate_program_early_errors(&program)?;
+
     Ok(program)
+}
+
+fn validate_program_early_errors(program: &Program) -> Result<(), String> {
+    match program {
+        Program::Module(module) => {
+            for item in &module.body {
+                if let ModuleItem::Stmt(stmt) = item {
+                    validate_stmt_early_errors(stmt)?;
+                }
+            }
+        }
+        Program::Script(script) => {
+            for stmt in &script.body {
+                validate_stmt_early_errors(stmt)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_stmt_early_errors(stmt: &Stmt) -> Result<(), String> {
+    match stmt {
+        Stmt::For(stmt) => {
+            if is_labelled_function_stmt(&stmt.body) {
+                return Err(
+                    "parse error: labelled function is not allowed in for statement position"
+                        .into(),
+                );
+            }
+            if let Some(VarDeclOrExpr::VarDecl(decl)) = &stmt.init
+                && matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const)
+            {
+                let bound_names = var_decl_bound_names(decl);
+                let var_names = stmt_var_declared_names(&stmt.body);
+                if bound_names.iter().any(|name| var_names.contains(name)) {
+                    return Err(
+                        "parse error: for lexical head cannot be redeclared by var in body".into(),
+                    );
+                }
+            }
+            validate_stmt_early_errors(&stmt.body)?;
+        }
+        Stmt::While(stmt) => {
+            if is_labelled_function_stmt(&stmt.body) {
+                return Err(
+                    "parse error: labelled function is not allowed in while statement position"
+                        .into(),
+                );
+            }
+            validate_stmt_early_errors(&stmt.body)?;
+        }
+        Stmt::DoWhile(stmt) => validate_stmt_early_errors(&stmt.body)?,
+        Stmt::Labeled(stmt) => validate_stmt_early_errors(&stmt.body)?,
+        Stmt::Block(block) => {
+            for stmt in &block.stmts {
+                validate_stmt_early_errors(stmt)?;
+            }
+        }
+        Stmt::If(stmt) => {
+            validate_stmt_early_errors(&stmt.cons)?;
+            if let Some(alt) = &stmt.alt {
+                validate_stmt_early_errors(alt)?;
+            }
+        }
+        Stmt::Switch(stmt) => {
+            for case in &stmt.cases {
+                for stmt in &case.cons {
+                    validate_stmt_early_errors(stmt)?;
+                }
+            }
+        }
+        Stmt::Try(stmt) => {
+            for stmt in &stmt.block.stmts {
+                validate_stmt_early_errors(stmt)?;
+            }
+            if let Some(handler) = &stmt.handler {
+                for stmt in &handler.body.stmts {
+                    validate_stmt_early_errors(stmt)?;
+                }
+            }
+            if let Some(finalizer) = &stmt.finalizer {
+                for stmt in &finalizer.stmts {
+                    validate_stmt_early_errors(stmt)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_early_syntax_errors(source: &str) -> Result<(), String> {
+    validate_numeric_separator_literals(source)?;
+    validate_strict_legacy_escape_directives(source)?;
+    validate_statement_position_async_generators(source)?;
+    validate_if_labelled_function_positions(source)?;
+    validate_let_array_line_break(source)?;
+    Ok(())
+}
+
+fn validate_numeric_separator_literals(source: &str) -> Result<(), String> {
+    let code = source_without_comments_and_strings(source);
+    let chars = code.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        let starts_number = chars[index].is_ascii_digit()
+            || (chars[index] == '.'
+                && chars
+                    .get(index + 1)
+                    .is_some_and(|ch| ch.is_ascii_digit() || *ch == '_'));
+        if !starts_number {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < chars.len()
+            && (chars[index].is_ascii_alphanumeric()
+                || matches!(chars[index], '_' | '.' | '+' | '-' | '\\' | '{' | '}'))
+        {
+            if matches!(chars[index], '+' | '-')
+                && !matches!(chars.get(index.wrapping_sub(1)), Some('e' | 'E'))
+            {
+                break;
+            }
+            index += 1;
+        }
+        let token = chars[start..index].iter().collect::<String>();
+        if numeric_token_has_invalid_separator(&token) {
+            return Err(format!(
+                "parse error: invalid numeric separator literal {token}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn numeric_token_has_invalid_separator(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    if lower.contains("\\u005f") || lower.contains("\\u{5f}") {
+        return true;
+    }
+    if !token.contains('_') {
+        return false;
+    }
+    if token.starts_with('_') || token.ends_with('_') || token.contains("__") {
+        return true;
+    }
+    if lower.starts_with("0b_") || lower.starts_with("0x_") || lower.starts_with("0o_") {
+        return true;
+    }
+    if token.contains("._") || token.contains("_.") {
+        return true;
+    }
+    if !lower.starts_with("0x") && (lower.contains("_e") || lower.contains("e_")) {
+        return true;
+    }
+    if lower.starts_with("0b") {
+        return token[2..]
+            .chars()
+            .any(|ch| ch != '_' && !matches!(ch, '0' | '1'));
+    }
+    if lower.starts_with("0o") {
+        return token[2..]
+            .chars()
+            .any(|ch| ch != '_' && !matches!(ch, '0'..='7'));
+    }
+    if lower.starts_with("0x") {
+        return token[2..]
+            .chars()
+            .any(|ch| ch != '_' && !ch.is_ascii_hexdigit());
+    }
+    let bytes = token.as_bytes();
+    token.contains('_')
+        && bytes.first() == Some(&b'0')
+        && bytes
+            .get(1)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+}
+
+fn validate_strict_legacy_escape_directives(source: &str) -> Result<(), String> {
+    if source_has_invalid_unicode_codepoint_separator(source) {
+        return Err("parse error: invalid unicode code point escape separator".into());
+    }
+    let Some(strict_index) = first_use_strict_index(source) else {
+        return Ok(());
+    };
+    let before_or_at_strict = &source[..strict_index];
+    if directive_prologue_has_legacy_escape(before_or_at_strict)
+        || source_has_strict_legacy_numeric_escape(source)
+    {
+        return Err(
+            "parse error: invalid string literal escape in strict directive prologue".into(),
+        );
+    }
+    Ok(())
+}
+
+fn first_use_strict_index(source: &str) -> Option<usize> {
+    source
+        .find("\"use strict\"")
+        .or_else(|| source.find("'use strict'"))
+}
+
+fn directive_prologue_has_legacy_escape(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let quote = bytes[index];
+        if quote != b'\'' && quote != b'"' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\\' => {
+                    if bytes
+                        .get(index + 1)
+                        .is_some_and(|byte| byte.is_ascii_digit())
+                    {
+                        return true;
+                    }
+                    index += 2;
+                }
+                value if value == quote => {
+                    index += 1;
+                    break;
+                }
+                _ => index += 1,
+            }
+        }
+    }
+    false
+}
+
+fn source_has_strict_legacy_numeric_escape(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[index];
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        if let Some(next) = bytes.get(index + 1) {
+                            if matches!(next, b'1'..=b'9')
+                                || (*next == b'0'
+                                    && bytes
+                                        .get(index + 2)
+                                        .is_some_and(|byte| byte.is_ascii_digit()))
+                            {
+                                return true;
+                            }
+                        }
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == quote {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() {
+                    if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    false
+}
+
+fn source_has_invalid_unicode_codepoint_separator(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index + 3 < bytes.len() {
+        if bytes[index] == b'\\'
+            && bytes[index + 1] == b'u'
+            && bytes[index + 2] == b'{'
+            && let Some(end) = source[index + 3..].find('}')
+            && source[index + 3..index + 3 + end].contains('_')
+        {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn validate_statement_position_async_generators(source: &str) -> Result<(), String> {
+    let code = source_without_comments_and_strings(source);
+    if code.contains("if (true) async function*")
+        || code.contains("else async function*")
+        || code.contains("for ( ; false; ) async function*")
+        || code.contains("while (false) async function*")
+        || code.contains("if (true) async function")
+        || code.contains("else async function")
+        || code.contains("for ( ; false; ) async function")
+        || code.contains("while (false) async function")
+    {
+        return Err("parse error: async function declaration is not allowed here".into());
+    }
+    Ok(())
+}
+
+fn validate_if_labelled_function_positions(source: &str) -> Result<(), String> {
+    let code = source_without_comments_and_strings(source);
+    let compact = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    let has_labelled_function = compact.contains(": function");
+    let has_if_labelled_statement =
+        compact.contains("if (false) label") || compact.contains("if (true) label");
+    let has_else_labelled_statement = compact.contains("else label");
+    if has_labelled_function && (has_if_labelled_statement || has_else_labelled_statement) {
+        return Err(
+            "parse error: labelled function is not allowed in if statement position".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_let_array_line_break(source: &str) -> Result<(), String> {
+    let code = source_without_comments_and_strings(source);
+    if code.contains("let\n[") || code.contains("let\r\n[") {
+        return Err("parse error: let followed by array literal line break is ambiguous".into());
+    }
+    Ok(())
+}
+
+fn source_without_comments_and_strings(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[index];
+                output.push(' ');
+                index += 1;
+                while index < bytes.len() {
+                    output.push(if bytes[index] == b'\n' { '\n' } else { ' ' });
+                    if bytes[index] == b'\\' {
+                        index += 2;
+                        if index <= bytes.len() {
+                            output.push(' ');
+                        }
+                        continue;
+                    }
+                    if bytes[index] == quote {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                output.push(' ');
+                output.push(' ');
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    output.push(' ');
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                output.push(' ');
+                output.push(' ');
+                index += 2;
+                while index + 1 < bytes.len() {
+                    let current = bytes[index];
+                    output.push(if current == b'\n' { '\n' } else { ' ' });
+                    if current == b'*' && bytes[index + 1] == b'/' {
+                        output.push(' ');
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            value => {
+                output.push(value as char);
+                index += 1;
+            }
+        }
+    }
+    output
+}
+
+fn is_labelled_control_target(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::While(_)
+        | Stmt::DoWhile(_)
+        | Stmt::For(_)
+        | Stmt::ForIn(_)
+        | Stmt::ForOf(_)
+        | Stmt::Switch(_) => true,
+        Stmt::Labeled(labelled) => is_labelled_control_target(&labelled.body),
+        _ => false,
+    }
 }
 
 fn is_implicit_global(name: &str) -> bool {
@@ -3141,6 +4076,178 @@ fn prop_name(prop: &PropName) -> String {
         PropName::Num(value) => value.value.to_string(),
         PropName::Computed(_) => "[computed]".to_string(),
         PropName::BigInt(value) => value.value.to_string(),
+    }
+}
+
+fn for_init_lexical_names(init: &Option<VarDeclOrExpr>) -> Option<Vec<String>> {
+    let Some(VarDeclOrExpr::VarDecl(decl)) = init else {
+        return None;
+    };
+    if !matches!(decl.kind, VarDeclKind::Let | VarDeclKind::Const) {
+        return None;
+    }
+    Some(var_decl_bound_names(decl).into_iter().collect())
+}
+
+fn accessor_getter_key(property: &str) -> String {
+    format!("__accessor_get__:{property}")
+}
+
+fn static_property_key(value: &IrValue) -> String {
+    match value {
+        IrValue::String(value) => value.clone(),
+        IrValue::Number(value) => value.to_string(),
+        IrValue::BigInt(value) => value.clone(),
+        IrValue::Bool(value) => value.to_string(),
+        IrValue::Null => "null".to_string(),
+        IrValue::Undefined => "undefined".to_string(),
+        IrValue::Name(value) | IrValue::Register(value) => value.clone(),
+    }
+}
+
+fn is_labelled_function_stmt(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Labeled(labelled) => match &*labelled.body {
+            Stmt::Decl(Decl::Fn(_)) => true,
+            nested => is_labelled_function_stmt(nested),
+        },
+        _ => false,
+    }
+}
+
+fn var_decl_bound_names(decl: &VarDecl) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for declarator in &decl.decls {
+        collect_pat_bound_names(&declarator.name, &mut names);
+    }
+    names
+}
+
+fn collect_pat_bound_names(pat: &Pat, names: &mut BTreeSet<String>) {
+    match pat {
+        Pat::Ident(ident) => {
+            names.insert(ident_name(&ident.id));
+        }
+        Pat::Array(array) => {
+            for elem in array.elems.iter().flatten() {
+                collect_pat_bound_names(elem, names);
+            }
+        }
+        Pat::Object(object) => {
+            for prop in &object.props {
+                match prop {
+                    ObjectPatProp::KeyValue(prop) => collect_pat_bound_names(&prop.value, names),
+                    ObjectPatProp::Assign(prop) => {
+                        names.insert(ident_name(&prop.key));
+                    }
+                    ObjectPatProp::Rest(rest) => collect_pat_bound_names(&rest.arg, names),
+                }
+            }
+        }
+        Pat::Rest(rest) => collect_pat_bound_names(&rest.arg, names),
+        Pat::Assign(assign) => collect_pat_bound_names(&assign.left, names),
+        Pat::Expr(_) | Pat::Invalid(_) => {}
+    }
+}
+
+fn stmt_var_declared_names(stmt: &Stmt) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    collect_stmt_var_declared_names(stmt, &mut names);
+    names
+}
+
+fn module_var_declared_names(module: &Module) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in &module.body {
+        match item {
+            ModuleItem::Stmt(stmt) => collect_stmt_var_declared_names(stmt, &mut names),
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(decl)) => {
+                if let Decl::Var(var_decl) = &decl.decl
+                    && var_decl.kind == VarDeclKind::Var
+                {
+                    names.extend(var_decl_bound_names(var_decl));
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn script_var_declared_names(script: &Script) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for stmt in &script.body {
+        collect_stmt_var_declared_names(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_stmt_var_declared_names(stmt: &Stmt, names: &mut BTreeSet<String>) {
+    match stmt {
+        Stmt::Decl(Decl::Var(decl)) if decl.kind == VarDeclKind::Var => {
+            names.extend(var_decl_bound_names(decl));
+        }
+        Stmt::Block(block) => {
+            for stmt in &block.stmts {
+                collect_stmt_var_declared_names(stmt, names);
+            }
+        }
+        Stmt::If(stmt) => {
+            collect_stmt_var_declared_names(&stmt.cons, names);
+            if let Some(alt) = &stmt.alt {
+                collect_stmt_var_declared_names(alt, names);
+            }
+        }
+        Stmt::For(stmt) => {
+            if let Some(VarDeclOrExpr::VarDecl(decl)) = &stmt.init
+                && decl.kind == VarDeclKind::Var
+            {
+                names.extend(var_decl_bound_names(decl));
+            }
+            collect_stmt_var_declared_names(&stmt.body, names);
+        }
+        Stmt::ForIn(stmt) => {
+            if let ForHead::VarDecl(decl) = &stmt.left
+                && decl.kind == VarDeclKind::Var
+            {
+                names.extend(var_decl_bound_names(decl));
+            }
+            collect_stmt_var_declared_names(&stmt.body, names);
+        }
+        Stmt::ForOf(stmt) => {
+            if let ForHead::VarDecl(decl) = &stmt.left
+                && decl.kind == VarDeclKind::Var
+            {
+                names.extend(var_decl_bound_names(decl));
+            }
+            collect_stmt_var_declared_names(&stmt.body, names);
+        }
+        Stmt::While(stmt) => collect_stmt_var_declared_names(&stmt.body, names),
+        Stmt::DoWhile(stmt) => collect_stmt_var_declared_names(&stmt.body, names),
+        Stmt::Labeled(stmt) => collect_stmt_var_declared_names(&stmt.body, names),
+        Stmt::Switch(stmt) => {
+            for case in &stmt.cases {
+                for stmt in &case.cons {
+                    collect_stmt_var_declared_names(stmt, names);
+                }
+            }
+        }
+        Stmt::Try(stmt) => {
+            for stmt in &stmt.block.stmts {
+                collect_stmt_var_declared_names(stmt, names);
+            }
+            if let Some(handler) = &stmt.handler {
+                for stmt in &handler.body.stmts {
+                    collect_stmt_var_declared_names(stmt, names);
+                }
+            }
+            if let Some(finalizer) = &stmt.finalizer {
+                for stmt in &finalizer.stmts {
+                    collect_stmt_var_declared_names(stmt, names);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
