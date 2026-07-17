@@ -660,12 +660,12 @@
     .output-wrap {
       min-height: 0;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr) minmax(150px, 32%);
+      grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 32%);
       background: #111417;
     }
 
     .output-wrap.bytes-mode {
-      grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 32%);
+      grid-template-rows: auto auto auto minmax(0, 1fr) minmax(150px, 32%);
     }
 
     .preview-frame {
@@ -682,13 +682,14 @@
 
     .output-pane.html-output-mode .tab:not([data-view="preview"]),
     .output-pane.html-output-mode .meta-grid,
+    .output-pane.html-output-mode .feature-panel,
     .output-pane.html-output-mode .bytes-seed {
       display: none;
     }
 
     .meta-grid {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       border-bottom: 1px solid var(--line-soft);
       background: #15191e;
     }
@@ -717,6 +718,55 @@
       white-space: nowrap;
       font-size: 13px;
       color: var(--text);
+    }
+
+    .feature-panel {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #11171c;
+    }
+
+    .feature-list {
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .feature-chip {
+      max-width: 190px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #30464c;
+      border-radius: 999px;
+      background: #172329;
+      color: #aee4d7;
+      padding: 0 8px;
+      font-size: 11px;
+      line-height: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .feature-empty {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .feature-package {
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font: 11px/1.4 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
     }
 
     .output {
@@ -1413,6 +1463,13 @@
             <div class="metric"><span>BYTECODE</span><strong id="metricBytecode">0 lines</strong></div>
             <div class="metric"><span>BYTES</span><strong id="metricBytes">0 B</strong></div>
             <div class="metric"><span>EXTERNS</span><strong id="metricExterns">0</strong></div>
+            <div class="metric"><span>FEATURES</span><strong id="metricFeatures">0</strong></div>
+          </div>
+          <div id="featurePanel" class="feature-panel" aria-label="Runtime features">
+            <div id="featureList" class="feature-list">
+              <span class="feature-empty">No runtime feature detected</span>
+            </div>
+            <div id="featurePackage" class="feature-package">runtime-feature-d41d8cd98f00</div>
           </div>
           <div id="bytesSeedPanel" class="bytes-seed">
             <span>Seed</span>
@@ -1553,6 +1610,13 @@ message;`,
       compiledFile: '',
       compiledExternSlots: [],
       compiledRuntimeFiles: [],
+      runtimeFeatureManifest: {
+        features: [],
+        canonical: '',
+        md5: 'd41d8cd98f00',
+        packageName: 'runtime-feature-d41d8cd98f00',
+      },
+      runtimeFeatureRecords: {},
       editorLineCount: 1,
       lineNumbersRenderedFor: 0,
       highlightSourceKey: '',
@@ -1593,6 +1657,9 @@ message;`,
     const metricBytecode = document.getElementById('metricBytecode');
     const metricBytes = document.getElementById('metricBytes');
     const metricExterns = document.getElementById('metricExterns');
+    const metricFeatures = document.getElementById('metricFeatures');
+    const featureList = document.getElementById('featureList');
+    const featurePackage = document.getElementById('featurePackage');
     const opcodePanel = document.getElementById('opcodePanel');
     const externSlotTableBody = document.getElementById('externSlotTableBody');
     const opcodeTableBody = document.getElementById('opcodeTableBody');
@@ -3241,10 +3308,12 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         const compiler = new Compiler(source);
         const externs = compiler.extern_slots();
         const artifact = compiler.to_bytecode_artifact(baseSeed, externs);
+        const runtimeFeatureManifest = parseRuntimeFeatureManifest(compiler, { compactErrors: true });
         const bytes = new Uint8Array(artifact.bytes());
         const seed = js_encoding_seed_for_seed_and_bytes(baseSeed, bytes);
         artifact.free();
         compiler.free();
+        recordRuntimeFeatureManifest(file, runtimeFeatureManifest);
         modules.push({
           file,
           source,
@@ -3253,6 +3322,9 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
           bytes,
           seed,
           externs,
+          runtimeFeatures: runtimeFeatureManifest.features,
+          runtimeFeatureCanonical: runtimeFeatureManifest.canonical,
+          runtimeFeaturePackage: runtimeFeatureManifest.packageName,
         });
       }
       state.compiledRuntimeFiles = modules;
@@ -3263,12 +3335,18 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
           entry: state.entryFile,
           preview: 'index.html',
           moduleCount: modules.length,
+          runtimeFeatures: Array.from(new Set(
+            modules.flatMap((module) => module.runtimeFeatures || []),
+          )).sort(),
           modules: modules.map((module) => ({
             file: module.file,
             bin: module.bin,
             source: module.sourcePath,
             seed: module.seed,
             externs: module.externs,
+            runtimeFeatures: module.runtimeFeatures,
+            runtimeFeatureCanonical: module.runtimeFeatureCanonical,
+            runtimeFeaturePackage: module.runtimeFeaturePackage,
           })),
         },
         modules,
@@ -3635,6 +3713,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
 
     function syncOutputMode() {
       outputPane.classList.toggle('html-output-mode', activeVirtualFile()?.type === 'html');
+      renderFeatureManifest();
     }
 
     function updateMetrics(bytes, externs) {
@@ -3643,6 +3722,64 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       metricBytecode.textContent = `${lineCount(state.views.bytecode)} lines`;
       metricBytes.textContent = formatByteSize(bytes.length);
       metricExterns.textContent = `${externs.length}`;
+      renderFeatureManifest();
+    }
+
+    function parseRuntimeFeatureManifest(compiler, options = {}) {
+      const compactErrors = options.compactErrors === true;
+      if (typeof compiler.runtime_feature_manifest === 'function') {
+        try {
+          const manifest = JSON.parse(compiler.runtime_feature_manifest(compactErrors));
+          return normalizeRuntimeFeatureManifest(manifest);
+        } catch (err) {
+          appendLog('warn', `Feature manifest unavailable: ${String(err)}`);
+        }
+      }
+      const features = typeof compiler.runtime_features === 'function'
+        ? Array.from(compiler.runtime_features())
+        : [];
+      return normalizeRuntimeFeatureManifest({ features });
+    }
+
+    function normalizeRuntimeFeatureManifest(manifest = {}) {
+      const features = Array.from(new Set((manifest.features || []).map(String))).sort();
+      const canonical = typeof manifest.canonical === 'string'
+        ? manifest.canonical
+        : features.join(',');
+      const md5 = typeof manifest.md5 === 'string' && manifest.md5
+        ? manifest.md5
+        : 'd41d8cd98f00';
+      const packageName = typeof manifest.packageName === 'string' && manifest.packageName
+        ? manifest.packageName
+        : `runtime-feature-${md5}`;
+      return { features, canonical, md5, packageName };
+    }
+
+    function resetRuntimeFeatureManifest() {
+      state.runtimeFeatureManifest = normalizeRuntimeFeatureManifest({
+        features: [],
+        canonical: '',
+        md5: 'd41d8cd98f00',
+        packageName: 'runtime-feature-d41d8cd98f00',
+      });
+      renderFeatureManifest();
+    }
+
+    function recordRuntimeFeatureManifest(file, manifest) {
+      if (!file) return;
+      state.runtimeFeatureRecords[file] = normalizeRuntimeFeatureManifest(manifest);
+    }
+
+    function renderFeatureManifest() {
+      const manifest = state.runtimeFeatureManifest || normalizeRuntimeFeatureManifest();
+      metricFeatures.textContent = `${manifest.features.length}`;
+      featurePackage.textContent = manifest.packageName;
+      featurePackage.title = manifest.canonical || '<empty>';
+      featureList.innerHTML = manifest.features.length
+        ? manifest.features
+            .map((feature) => `<span class="feature-chip" title="${escapeHtml(feature)}">${escapeHtml(feature)}</span>`)
+            .join('')
+        : '<span class="feature-empty">No runtime feature detected</span>';
     }
 
     function syncExternRows(externs) {
@@ -4385,6 +4522,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         const externSlots = externSlotsForBytecode();
         const configSeed = seedFromCurrentRows();
         const artifact = compiler.to_bytecode_artifact(configSeed, externSlots);
+        const runtimeFeatureManifest = parseRuntimeFeatureManifest(compiler);
         const bytes = artifact.bytes();
         const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
         const nextByteTokens = Array.from(bytes);
@@ -4403,6 +4541,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         state.compiledBytes = bytes;
         state.compiledFile = compiledFile;
         state.compiledExternSlots = externSlots;
+        state.runtimeFeatureManifest = runtimeFeatureManifest;
+        recordRuntimeFeatureManifest(compiledFile, runtimeFeatureManifest);
         artifact.free();
         syncSeedInputs(seed);
         state.compileDuration = compileDuration;
@@ -4435,6 +4575,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         state.compiledBytes = null;
         state.compiledFile = '';
         state.compiledExternSlots = [];
+        resetRuntimeFeatureManifest();
         state.compileDuration = performance.now() - compileStarted;
         state.runDuration = 0;
         state.opcodeSeed = '';

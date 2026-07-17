@@ -2,8 +2,8 @@ mod compiler;
 mod parse;
 
 pub use compiler::{
-    NativeCompilerArtifact, compile_source_to_artifact, encoding_names_from_seed,
-    encoding_seed_for_seed_and_bytes,
+    NativeCompilerArtifact, RuntimeFeatureManifest, compile_source_to_artifact,
+    encoding_names_from_seed, encoding_seed_for_seed_and_bytes,
 };
 use js_token_core::{EncodingConfig, EncodingNames};
 use wasm_bindgen::prelude::*;
@@ -48,6 +48,28 @@ impl Compiler {
 
     pub fn to_text(&self) -> String {
         self.inner.to_text()
+    }
+
+    pub fn runtime_features(&self) -> Vec<String> {
+        self.inner.runtime_features()
+    }
+
+    pub fn runtime_feature_manifest(&self, compact_errors: bool) -> String {
+        self.inner
+            .runtime_feature_manifest(compact_errors)
+            .to_json()
+    }
+
+    pub fn runtime_feature_canonical(&self, compact_errors: bool) -> String {
+        self.inner
+            .runtime_feature_manifest(compact_errors)
+            .canonical
+    }
+
+    pub fn runtime_feature_package(&self, compact_errors: bool) -> String {
+        self.inner
+            .runtime_feature_manifest(compact_errors)
+            .package_name
     }
 
     pub fn to_bytecode_artifact(
