@@ -1,0 +1,1389 @@
+{
+  "generatedAt": "2026-08-13T04:13:26.622Z",
+  "target": {
+    "bin": "/private/tmp/nan-blogs-app-perf-vm/assets/app-CG-R2f4n.bin",
+    "wrapper": "/private/tmp/nan-blogs-app-perf-vm/assets/app-CG-R2f4n.js",
+    "map": "/private/tmp/nan-blogs-app-perf-vm/assets/app-CG-R2f4n.bin.map",
+    "byteLength": 805490,
+    "md5": "368811d7edd91e633a293f29d90c2b02",
+    "externSlots": [
+      "Object",
+      "Array",
+      "parseInt",
+      "RegExp",
+      "isNaN",
+      "parseFloat",
+      "Number",
+      "global",
+      "globalThis",
+      "self",
+      "window",
+      "String",
+      "WeakSet",
+      "WeakMap",
+      "Symbol",
+      "Map",
+      "Set",
+      "Reflect",
+      "Proxy",
+      "console",
+      "Promise",
+      "Function",
+      "Boolean",
+      "Error",
+      "setTimeout",
+      "Math",
+      "document",
+      "requestAnimationFrame",
+      "Date",
+      "Element",
+      "MathMLElement",
+      "SVGElement",
+      "URL",
+      "JSON",
+      "Event",
+      "encodeURI",
+      "decodeURIComponent",
+      "history",
+      "location",
+      "decodeURI",
+      "Uint8Array",
+      "Uint16Array",
+      "Int32Array",
+      "TextDecoder",
+      "atob",
+      "WorkerGlobalScope",
+      "clearTimeout",
+      "MutationObserver",
+      "CustomEvent",
+      "Storage",
+      "StorageEvent",
+      "ResizeObserver",
+      "Document",
+      "Window",
+      "Intl",
+      "innerHeight",
+      "innerWidth",
+      "Float32Array",
+      "alert",
+      "import"
+    ]
+  },
+  "settings": {
+    "steps": 10000,
+    "repeat": 1,
+    "warmup": 0,
+    "callDepth": 2048,
+    "recursion": 128
+  },
+  "result": {
+    "ok": false,
+    "error": "RangeError: maximum execution steps exceeded at pc 4206 at pc 4144 callee Register(0) value function(...args){ const r = __invoke(this, args); if (r && r.__js_vm_thrown) throw r.value; return r; } args [[object Object], false, [object Object], [object Object]] at pc 31071 callee Register(1316) value function(...args){ const r = __invoke(this, args); if (r && r.__js_vm_thrown) throw r.value; return r; } args [[object Object]]"
+  },
+  "runsMs": [
+    363.735583
+  ],
+  "stats": {
+    "minMs": 363.735583,
+    "maxMs": 363.735583,
+    "avgMs": 363.735583,
+    "p50Ms": 363.735583,
+    "p90Ms": 363.735583,
+    "p99Ms": 363.735583,
+    "stepsPerSecond": 2749250
+  },
+  "hostBridge": {
+    "get": 827,
+    "set": 2,
+    "call": 384,
+    "construct": 47
+  },
+  "callbacks": {
+    "total": 378,
+    "fastPath": 378
+  },
+  "inlineCache": {
+    "loadNameHits": 779,
+    "loadNameMisses": 232,
+    "memberConstHits": 472,
+    "memberConstMisses": 56,
+    "callOneHits": 159,
+    "callOneMisses": 348,
+    "memberCallHits": 20,
+    "memberCallMisses": 18
+  },
+  "fused": {
+    "binaryBranch": 24,
+    "moveBranch": 301,
+    "regBranchJump": 38,
+    "fastBinaryRegConst": 1184,
+    "fastBinaryRegReg": 24
+  },
+  "instructionCount": 10000,
+  "opcodes": [
+    {
+      "name": "LOAD_NAME",
+      "count": 1011
+    },
+    {
+      "name": "DECLARE",
+      "count": 903
+    },
+    {
+      "name": "MOVE",
+      "count": 713
+    },
+    {
+      "name": "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+      "count": 635
+    },
+    {
+      "name": "CALL_1",
+      "count": 527
+    },
+    {
+      "name": "LOAD_LOCAL",
+      "count": 519
+    },
+    {
+      "name": "STORE_NAME",
+      "count": 499
+    },
+    {
+      "name": "JUMP_IF_TRUE_REG",
+      "count": 414
+    },
+    {
+      "name": "FUNCTION_EXPR_START",
+      "count": 394
+    },
+    {
+      "name": "JUMP_IF_FALSE_REG",
+      "count": 348
+    },
+    {
+      "name": "JUMP_IF_LOCAL_BINARY_CONST_FALSE",
+      "count": 310
+    },
+    {
+      "name": "STORE_LOCAL_MEMBER_CONST",
+      "count": 310
+    },
+    {
+      "name": "FUNCTION_START",
+      "count": 290
+    },
+    {
+      "name": "JUMP",
+      "count": 254
+    },
+    {
+      "name": "OBJECT",
+      "count": 251
+    },
+    {
+      "name": "UNARY",
+      "count": 251
+    },
+    {
+      "name": "DECLARE_STORE_LOCAL",
+      "count": 232
+    },
+    {
+      "name": "MEMBER_CONST",
+      "count": 229
+    },
+    {
+      "name": "RETURN_REG",
+      "count": 201
+    },
+    {
+      "name": "CALL",
+      "count": 180
+    },
+    {
+      "name": "ENTER_SCOPE",
+      "count": 177
+    },
+    {
+      "name": "RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST",
+      "count": 163
+    },
+    {
+      "name": "LEAVE_SCOPE",
+      "count": 156
+    },
+    {
+      "name": "MOVE_JUMP_FALLTHROUGH_REG",
+      "count": 124
+    },
+    {
+      "name": "ARRAY",
+      "count": 123
+    },
+    {
+      "name": "BINARY_REG_CONST",
+      "count": 117
+    },
+    {
+      "name": "STORE_MEMBER_CONST",
+      "count": 117
+    },
+    {
+      "name": "LOAD_LOCAL_SMALL",
+      "count": 70
+    },
+    {
+      "name": "STORE_MEMBER",
+      "count": 65
+    },
+    {
+      "name": "BINARY_LOCAL_CONST",
+      "count": 60
+    }
+  ],
+  "functions": [
+    {
+      "name": "get",
+      "bodyStart": 3128,
+      "bodyEnd": 3272,
+      "callCount": 260,
+      "instructionCount": 5273,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3509,
+        "endLine": 9,
+        "endColumn": 3528,
+        "byteStart": 544810,
+        "byteEnd": 544843,
+        "pcStart": 3128,
+        "pcEnd": 3132,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "name": "Os",
+      "bodyStart": 4318,
+      "bodyEnd": 4319,
+      "callCount": 176,
+      "instructionCount": 295,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5643,
+        "endLine": 9,
+        "endColumn": 5984,
+        "byteStart": 549743,
+        "byteEnd": 549753,
+        "pcStart": 4318,
+        "pcEnd": 4319,
+        "function": 178,
+        "op": "RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST"
+      }
+    },
+    {
+      "name": "Jt",
+      "bodyStart": 136,
+      "bodyEnd": 166,
+      "callCount": 3,
+      "instructionCount": 279,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 116,
+        "endLine": 5,
+        "endColumn": 125,
+        "byteStart": 533270,
+        "byteEnd": 533305,
+        "pcStart": 136,
+        "pcEnd": 145,
+        "function": 0,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 276,
+      "bodyEnd": 279,
+      "callCount": 55,
+      "instructionCount": 164,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 436,
+        "endLine": 5,
+        "endColumn": 464,
+        "byteStart": 533795,
+        "byteEnd": 533806,
+        "pcStart": 276,
+        "pcEnd": 279,
+        "function": 13,
+        "op": "UNARY"
+      }
+    },
+    {
+      "name": "Io",
+      "bodyStart": 3632,
+      "bodyEnd": 4022,
+      "callCount": 4,
+      "instructionCount": 126,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 4151,
+        "endLine": 9,
+        "endColumn": 4155,
+        "byteStart": 546912,
+        "byteEnd": 546948,
+        "pcStart": 3632,
+        "pcEnd": 3640,
+        "function": 150,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "Ks",
+      "bodyStart": 2233,
+      "bodyEnd": 2273,
+      "callCount": 19,
+      "instructionCount": 114,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 2470,
+        "endLine": 9,
+        "endColumn": 2487,
+        "byteStart": 541132,
+        "byteEnd": 541190,
+        "pcStart": 2233,
+        "pcEnd": 2248,
+        "function": 77,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 4001,
+      "bodyEnd": 4008,
+      "callCount": 16,
+      "instructionCount": 112,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5385,
+        "endLine": 9,
+        "endColumn": 5489,
+        "byteStart": 548363,
+        "byteEnd": 548431,
+        "pcStart": 3988,
+        "pcEnd": 4002,
+        "function": 150,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 282,
+      "bodyEnd": 288,
+      "callCount": 20,
+      "instructionCount": 100,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 436,
+        "endLine": 5,
+        "endColumn": 464,
+        "byteStart": 533817,
+        "byteEnd": 533840,
+        "pcStart": 282,
+        "pcEnd": 288,
+        "function": 14,
+        "op": "BINARY_LOCAL_CONST"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 3075,
+      "bodyEnd": 3080,
+      "callCount": 20,
+      "instructionCount": 80,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3406,
+        "endLine": 9,
+        "endColumn": 3429,
+        "byteStart": 544553,
+        "byteEnd": 544573,
+        "pcStart": 3075,
+        "pcEnd": 3080,
+        "function": 130,
+        "op": "BINARY_LOCAL_CONST"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 154,
+      "bodyEnd": 158,
+      "callCount": 19,
+      "instructionCount": 76,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 126,
+        "endLine": 5,
+        "endColumn": 135,
+        "byteStart": 533305,
+        "byteEnd": 533364,
+        "pcStart": 145,
+        "pcEnd": 160,
+        "function": 0,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 26183,
+      "bodyEnd": 26244,
+      "callCount": 1,
+      "instructionCount": 61,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 15,
+        "column": 34349,
+        "endLine": 15,
+        "endColumn": 34374,
+        "byteStart": 643758,
+        "byteEnd": 643765,
+        "pcStart": 26183,
+        "pcEnd": 26185,
+        "function": 863,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 3083,
+      "bodyEnd": 3086,
+      "callCount": 20,
+      "instructionCount": 60,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3406,
+        "endLine": 9,
+        "endColumn": 3429,
+        "byteStart": 544595,
+        "byteEnd": 544604,
+        "pcStart": 3083,
+        "pcEnd": 3086,
+        "function": 131,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "constructor",
+      "bodyStart": 4345,
+      "bodyEnd": 4370,
+      "callCount": 2,
+      "instructionCount": 38,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5663,
+        "endLine": 9,
+        "endColumn": 5681,
+        "byteStart": 549855,
+        "byteEnd": 549879,
+        "pcStart": 4345,
+        "pcEnd": 4350,
+        "function": 182,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "Oo",
+      "bodyStart": 3505,
+      "bodyEnd": 3612,
+      "callCount": 16,
+      "instructionCount": 32,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 4072,
+        "endLine": 9,
+        "endColumn": 4091,
+        "byteStart": 546401,
+        "byteEnd": 546419,
+        "pcStart": 3505,
+        "pcEnd": 3509,
+        "function": 145,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 18771,
+      "bodyEnd": 18806,
+      "callCount": 2,
+      "instructionCount": 32,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 15,
+        "column": 13328,
+        "endLine": 15,
+        "endColumn": 13344,
+        "byteStart": 608703,
+        "byteEnd": 608723,
+        "pcStart": 18771,
+        "pcEnd": 18776,
+        "function": 549,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 367,
+      "bodyEnd": 383,
+      "callCount": 4,
+      "instructionCount": 28,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 607,
+        "endLine": 5,
+        "endColumn": 652,
+        "byteStart": 534144,
+        "byteEnd": 534184,
+        "pcStart": 367,
+        "pcEnd": 377,
+        "function": 20,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "Ie",
+      "bodyStart": 4024,
+      "bodyEnd": 4056,
+      "callCount": 4,
+      "instructionCount": 28,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5390,
+        "endLine": 9,
+        "endColumn": 5401,
+        "byteStart": 548530,
+        "byteEnd": 548564,
+        "pcStart": 4024,
+        "pcEnd": 4031,
+        "function": 161,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "constructor",
+      "bodyStart": 1993,
+      "bodyEnd": 2006,
+      "callCount": 2,
+      "instructionCount": 26,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 1502,
+        "endLine": 9,
+        "endColumn": 1504,
+        "byteStart": 540219,
+        "byteEnd": 540260,
+        "pcStart": 1993,
+        "pcEnd": 2001,
+        "function": 72,
+        "op": "STORE_MEMBER"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 24403,
+      "bodyEnd": 24429,
+      "callCount": 1,
+      "instructionCount": 26,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 15,
+        "column": 31086,
+        "endLine": 15,
+        "endColumn": 31104,
+        "byteStart": 636290,
+        "byteEnd": 636340,
+        "pcStart": 24403,
+        "pcEnd": 24416,
+        "function": 808,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 25781,
+      "bodyEnd": 25807,
+      "callCount": 1,
+      "instructionCount": 26,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 15,
+        "column": 33719,
+        "endLine": 15,
+        "endColumn": 33734,
+        "byteStart": 641984,
+        "byteEnd": 642029,
+        "pcStart": 25781,
+        "pcEnd": 25793,
+        "function": 857,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "Re",
+      "bodyStart": 4179,
+      "bodyEnd": 4218,
+      "callCount": 1,
+      "instructionCount": 25,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5545,
+        "endLine": 9,
+        "endColumn": 5551,
+        "byteStart": 549225,
+        "byteEnd": 549277,
+        "pcStart": 4179,
+        "pcEnd": 4191,
+        "function": 169,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "R",
+      "bodyStart": 7650,
+      "bodyEnd": 7661,
+      "callCount": 6,
+      "instructionCount": 24,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 16734,
+        "endLine": 9,
+        "endColumn": 17010,
+        "byteStart": 562787,
+        "byteEnd": 562809,
+        "pcStart": 7650,
+        "pcEnd": 7656,
+        "function": 290,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "Ap",
+      "bodyStart": 11778,
+      "bodyEnd": 11801,
+      "callCount": 1,
+      "instructionCount": 23,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 13,
+        "column": 6435,
+        "endLine": 13,
+        "endColumn": 6467,
+        "byteStart": 579779,
+        "byteEnd": 579828,
+        "pcStart": 11778,
+        "pcEnd": 11788,
+        "function": 418,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "constructor",
+      "bodyStart": 3115,
+      "bodyEnd": 3126,
+      "callCount": 4,
+      "instructionCount": 20,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3429,
+        "endLine": 9,
+        "endColumn": 3499,
+        "byteStart": 544750,
+        "byteEnd": 544773,
+        "pcStart": 3115,
+        "pcEnd": 3118,
+        "function": 133,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 10195,
+      "bodyEnd": 10225,
+      "callCount": 9,
+      "instructionCount": 18,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 13,
+        "column": 2453,
+        "endLine": 13,
+        "endColumn": 2484,
+        "byteStart": 573091,
+        "byteEnd": 573152,
+        "pcStart": 10195,
+        "pcEnd": 10208,
+        "function": 358,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 264,
+      "bodyEnd": 267,
+      "callCount": 6,
+      "instructionCount": 18,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 407,
+        "endLine": 5,
+        "endColumn": 435,
+        "byteStart": 533751,
+        "byteEnd": 533762,
+        "pcStart": 264,
+        "pcEnd": 267,
+        "function": 11,
+        "op": "UNARY"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 528,
+      "bodyEnd": 566,
+      "callCount": 3,
+      "instructionCount": 17,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 5,
+        "column": 1097,
+        "endLine": 5,
+        "endColumn": 1140,
+        "byteStart": 534725,
+        "byteEnd": 534763,
+        "pcStart": 528,
+        "pcEnd": 537,
+        "function": 32,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "ae",
+      "bodyStart": 3614,
+      "bodyEnd": 3630,
+      "callCount": 8,
+      "instructionCount": 16,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 4139,
+        "endLine": 9,
+        "endColumn": 4142,
+        "byteStart": 546843,
+        "byteEnd": 546890,
+        "pcStart": 3614,
+        "pcEnd": 3625,
+        "function": 148,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 25760,
+      "bodyEnd": 25776,
+      "callCount": 1,
+      "instructionCount": 16,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 15,
+        "column": 33610,
+        "endLine": 15,
+        "endColumn": 33699,
+        "byteStart": 641897,
+        "byteEnd": 641916,
+        "pcStart": 25760,
+        "pcEnd": 25765,
+        "function": 856,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "constructor",
+      "bodyStart": 3276,
+      "bodyEnd": 3284,
+      "callCount": 2,
+      "instructionCount": 13,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3801,
+        "endLine": 9,
+        "endColumn": 3840,
+        "byteStart": 545431,
+        "byteEnd": 545439,
+        "pcStart": 3276,
+        "pcEnd": 3277,
+        "function": 135,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    }
+  ],
+  "hotPcs": [
+    {
+      "pc": 4318,
+      "op": "RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST",
+      "count": 163,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 5643,
+        "endLine": 9,
+        "endColumn": 5984,
+        "byteStart": 549743,
+        "byteEnd": 549753,
+        "pcStart": 4318,
+        "pcEnd": 4319,
+        "function": 178,
+        "op": "RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST"
+      }
+    },
+    {
+      "pc": 3128,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3509,
+        "endLine": 9,
+        "endColumn": 3528,
+        "byteStart": 544810,
+        "byteEnd": 544843,
+        "pcStart": 3128,
+        "pcEnd": 3132,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "pc": 3129,
+      "op": "STORE_LOCAL_MEMBER_CONST",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3509,
+        "endLine": 9,
+        "endColumn": 3528,
+        "byteStart": 544810,
+        "byteEnd": 544843,
+        "pcStart": 3128,
+        "pcEnd": 3132,
+        "function": 134,
+        "op": "STORE_LOCAL_MEMBER_CONST"
+      }
+    },
+    {
+      "pc": 3130,
+      "op": "STORE_LOCAL_MEMBER_CONST",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3509,
+        "endLine": 9,
+        "endColumn": 3528,
+        "byteStart": 544810,
+        "byteEnd": 544843,
+        "pcStart": 3128,
+        "pcEnd": 3132,
+        "function": 134,
+        "op": "STORE_LOCAL_MEMBER_CONST"
+      }
+    },
+    {
+      "pc": 3131,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3509,
+        "endLine": 9,
+        "endColumn": 3528,
+        "byteStart": 544810,
+        "byteEnd": 544843,
+        "pcStart": 3128,
+        "pcEnd": 3132,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "pc": 3132,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3537,
+        "endLine": 9,
+        "endColumn": 3564,
+        "byteStart": 544843,
+        "byteEnd": 544913,
+        "pcStart": 3132,
+        "pcEnd": 3147,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "pc": 3133,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3537,
+        "endLine": 9,
+        "endColumn": 3564,
+        "byteStart": 544843,
+        "byteEnd": 544913,
+        "pcStart": 3132,
+        "pcEnd": 3147,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_TRUE"
+      }
+    },
+    {
+      "pc": 3134,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_FALSE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3537,
+        "endLine": 9,
+        "endColumn": 3564,
+        "byteStart": 544843,
+        "byteEnd": 544913,
+        "pcStart": 3132,
+        "pcEnd": 3147,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_FALSE"
+      }
+    },
+    {
+      "pc": 3159,
+      "op": "LOAD_NAME",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3566,
+        "endLine": 9,
+        "endColumn": 3841,
+        "byteStart": 544913,
+        "byteEnd": 544973,
+        "pcStart": 3147,
+        "pcEnd": 3161,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3160,
+      "op": "CALL_1",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3566,
+        "endLine": 9,
+        "endColumn": 3841,
+        "byteStart": 544913,
+        "byteEnd": 544973,
+        "pcStart": 3147,
+        "pcEnd": 3161,
+        "function": 134,
+        "op": "CALL"
+      }
+    },
+    {
+      "pc": 3161,
+      "op": "DECLARE_STORE_LOCAL",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "DECLARE_STORE_LOCAL"
+      }
+    },
+    {
+      "pc": 3162,
+      "op": "UNARY",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "UNARY"
+      }
+    },
+    {
+      "pc": 3163,
+      "op": "JUMP_IF_TRUE_REG",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "JUMP_IF_TRUE_REG"
+      }
+    },
+    {
+      "pc": 3164,
+      "op": "LOAD_NAME",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3165,
+      "op": "MEMBER_CONST",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "MEMBER"
+      }
+    },
+    {
+      "pc": 3166,
+      "op": "LOAD_LOCAL",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3167,
+      "op": "LOAD_LOCAL",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3168,
+      "op": "LOAD_NAME",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3169,
+      "op": "CALL_1",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "CALL"
+      }
+    },
+    {
+      "pc": 3217,
+      "op": "ENTER_SCOPE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3730,
+        "endLine": 9,
+        "endColumn": 3801,
+        "byteStart": 545156,
+        "byteEnd": 545203,
+        "pcStart": 3205,
+        "pcEnd": 3219,
+        "function": 134,
+        "op": "ENTER_SCOPE"
+      }
+    },
+    {
+      "pc": 3218,
+      "op": "DECLARE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3730,
+        "endLine": 9,
+        "endColumn": 3801,
+        "byteStart": 545156,
+        "byteEnd": 545203,
+        "pcStart": 3205,
+        "pcEnd": 3219,
+        "function": 134,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "pc": 3219,
+      "op": "STORE_NAME",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "STORE_NAME"
+      }
+    },
+    {
+      "pc": 3220,
+      "op": "LOAD_LOCAL",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 3221,
+      "op": "MOVE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 3222,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 3227,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 3229,
+      "op": "JUMP_IF_LOCAL_BINARY_CONST_FALSE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "JUMP_IF_LOCAL_BINARY_CONST_FALSE"
+      }
+    },
+    {
+      "pc": 3232,
+      "op": "LEAVE_SCOPE",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "LEAVE_SCOPE"
+      }
+    },
+    {
+      "pc": 3233,
+      "op": "JUMP",
+      "count": 155,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3731,
+        "endLine": 9,
+        "endColumn": 3752,
+        "byteStart": 545203,
+        "byteEnd": 545256,
+        "pcStart": 3219,
+        "pcEnd": 3234,
+        "function": 134,
+        "op": "JUMP"
+      }
+    },
+    {
+      "pc": 3170,
+      "op": "JUMP_IF_TRUE_REG",
+      "count": 142,
+      "source": {
+        "sourceFile": "assets/app-CG-R2f4n.js",
+        "line": 9,
+        "column": 3586,
+        "endLine": 9,
+        "endColumn": 3621,
+        "byteStart": 544973,
+        "byteEnd": 545037,
+        "pcStart": 3161,
+        "pcEnd": 3176,
+        "function": 134,
+        "op": "JUMP_IF_TRUE_REG"
+      }
+    }
+  ]
+}

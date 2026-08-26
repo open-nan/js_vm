@@ -1,3 +1,13 @@
+//! JS VM 的核心抽象层。
+//!
+//! 该 crate 不依赖浏览器或 Node 宿主环境，负责定义编译器和执行器共同遵守的数据契约：
+//! IR、Bytecode、编码表、混淆 seed、字节流编解码和体积 profile。
+//!
+//! 设计上这里承担三件事：
+//! 1. 把 `IrModule` 降低成更紧凑、可执行的 `BytecodeModule`。
+//! 2. 把 `BytecodeModule` 编码成 bytes，并支持 opcode/operand/constant tag 混淆。
+//! 3. 从 bytes + seed 还原 `BytecodeModule`，让执行器无需知道编译期细节。
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -85,6 +95,10 @@ enum LowerInstruction {
         source: LowerValue,
         excluded: Vec<String>,
     },
+    Await {
+        dst: String,
+        value: LowerValue,
+    },
     Call {
         dst: String,
         callee: LowerValue,
@@ -103,6 +117,7 @@ enum LowerInstruction {
     Function {
         name: String,
         params: Vec<LowerBinding>,
+        is_async: bool,
         is_generator: bool,
         body: Vec<LowerInstruction>,
     },
@@ -110,6 +125,7 @@ enum LowerInstruction {
         dst: String,
         name: Option<String>,
         params: Vec<LowerBinding>,
+        is_async: bool,
         is_generator: bool,
         body: Vec<LowerInstruction>,
     },
@@ -169,13 +185,23 @@ impl IrModule {
     }
 }
 
+/// Bytecode 常量池元素。
+///
+/// 常量池只存需要按索引复用的数据。`null`、`undefined`、`true/false` 等短立即值
+/// 在编码阶段会尽量使用专用 opcode 或短 operand，避免重复写入常量段。
 #[derive(Debug, Clone, PartialEq)]
 pub enum BytecodeConstant {
+    /// JavaScript number。
     Number(f64),
+    /// 字符串字面量或属性名。
     String(String),
+    /// BigInt 字面量文本，不带末尾 `n`。
     BigInt(String),
+    /// boolean 常量。
     Bool(bool),
+    /// `null` 常量。
     Null,
+    /// `undefined` 常量。
     Undefined,
 }
 impl fmt::Display for BytecodeConstant {
@@ -191,6 +217,11 @@ impl fmt::Display for BytecodeConstant {
     }
 }
 
+/// VM 指令集。
+///
+/// 枚举顺序是默认编码表的基础。UI 或编译器可以通过 `EncodingConfig` 改变“指令名到 code”
+/// 的映射以实现混淆，但指令的语义仍由这里定义。带 `Small`、`Const`、`Reg` 后缀的指令
+/// 是压缩产物体积的专用 opcode，解码后会在执行器中走对应的快速路径或还原为规范语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BytecodeOp {
@@ -252,6 +283,24 @@ pub enum BytecodeOp {
     StoreLocalSmall = 55,
     ObjectRest = 56,
     Yield = 57,
+    Await = 58,
+    ReturnIfLocalFalse = 59,
+    JumpIfLocalBinaryConstFalse = 60,
+    ReturnIfLocalFalseElseMemberBinaryConst = 61,
+    StoreLocalMemberConst = 62,
+    JumpIfTrueReg = 63,
+    JumpIfLocalBinaryConstTrue = 64,
+    DeclareStoreLocal = 65,
+    MoveJumpReg = 66,
+    BinaryRegRegJump = 67,
+    MoveJumpFallthroughReg = 68,
+    BinaryRegRegJumpFallthrough = 69,
+    MemberLocalConst = 70,
+    BinaryLocalConst = 71,
+    MemberLocal = 72,
+    CallLocalZero = 73,
+    CallLocalOne = 74,
+    CallLocalTwo = 75,
 }
 
 impl BytecodeOp {
@@ -315,6 +364,24 @@ impl BytecodeOp {
             BytecodeOp::StoreLocalSmall,
             BytecodeOp::ObjectRest,
             BytecodeOp::Yield,
+            BytecodeOp::Await,
+            BytecodeOp::ReturnIfLocalFalse,
+            BytecodeOp::JumpIfLocalBinaryConstFalse,
+            BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst,
+            BytecodeOp::StoreLocalMemberConst,
+            BytecodeOp::JumpIfTrueReg,
+            BytecodeOp::JumpIfLocalBinaryConstTrue,
+            BytecodeOp::DeclareStoreLocal,
+            BytecodeOp::MoveJumpReg,
+            BytecodeOp::BinaryRegRegJump,
+            BytecodeOp::MoveJumpFallthroughReg,
+            BytecodeOp::BinaryRegRegJumpFallthrough,
+            BytecodeOp::MemberLocalConst,
+            BytecodeOp::BinaryLocalConst,
+            BytecodeOp::MemberLocal,
+            BytecodeOp::CallLocalZero,
+            BytecodeOp::CallLocalOne,
+            BytecodeOp::CallLocalTwo,
         ]
     }
 
@@ -378,6 +445,26 @@ impl BytecodeOp {
             BytecodeOp::StoreLocalSmall => "STORE_LOCAL_SMALL",
             BytecodeOp::ObjectRest => "OBJECT_REST",
             BytecodeOp::Yield => "YIELD",
+            BytecodeOp::Await => "AWAIT",
+            BytecodeOp::ReturnIfLocalFalse => "RETURN_IF_LOCAL_FALSE",
+            BytecodeOp::JumpIfLocalBinaryConstFalse => "JUMP_IF_LOCAL_BINARY_CONST_FALSE",
+            BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => {
+                "RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST"
+            }
+            BytecodeOp::StoreLocalMemberConst => "STORE_LOCAL_MEMBER_CONST",
+            BytecodeOp::JumpIfTrueReg => "JUMP_IF_TRUE_REG",
+            BytecodeOp::JumpIfLocalBinaryConstTrue => "JUMP_IF_LOCAL_BINARY_CONST_TRUE",
+            BytecodeOp::DeclareStoreLocal => "DECLARE_STORE_LOCAL",
+            BytecodeOp::MoveJumpReg => "MOVE_JUMP_REG",
+            BytecodeOp::BinaryRegRegJump => "BINARY_REG_REG_JUMP",
+            BytecodeOp::MoveJumpFallthroughReg => "MOVE_JUMP_FALLTHROUGH_REG",
+            BytecodeOp::BinaryRegRegJumpFallthrough => "BINARY_REG_REG_JUMP_FALLTHROUGH",
+            BytecodeOp::MemberLocalConst => "MEMBER_LOCAL_CONST",
+            BytecodeOp::BinaryLocalConst => "BINARY_LOCAL_CONST",
+            BytecodeOp::MemberLocal => "MEMBER_LOCAL",
+            BytecodeOp::CallLocalZero => "CALL_LOCAL_0",
+            BytecodeOp::CallLocalOne => "CALL_LOCAL_1",
+            BytecodeOp::CallLocalTwo => "CALL_LOCAL_2",
         }
     }
 
@@ -388,7 +475,7 @@ impl BytecodeOp {
             .find(|op| op.mnemonic() == mnemonic)
     }
 
-    fn canonical(self) -> Self {
+    pub fn canonical(self) -> Self {
         match self {
             BytecodeOp::LoadConstConst => BytecodeOp::LoadConst,
             BytecodeOp::PopReg => BytecodeOp::Pop,
@@ -405,26 +492,58 @@ impl BytecodeOp {
             BytecodeOp::CallZero | BytecodeOp::CallTwo => BytecodeOp::Call,
             BytecodeOp::ReturnReg | BytecodeOp::ReturnConst => BytecodeOp::Return,
             BytecodeOp::JumpIfFalseReg => BytecodeOp::JumpIfFalse,
+            BytecodeOp::JumpIfLocalBinaryConstFalse => BytecodeOp::JumpIfFalse,
+            BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => BytecodeOp::Return,
+            BytecodeOp::StoreLocalMemberConst => BytecodeOp::StoreName,
+            BytecodeOp::JumpIfTrueReg | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+                BytecodeOp::JumpIfFalse
+            }
+            BytecodeOp::DeclareStoreLocal => BytecodeOp::StoreName,
+            BytecodeOp::MoveJumpReg | BytecodeOp::MoveJumpFallthroughReg => BytecodeOp::JumpIfFalse,
+            BytecodeOp::BinaryRegRegJump | BytecodeOp::BinaryRegRegJumpFallthrough => {
+                BytecodeOp::JumpIfFalse
+            }
             BytecodeOp::BinaryRegReg | BytecodeOp::BinaryRegConst => BytecodeOp::Binary,
             BytecodeOp::LoadLocalSmall => BytecodeOp::LoadName,
             BytecodeOp::StoreLocalSmall => BytecodeOp::StoreName,
+            BytecodeOp::MemberLocalConst => BytecodeOp::Member,
+            BytecodeOp::BinaryLocalConst => BytecodeOp::Binary,
+            BytecodeOp::MemberLocal => BytecodeOp::Member,
+            BytecodeOp::CallLocalZero | BytecodeOp::CallLocalOne | BytecodeOp::CallLocalTwo => {
+                BytecodeOp::Call
+            }
             op => op,
         }
     }
 }
 
+/// Bytecode 编码配置。
+///
+/// `magic` 标识 bytecode 文件格式，`opcodes`、`operand_tags`、`constant_tags` 分别控制
+/// 指令、操作数类型和常量类型的编码表。改变这些表不会改变语义，只改变 bytes 表示。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodingConfig {
+    /// bytecode 文件头魔数，目前默认使用两个字符 `JS`。
     pub magic: String,
+    /// 指令助记名到 opcode byte 的映射。
     pub opcodes: BTreeMap<String, u8>,
+    /// 操作数 tag 名称到 tag byte 的映射。
     pub operand_tags: BTreeMap<String, u8>,
+    /// 常量 tag 名称到 tag byte 的映射。
     pub constant_tags: BTreeMap<String, u8>,
 }
 
+/// 只保存编码表名称顺序的轻量结构。
+///
+/// UI 表格和 seed 更适合传输“名称排列”而不是完整 map。`EncodingConfig::from_names`
+/// 会把这里的排列恢复成真正的编码表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodingNames {
+    /// 按 code 顺序排列的 opcode 名称。
     pub opcodes: Vec<String>,
+    /// 按 tag 顺序排列的 operand tag 名称。
     pub operand_tags: Vec<String>,
+    /// 按 tag 顺序排列的 constant tag 名称。
     pub constant_tags: Vec<String>,
 }
 
@@ -449,9 +568,15 @@ impl Default for EncodingNames {
     }
 }
 
+/// 完整混淆配置。
+///
+/// 除了 opcode/operand/constant tag 的编码表排列，还可以记录 extern slot 的排列。
+/// 编译器输出 bytes 时按该配置编码；执行器只接收 seed，通过 seed 恢复配置并校验 bytes。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObfuscationConfig {
+    /// 指令与 tag 的混淆排列。
     pub encoding: EncodingNames,
+    /// extern slot 的排列。为空表示使用编译器默认 extern 顺序。
     pub extern_slots: Vec<u8>,
 }
 
@@ -465,6 +590,9 @@ impl Default for ObfuscationConfig {
 }
 
 impl ObfuscationConfig {
+    /// 从编码名称排列构建混淆配置。
+    ///
+    /// 只配置 opcode/operand/constant tag，不改变 extern slot 顺序。
     pub fn from_encoding_names(encoding: EncodingNames) -> Result<Self, EncodingError> {
         let config = Self {
             encoding,
@@ -474,6 +602,10 @@ impl ObfuscationConfig {
         Ok(config)
     }
 
+    /// 从编码名称排列和 extern slot 排列构建混淆配置。
+    ///
+    /// `extern_slots` 必须是无重复排列，例如 `[2, 0, 1]` 表示运行时第 0 个 extern
+    /// 对应编译期第 2 个 extern。
     pub fn from_encoding_and_extern_slots(
         encoding: EncodingNames,
         extern_slots: Vec<u8>,
@@ -486,30 +618,41 @@ impl ObfuscationConfig {
         Ok(config)
     }
 
+    /// 从完整编码表提取名称排列并构建混淆配置。
     pub fn from_encoding_config(encoding: &EncodingConfig) -> Result<Self, EncodingError> {
         Self::from_encoding_names(encoding.names())
     }
 
+    /// 把混淆配置恢复成可直接编码/解码 bytes 的 `EncodingConfig`。
     pub fn encoding_config(&self) -> Result<EncodingConfig, EncodingError> {
         EncodingConfig::from_names(&self.encoding)
     }
 
+    /// 生成只描述配置的 seed。
+    ///
+    /// 不绑定具体 bytecode 内容，主要用于 UI 中预览和同步配置。
     pub fn config_seed(&self) -> Result<String, EncodingError> {
         self.paired_seed(&[])
     }
 
+    /// 生成与指定 bytecode bytes 绑定的 seed。
+    ///
+    /// seed 内包含指纹。执行器会用同样的 bytes 重新计算指纹，不匹配时拒绝运行。
     pub fn paired_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
         Ok(ObfuscationSeed::from_config(self.clone(), bytes)?.to_string())
     }
 
+    /// 从 seed 恢复混淆配置，不校验 bytes 指纹。
     pub fn from_seed(seed: &str) -> Result<Self, EncodingError> {
         Ok(ObfuscationSeed::parse(seed)?.config)
     }
 
+    /// 从 seed 恢复混淆配置，并校验 seed 是否与 bytes 配对。
     pub fn from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
         Ok(ObfuscationSeed::parse_for_bytes(seed, bytes)?.config)
     }
 
+    /// 校验编码表和 extern slot 排列是否完整、无重复、无非法 code。
     pub fn validate(&self) -> Result<(), EncodingError> {
         EncodingConfig::from_names(&self.encoding)?;
         validate_slot_permutation(&self.extern_slots, "extern slot")
@@ -544,13 +687,20 @@ impl ObfuscationConfig {
     }
 }
 
+/// 可传输的混淆 seed。
+///
+/// 字符串格式为 `JSTKSEED2-<fingerprint>-<permutation>`。`fingerprint` 将排列和 bytes
+/// 绑定在一起，用于阻止“seed 和 bytecode 不匹配”的运行场景。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObfuscationSeed {
+    /// seed 指纹，来自排列和 bytes。
     pub fingerprint: u64,
+    /// seed 中恢复出的混淆配置。
     pub config: ObfuscationConfig,
 }
 
 impl ObfuscationSeed {
+    /// 从配置和 bytes 生成带指纹的 seed。
     pub fn from_config(config: ObfuscationConfig, bytes: &[u8]) -> Result<Self, EncodingError> {
         let permutation = config.seed_permutation()?;
         Ok(Self {
@@ -559,6 +709,7 @@ impl ObfuscationSeed {
         })
     }
 
+    /// 解析 seed 字符串，不校验 bytecode bytes。
     pub fn parse(seed: &str) -> Result<Self, EncodingError> {
         let parsed = parse_obfuscation_seed(seed)?;
         let config = obfuscation_config_from_seed_permutation(&parsed.permutation)?;
@@ -568,6 +719,7 @@ impl ObfuscationSeed {
         })
     }
 
+    /// 解析 seed 并校验它是否和 bytes 一一匹配。
     pub fn parse_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
         let parsed = parse_obfuscation_seed(seed)?;
         let actual = seed_fingerprint(&parsed.permutation, bytes);
@@ -583,6 +735,7 @@ impl ObfuscationSeed {
         })
     }
 
+    /// 返回 seed 内部的紧凑排列字符串。
     pub fn permutation(&self) -> Result<String, EncodingError> {
         self.config.seed_permutation()
     }
@@ -603,6 +756,9 @@ impl fmt::Display for ObfuscationSeed {
     }
 }
 
+/// 默认 bytecode 魔数。
+///
+/// 保持两个字符是为了减少产物头部大小，同时仍能在解码阶段快速拒绝明显错误的数据。
 pub const DEFAULT_BYTECODE_MAGIC: &str = "JS";
 
 const ENCODING_SEED_PREFIX: &str = "JSTKSEED2";
@@ -652,6 +808,7 @@ impl Default for EncodingConfig {
 }
 
 impl EncodingConfig {
+    /// 按名称排列恢复完整编码表。
     pub fn from_names(names: &EncodingNames) -> Result<Self, EncodingError> {
         let mut config = Self::default();
         config.opcodes =
@@ -670,6 +827,7 @@ impl EncodingConfig {
         Ok(config)
     }
 
+    /// 提取当前编码表的名称排列。
     pub fn names(&self) -> EncodingNames {
         EncodingNames {
             opcodes: names_by_code(&self.opcodes),
@@ -678,14 +836,19 @@ impl EncodingConfig {
         }
     }
 
+    /// 生成不绑定 bytes 的配置 seed。
     pub fn config_seed(&self) -> Result<String, EncodingError> {
         self.to_seed(&[])
     }
 
+    /// 生成绑定 bytes 的 seed。
     pub fn paired_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
         self.to_seed(bytes)
     }
 
+    /// 从 YAML 文本读取编码表。
+    ///
+    /// 这是早期配置入口，当前主链路推荐使用 seed 传输。保留它主要是为了测试和兼容旧工具。
     pub fn from_yaml(source: &str) -> Result<Self, EncodingError> {
         let mut config = Self::default();
         let mut section: Option<YamlSection> = None;
@@ -774,6 +937,7 @@ impl EncodingConfig {
         Ok(config)
     }
 
+    /// 导出 YAML 形式的编码表，便于人工检查。
     pub fn to_yaml(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "magic: {:?}", self.magic);
@@ -792,19 +956,23 @@ impl EncodingConfig {
         out
     }
 
+    /// 生成 seed 的底层入口。
     pub fn to_seed(&self, bytes: &[u8]) -> Result<String, EncodingError> {
         self.validate()?;
         ObfuscationConfig::from_encoding_config(self)?.paired_seed(bytes)
     }
 
+    /// 从 seed 恢复编码表，不校验 bytes。
     pub fn from_seed(seed: &str) -> Result<Self, EncodingError> {
         ObfuscationConfig::from_seed(seed)?.encoding_config()
     }
 
+    /// 从 seed 恢复编码表，并校验 seed 和 bytes 是否配对。
     pub fn from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<Self, EncodingError> {
         ObfuscationConfig::from_seed_for_bytes(seed, bytes)?.encoding_config()
     }
 
+    /// 校验编码表是否完整、无重复，并避免 compact operand tag 的保留区冲突。
     pub fn validate(&self) -> Result<(), EncodingError> {
         if self.magic.is_empty() {
             return Err(EncodingError::MissingKey("magic".to_string()));
@@ -866,14 +1034,22 @@ impl EncodingConfig {
     }
 }
 
+/// 编码/解码错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodingError {
+    /// 必需的编码项缺失。
     MissingKey(String),
+    /// bytes 中出现未知 code 或 tag。
     UnknownCode(String),
+    /// 指令操作数形状不符合预期。
     UnexpectedOperand(String),
+    /// bytes 在读取完整结构前结束。
     UnexpectedEof,
+    /// bytecode 魔数不匹配。
     InvalidMagic { expected: String },
+    /// YAML 配置解析错误。
     Yaml(String),
+    /// seed 格式、指纹或排列错误。
     Seed(String),
 }
 
@@ -904,19 +1080,35 @@ enum YamlSection {
     ConstantTags,
 }
 
+/// Bytecode 操作数。
+///
+/// 这里保留语义类型，实际写入 bytes 时会根据 `EncodingConfig` 和短 operand 编码规则
+/// 压成 tag + payload，常见小索引会进一步压成单字节。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BytecodeOperand {
+    /// 寄存器编号。
     Register(u32),
+    /// 常量池下标。
     Constant(u32),
+    /// names 段下标。
     Name(u32),
+    /// 函数局部 slot 下标。
     LocalSlot(u32),
+    /// extern slot 下标。
     External(u32),
+    /// fun 段下标。
     Function(u32),
+    /// 兼容旧 label operand；新跳转优先编码 pc offset。
     Label(u32),
+    /// 运算符枚举下标。
     Operator(u32),
+    /// 声明类型枚举下标。
     DeclKind(u32),
+    /// 作用域类型枚举下标。
     ScopeKind(u32),
+    /// 计数类立即数。
     Count(u32),
+    /// 可选操作数为空。
     None,
 }
 
@@ -995,26 +1187,41 @@ impl BytecodeOperand {
     }
 }
 
+/// 一条 bytecode 指令。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytecodeInstruction {
+    /// 指令语义。
     pub op: BytecodeOp,
+    /// 指令操作数。
     pub operands: Vec<BytecodeOperand>,
 }
 
+/// fun 段中的函数元数据。
+///
+/// 运行时通过这里直接定位函数 body，避免在 code 段扫描 `FunctionStart/FunctionEnd`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytecodeFunction {
+    /// 函数名在 names 段中的下标；匿名函数为 `None`。
     pub name: Option<u32>,
+    /// 参数对应的 local slot operand。
     pub params: Vec<BytecodeOperand>,
+    /// 函数体起始 pc。
     pub body_start: u32,
+    /// 函数体结束 pc。
     pub body_end: u32,
+    /// 函数标记位，如 generator/async。
     pub flags: u32,
+    /// 函数是否可能返回显式值。
     pub has_return: bool,
 }
 
+/// bytecode 模块类型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BytecodeModuleKind {
+    /// 普通 script。
     #[default]
     Script,
+    /// ES module。
     Module,
 }
 
@@ -1027,33 +1234,56 @@ impl From<IrModuleKind> for BytecodeModuleKind {
     }
 }
 
+/// 可执行 bytecode 模块。
+///
+/// 这是 Core Layer 的主要产物。编译器输出它或它的 bytes，执行器从它恢复运行所需的
+/// 常量、名字、extern、函数边界和指令流。
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct BytecodeModule {
+    /// script/module 模式。
     pub kind: BytecodeModuleKind,
+    /// extern 槽名。压缩产物可只记录长度，运行时通过外部传入名称恢复。
     pub extern_slots: Vec<String>,
+    /// 顶层/闭包必要名字段。
     pub names: Vec<String>,
+    /// 函数元数据段。
     pub functions: Vec<BytecodeFunction>,
+    /// 常量池。
     pub constants: Vec<BytecodeConstant>,
+    /// 指令流。
     pub instructions: Vec<BytecodeInstruction>,
 }
 
+/// bytes 体积分布统计。
+///
+/// 用于 UI 和压缩迭代，帮助定位是 section、opcode 还是 operand 占用了主要空间。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BytecodeBytesProfile {
+    /// 总 bytes。
     pub total_bytes: usize,
+    /// 指令数量。
     pub instruction_count: usize,
+    /// 按文件段统计。
     pub sections: Vec<BytecodeBytesProfileEntry>,
+    /// 按 opcode 统计。
     pub opcodes: Vec<BytecodeBytesProfileEntry>,
+    /// 按 operand 类型统计。
     pub operands: Vec<BytecodeBytesProfileEntry>,
 }
 
+/// bytes profile 单项。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BytecodeBytesProfileEntry {
+    /// 统计项名称。
     pub name: String,
+    /// 占用字节数。
     pub bytes: usize,
+    /// 出现次数。
     pub count: usize,
 }
 
 impl BytecodeBytesProfile {
+    /// 输出适合页面和 CLI 展示的 profile 文本。
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "BYTES PROFILE");
@@ -1067,6 +1297,9 @@ impl BytecodeBytesProfile {
 }
 
 impl BytecodeModule {
+    /// 输出可读 bytecode 文本。
+    ///
+    /// 该文本主要用于调试和测试快照，不作为稳定的二进制格式。
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         if self.kind == BytecodeModuleKind::Module {
@@ -1129,15 +1362,28 @@ impl BytecodeModule {
         out
     }
 
+    /// 使用默认编码表输出 bytes。
+    ///
+    /// 适合非混淆场景。混淆/seed 场景应使用 `to_bytes_with_encoding`。
     pub fn to_bytes(&self) -> Vec<u8> {
         self.to_bytes_with_encoding(&EncodingConfig::default())
             .expect("default bytecode encoding must be valid")
     }
 
+    /// 使用指定编码表输出 bytes。
+    ///
+    /// 写入顺序为 magic、mode、extern count、names、functions、constants、code。
+    /// extern 段只写数量，实际 extern 名称由运行时传入的槽表决定。
     pub fn to_bytes_with_encoding(
         &self,
         encoding: &EncodingConfig,
     ) -> Result<Vec<u8>, EncodingError> {
+        // bytes 格式保持“线性段”结构，避免 wasm runtime 引入复杂解析依赖：
+        //
+        // magic | mode | extern_count | names | fun | constants | code
+        //
+        // names/fun/constants/code 都用 varint 长度 + 内容。opcode、operand tag 和 constant tag
+        // 由 `EncodingConfig` 映射，因此同一个 `BytecodeModule` 可以输出不同混淆 bytes。
         encoding.validate()?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(encoding.magic.as_bytes());
@@ -1189,11 +1435,82 @@ impl BytecodeModule {
         Ok(bytes)
     }
 
+    /// 使用默认编码表计算每条指令对应的 byte range。
+    ///
+    /// 主要服务 source map 和调试器，返回 `[start, end)` 半开区间。
+    pub fn instruction_byte_ranges(&self) -> Vec<(usize, usize)> {
+        self.instruction_byte_ranges_with_encoding(&EncodingConfig::default())
+            .expect("default bytecode encoding must be valid")
+    }
+
+    /// 使用指定编码表计算每条指令对应的 byte range。
+    ///
+    /// 混淆编码会改变 opcode/tag 字节，因此 source map 必须使用同一份 encoding 计算 range。
+    pub fn instruction_byte_ranges_with_encoding(
+        &self,
+        encoding: &EncodingConfig,
+    ) -> Result<Vec<(usize, usize)>, EncodingError> {
+        encoding.validate()?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(encoding.magic.as_bytes());
+        bytes.push(bytecode_module_kind_id(self.kind));
+        write_u32(&mut bytes, self.extern_slots.len() as u32);
+        write_u32(&mut bytes, self.names.len() as u32);
+        for name in &self.names {
+            write_name_string(&mut bytes, name, &[]);
+        }
+        write_u32(&mut bytes, self.functions.len() as u32);
+        for function in &self.functions {
+            write_optional_u32(&mut bytes, function.name);
+            write_u32(&mut bytes, function.body_start);
+            write_u32(&mut bytes, function.body_end);
+            write_u32(&mut bytes, function.flags);
+            write_u32(&mut bytes, function.params.len() as u32);
+            bytes.push(u8::from(function.has_return));
+            for param in &function.params {
+                write_tagged_operand(&mut bytes, param, encoding)?;
+            }
+        }
+        write_u32(&mut bytes, self.constants.len() as u32);
+        for constant in &self.constants {
+            match constant {
+                BytecodeConstant::Number(value) => {
+                    bytes.push(encoding.constant_tag("number")?);
+                    write_number(&mut bytes, *value);
+                }
+                BytecodeConstant::String(value) => {
+                    bytes.push(encoding.constant_tag("string")?);
+                    write_constant_string(&mut bytes, value);
+                }
+                BytecodeConstant::BigInt(value) => {
+                    bytes.push(encoding.constant_tag("bigint")?);
+                    write_constant_string(&mut bytes, value);
+                }
+                BytecodeConstant::Bool(value) => {
+                    bytes.push(encoding.constant_tag("bool")?);
+                    bytes.push(u8::from(*value));
+                }
+                BytecodeConstant::Null => bytes.push(encoding.constant_tag("null")?),
+                BytecodeConstant::Undefined => bytes.push(encoding.constant_tag("undefined")?),
+            }
+        }
+        write_u32(&mut bytes, self.instructions.len() as u32);
+        let mut ranges = Vec::with_capacity(self.instructions.len());
+        for instruction in &self.instructions {
+            let start = bytes.len();
+            write_instruction(&mut bytes, instruction, &self.constants, encoding)?;
+            ranges.push((start, bytes.len()));
+        }
+        Ok(ranges)
+    }
+
+    /// 使用默认编码表输出 bytes profile 文本。
     pub fn bytes_profile_text(&self) -> String {
         self.bytes_profile_text_with_encoding(&EncodingConfig::default())
             .expect("default bytecode encoding must be valid")
     }
 
+    /// 使用指定编码表输出 bytes profile 文本。
     pub fn bytes_profile_text_with_encoding(
         &self,
         encoding: &EncodingConfig,
@@ -1201,6 +1518,9 @@ impl BytecodeModule {
         Ok(self.bytes_profile_with_encoding(encoding)?.to_text())
     }
 
+    /// 使用指定编码表生成结构化 bytes profile。
+    ///
+    /// profile 同时统计 section、opcode 和 operand，占比数据用于指导后续压缩方向。
     pub fn bytes_profile_with_encoding(
         &self,
         encoding: &EncodingConfig,
@@ -1294,14 +1614,21 @@ impl BytecodeModule {
         Ok(profile.finish(bytes.len(), self.instructions.len()))
     }
 
+    /// 使用默认编码表从 bytes 解码 bytecode 模块。
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
         Self::from_bytes_with_encoding(bytes, &EncodingConfig::default())
     }
 
+    /// 使用指定编码表从 bytes 解码 bytecode 模块。
+    ///
+    /// 调用方必须保证 encoding 与编码时一致。seed 链路应优先使用 `from_bytes_with_seed`，
+    /// 因为它会先做 bytes 指纹校验。
     pub fn from_bytes_with_encoding(
         bytes: &[u8],
         encoding: &EncodingConfig,
     ) -> Result<Self, EncodingError> {
+        // 解码路径只相信 bytes 和 encoding，不依赖编译器内存结构。
+        // 这保证浏览器/Node runtime 可以单独发布，只要 Core Layer 的格式约定一致即可运行。
         encoding.validate()?;
         let mut cursor = ByteReader::new(bytes);
         cursor.expect_magic(encoding)?;
@@ -1357,10 +1684,7 @@ impl BytecodeModule {
         for _ in 0..instruction_count {
             let op = encoding.opcode_from_code(cursor.read_u8()?)?;
             let operands = read_instruction_operands(&mut cursor, op, &mut constants, encoding)?;
-            instructions.push(BytecodeInstruction {
-                op: op.canonical(),
-                operands,
-            });
+            instructions.push(BytecodeInstruction { op, operands });
         }
         cursor.expect_end()?;
 
@@ -1374,6 +1698,9 @@ impl BytecodeModule {
         })
     }
 
+    /// 使用 seed 解码 bytes。
+    ///
+    /// seed 会先恢复编码表并校验指纹，只有 seed 与 bytes 配对时才继续解码。
     pub fn from_bytes_with_seed(bytes: &[u8], seed: &str) -> Result<Self, EncodingError> {
         let encoding = EncodingConfig::from_seed_for_bytes(seed, bytes)?;
         Self::from_bytes_with_encoding(bytes, &encoding)
@@ -1490,6 +1817,93 @@ fn write_instruction_operands(
             }
             bytes.push(((dst as u8) << 4) | slot as u8);
             ensure_operand_len(instruction, 2)
+        }
+        BytecodeOp::MemberLocalConst => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "MEMBER_LOCAL_CONST expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            bytes.push(((dst as u8) << 4) | slot as u8);
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::BinaryLocalConst => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "BINARY_LOCAL_CONST expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            bytes.push(((dst as u8) << 4) | slot as u8);
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Operator,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 3)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 4)
+        }
+        BytecodeOp::MemberLocal => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "MEMBER_LOCAL expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            bytes.push(((dst as u8) << 4) | slot as u8);
+            write_operand(
+                bytes,
+                operand_at(instruction, 2)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::CallLocalZero => {
+            write_call_local_small_prefix(bytes, instruction)?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::CallLocalOne => {
+            write_call_local_small_prefix(bytes, instruction)?;
+            ensure_operand_len(instruction, 4)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 3)?,
+                OperandKind::Value,
+                encoding,
+            )
+        }
+        BytecodeOp::CallLocalTwo => {
+            write_call_local_small_prefix(bytes, instruction)?;
+            ensure_operand_len(instruction, 5)?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 3)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            write_operand(
+                bytes,
+                operand_at(instruction, 4)?,
+                OperandKind::Value,
+                encoding,
+            )
         }
         BytecodeOp::StoreLocalSmall => {
             let slot = local_payload(operand_at(instruction, 0)?)?;
@@ -1895,6 +2309,8 @@ fn write_instruction(
     constants: &[BytecodeConstant],
     encoding: &EncodingConfig,
 ) -> Result<(), EncodingError> {
+    // Core 内部保留规范 opcode，写入 bytes 时再选择专用 wire opcode。
+    // 这样上层 IR/Bytecode 文本不用关心压缩细节，执行器也能明确区分规范语义和压缩快速路径。
     let wire_op = specialized_wire_op(instruction, constants);
     bytes.push(encoding.opcode(wire_op)?);
     write_instruction_operands(
@@ -2036,6 +2452,12 @@ fn specialized_wire_op(
             ] => BytecodeOp::BinaryRegConst,
             _ => BytecodeOp::Binary,
         },
+        BytecodeOp::MemberLocalConst
+        | BytecodeOp::BinaryLocalConst
+        | BytecodeOp::MemberLocal
+        | BytecodeOp::CallLocalZero
+        | BytecodeOp::CallLocalOne
+        | BytecodeOp::CallLocalTwo => instruction.op,
         op => op,
     }
 }
@@ -2204,6 +2626,93 @@ fn profile_instruction_operands(
             }
             profile.add_operand("local_pair", 1);
             ensure_operand_len(instruction, 2)
+        }
+        BytecodeOp::MemberLocalConst => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "MEMBER_LOCAL_CONST expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            profile.add_operand("local_pair", 1);
+            profile_operand(
+                profile,
+                operand_at(instruction, 2)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::BinaryLocalConst => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "BINARY_LOCAL_CONST expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            profile.add_operand("local_pair", 1);
+            profile_operand(
+                profile,
+                operand_at(instruction, 2)?,
+                OperandKind::Operator,
+                encoding,
+            )?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 3)?,
+                OperandKind::Constant,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 4)
+        }
+        BytecodeOp::MemberLocal => {
+            let dst = register_payload(operand_at(instruction, 0)?)?;
+            let slot = local_payload(operand_at(instruction, 1)?)?;
+            if dst >= 16 || slot >= 16 {
+                return Err(EncodingError::UnexpectedOperand(format!(
+                    "MEMBER_LOCAL expected dst/local < 16, got r{dst}, local#{slot}"
+                )));
+            }
+            profile.add_operand("local_pair", 1);
+            profile_operand(
+                profile,
+                operand_at(instruction, 2)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::CallLocalZero => {
+            profile_call_local_small_prefix(profile, instruction)?;
+            ensure_operand_len(instruction, 3)
+        }
+        BytecodeOp::CallLocalOne => {
+            profile_call_local_small_prefix(profile, instruction)?;
+            ensure_operand_len(instruction, 4)?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 3)?,
+                OperandKind::Value,
+                encoding,
+            )
+        }
+        BytecodeOp::CallLocalTwo => {
+            profile_call_local_small_prefix(profile, instruction)?;
+            ensure_operand_len(instruction, 5)?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 3)?,
+                OperandKind::Value,
+                encoding,
+            )?;
+            profile_operand(
+                profile,
+                operand_at(instruction, 4)?,
+                OperandKind::Value,
+                encoding,
+            )
         }
         BytecodeOp::StoreLocalSmall => {
             let slot = local_payload(operand_at(instruction, 0)?)?;
@@ -2617,6 +3126,15 @@ fn profile_repeated_operands(
     Ok(())
 }
 
+fn profile_call_local_small_prefix(
+    profile: &mut MutableBytesProfile,
+    instruction: &BytecodeInstruction,
+) -> Result<(), EncodingError> {
+    validate_local_pair_operand(instruction, "CALL_LOCAL")?;
+    profile.add_operand("local_pair", 1);
+    Ok(())
+}
+
 fn profile_operand(
     profile: &mut MutableBytesProfile,
     operand: &BytecodeOperand,
@@ -2747,6 +3265,40 @@ fn read_instruction_operands(
             let byte = cursor.read_u8()?;
             operands.push(BytecodeOperand::Register(u32::from(byte >> 4)));
             operands.push(BytecodeOperand::LocalSlot(u32::from(byte & 0x0f)));
+        }
+        BytecodeOp::MemberLocalConst => {
+            let byte = cursor.read_u8()?;
+            operands.push(BytecodeOperand::Register(u32::from(byte >> 4)));
+            operands.push(BytecodeOperand::LocalSlot(u32::from(byte & 0x0f)));
+            operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+        }
+        BytecodeOp::BinaryLocalConst => {
+            let byte = cursor.read_u8()?;
+            operands.push(BytecodeOperand::Register(u32::from(byte >> 4)));
+            operands.push(BytecodeOperand::LocalSlot(u32::from(byte & 0x0f)));
+            operands.push(read_operand(cursor, OperandKind::Operator, encoding)?);
+            operands.push(read_operand(cursor, OperandKind::Constant, encoding)?);
+        }
+        BytecodeOp::MemberLocal => {
+            let byte = cursor.read_u8()?;
+            operands.push(BytecodeOperand::Register(u32::from(byte >> 4)));
+            operands.push(BytecodeOperand::LocalSlot(u32::from(byte & 0x0f)));
+            operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+        }
+        BytecodeOp::CallLocalZero | BytecodeOp::CallLocalOne | BytecodeOp::CallLocalTwo => {
+            let byte = cursor.read_u8()?;
+            operands.push(BytecodeOperand::Register(u32::from(byte >> 4)));
+            operands.push(BytecodeOperand::LocalSlot(u32::from(byte & 0x0f)));
+            let count = match op {
+                BytecodeOp::CallLocalZero => 0,
+                BytecodeOp::CallLocalOne => 1,
+                BytecodeOp::CallLocalTwo => 2,
+                _ => unreachable!(),
+            };
+            operands.push(BytecodeOperand::Count(count));
+            for _ in 0..count {
+                operands.push(read_operand(cursor, OperandKind::Value, encoding)?);
+            }
         }
         BytecodeOp::StoreLocalSmall => {
             let byte = cursor.read_u8()?;
@@ -2940,12 +3492,23 @@ fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
         BytecodeOp::StoreName => &[NameRef, Value],
         BytecodeOp::StoreLocal => &[LocalSlot, Register],
         BytecodeOp::StoreLocalSmall => &[Count],
+        BytecodeOp::StoreLocalMemberConst => &[DeclKind, LocalSlot, Value, Constant],
+        BytecodeOp::DeclareStoreLocal => &[DeclKind, LocalSlot, Register],
         BytecodeOp::StoreMember => &[Value, Value, Value],
         BytecodeOp::StoreMemberConst => &[Value, Constant, Value],
         BytecodeOp::Move => &[Register, Value],
         BytecodeOp::Binary => &[Register, Operator, Value, Value],
         BytecodeOp::BinaryRegReg => &[Register, Operator, Register, Register],
         BytecodeOp::BinaryRegConst => &[Register, Operator, Register, Constant],
+        BytecodeOp::MemberLocalConst => &[Register, LocalSlot, Constant],
+        BytecodeOp::BinaryLocalConst => &[Register, LocalSlot, Operator, Constant],
+        BytecodeOp::MemberLocal => &[Register, LocalSlot, Value],
+        BytecodeOp::CallLocalZero => &[Register, LocalSlot, Count],
+        BytecodeOp::CallLocalOne => &[Register, LocalSlot, Count, Value],
+        BytecodeOp::CallLocalTwo => &[Register, LocalSlot, Count, Value, Value],
+        BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+            &[Register, LocalSlot, Register, Operator, Constant, Count]
+        }
         BytecodeOp::Unary => &[Register, Operator, Value],
         BytecodeOp::Member => &[Register, Value, Value],
         BytecodeOp::MemberConst => &[Register, Value, Constant],
@@ -2963,12 +3526,25 @@ fn fixed_operand_schema(op: BytecodeOp) -> &'static [OperandKind] {
         BytecodeOp::Return => &[OptionalValue],
         BytecodeOp::ReturnReg => &[Register],
         BytecodeOp::ReturnConst => &[Constant],
+        BytecodeOp::ReturnIfLocalFalse => &[Register, LocalSlot, OptionalValue],
+        BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => {
+            &[LocalSlot, OptionalValue, Constant, Operator, Constant]
+        }
         BytecodeOp::Pop => &[Value],
         BytecodeOp::PopReg => &[Register],
         BytecodeOp::Jump => &[Count],
         BytecodeOp::JumpIfFalse => &[Value, Count],
-        BytecodeOp::JumpIfFalseReg => &[Register, Count],
+        BytecodeOp::JumpIfFalseReg | BytecodeOp::JumpIfTrueReg => &[Register, Count],
+        BytecodeOp::MoveJumpReg => &[Register, Value, Register, Count, Count],
+        BytecodeOp::MoveJumpFallthroughReg => &[Register, Value, Register, Count],
+        BytecodeOp::BinaryRegRegJump => &[
+            Register, Operator, Register, Register, Register, Count, Count,
+        ],
+        BytecodeOp::BinaryRegRegJumpFallthrough => {
+            &[Register, Operator, Register, Register, Register, Count]
+        }
         BytecodeOp::Yield => &[OptionalValue, OptionalValue],
+        BytecodeOp::Await => &[Register, Value],
         BytecodeOp::Unsupported => &[Constant],
         BytecodeOp::Array
         | BytecodeOp::Object
@@ -3024,6 +3600,9 @@ fn write_operand(
     kind: OperandKind,
     encoding: &EncodingConfig,
 ) -> Result<(), EncodingError> {
+    // Value/OptionalValue 操作数可以承载多种实际类型，是最影响 code 段体积的部分。
+    // 常见小 register/const/local/name/extern/function 和 none 会走单字节 compact 编码，
+    // 其他情况才写 tag + varint payload。
     match kind {
         OperandKind::Value
         | OperandKind::OptionalValue
@@ -3224,6 +3803,46 @@ fn local_payload(operand: &BytecodeOperand) -> Result<u32, EncodingError> {
     }
 }
 
+fn write_call_local_small_prefix(
+    bytes: &mut Vec<u8>,
+    instruction: &BytecodeInstruction,
+) -> Result<(), EncodingError> {
+    let (dst, slot) = validate_local_pair_operand(instruction, instruction.op.mnemonic())?;
+    let count = match instruction.op {
+        BytecodeOp::CallLocalZero => 0,
+        BytecodeOp::CallLocalOne => 1,
+        BytecodeOp::CallLocalTwo => 2,
+        _ => {
+            return Err(EncodingError::UnexpectedOperand(format!(
+                "{} is not a CALL_LOCAL opcode",
+                instruction.op.mnemonic()
+            )));
+        }
+    };
+    if count_at(instruction, 2)? != count {
+        return Err(EncodingError::UnexpectedOperand(format!(
+            "{} expected {count} arguments",
+            instruction.op.mnemonic()
+        )));
+    }
+    bytes.push(((dst as u8) << 4) | slot as u8);
+    Ok(())
+}
+
+fn validate_local_pair_operand(
+    instruction: &BytecodeInstruction,
+    label: &str,
+) -> Result<(u32, u32), EncodingError> {
+    let dst = register_payload(operand_at(instruction, 0)?)?;
+    let slot = local_payload(operand_at(instruction, 1)?)?;
+    if dst >= 16 || slot >= 16 {
+        return Err(EncodingError::UnexpectedOperand(format!(
+            "{label} expected dst/local < 16, got r{dst}, local#{slot}"
+        )));
+    }
+    Ok((dst, slot))
+}
+
 fn constant_i32_operand(
     instruction: &BytecodeInstruction,
     index: usize,
@@ -3391,7 +4010,7 @@ fn lower_ir_instruction(
 ) {
     match &instruction.kind {
         IrInstructionKind::Nop => {}
-        IrInstructionKind::Debug(message) => out.push(LowerInstruction::Marker(message.clone())),
+        IrInstructionKind::Debug(_) => {}
         IrInstructionKind::Label(label) => out.push(LowerInstruction::Label(label.clone())),
         IrInstructionKind::Jump(label) => out.push(LowerInstruction::Jump(label.clone())),
         IrInstructionKind::JumpIfFalse { test, label } => {
@@ -3537,6 +4156,7 @@ fn lower_ir_instruction(
                     dst: register_name(*dst),
                     name: ir_function.name.clone(),
                     params: function_param_bindings(module, ir_function),
+                    is_async: ir_function.flags.is_async,
                     is_generator: ir_function.flags.is_generator,
                     body: lower_function_body(module, *function, ir_function),
                 });
@@ -3554,6 +4174,7 @@ fn lower_ir_instruction(
                         .clone()
                         .unwrap_or_else(|| function.to_string()),
                     params: function_param_bindings(module, ir_function),
+                    is_async: ir_function.flags.is_async,
                     is_generator: ir_function.flags.is_generator,
                     body: lower_function_body(module, *function, ir_function),
                 });
@@ -3624,9 +4245,9 @@ fn lower_ir_instruction(
                 register_name(*dst),
                 lower_ir_value_text(module, function, value)
             )));
-            out.push(LowerInstruction::Move {
+            out.push(LowerInstruction::Await {
                 dst: register_name(*dst),
-                src: lower_ir_value(module, function, value),
+                value: lower_ir_value(module, function, value),
             });
         }
         IrInstructionKind::Yield {
@@ -3809,8 +4430,10 @@ fn lower_ir_value(module: &IrModule, function: &IrFunction, value: &IrValue) -> 
                 .unwrap_or_else(|| class.to_string()),
         ),
         IrValue::External(external) => LowerValue::Name(extern_name(module, *external)),
-        IrValue::This => LowerValue::Name("this".to_string()),
-        IrValue::Super => LowerValue::Name("super".to_string()),
+        IrValue::This => local_value_by_name(module, function, "this")
+            .unwrap_or_else(|| LowerValue::Name("this".to_string())),
+        IrValue::Super => local_value_by_name(module, function, "super")
+            .unwrap_or_else(|| LowerValue::Name("super".to_string())),
         IrValue::NewTarget => LowerValue::Name("new.target".to_string()),
         IrValue::ImportMeta => LowerValue::Name("import.meta".to_string()),
     }
@@ -3898,8 +4521,8 @@ fn local_name(function: &IrFunction, id: LocalId) -> Option<String> {
 
 fn lower_local_binding(module: &IrModule, function: &IrFunction, id: LocalId) -> LowerBinding {
     match function.locals.get(id.0) {
-        Some(local) if local.name.as_deref() == Some("arguments") => {
-            LowerBinding::Name("arguments".to_string())
+        Some(local) if matches!(local.name.as_deref(), Some("arguments" | "super")) => {
+            LowerBinding::Name(local.name.clone().unwrap_or_else(|| id.to_string()))
         }
         Some(local) if ir_function_uses_direct_eval(module, function) => {
             LowerBinding::Name(local.name.clone().unwrap_or_else(|| id.to_string()))
@@ -3919,6 +4542,14 @@ fn lower_local_value(module: &IrModule, function: &IrFunction, id: LocalId) -> L
         LowerBinding::Name(name) => LowerValue::Name(name),
         LowerBinding::LocalSlot(slot) => LowerValue::LocalSlot(slot),
     }
+}
+
+fn local_value_by_name(module: &IrModule, function: &IrFunction, name: &str) -> Option<LowerValue> {
+    function
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some(name))
+        .map(|index| lower_local_value(module, function, LocalId(index)))
 }
 
 fn ir_function_uses_direct_eval(module: &IrModule, function: &IrFunction) -> bool {
@@ -4107,8 +4738,20 @@ impl BytecodeBuilder {
         self.referenced_labels = referenced_labels(&instructions);
         self.compile_instructions(&instructions);
         self.optimize_control_flow();
+        self.optimize_constant_temporaries();
         self.resolve_labels_to_jump_targets();
+        self.optimize_jump_threading();
+        self.optimize_return_branches();
+        self.optimize_redundant_resolved_jumps();
+        self.optimize_branch_templates();
+        self.optimize_conditional_jump_pairs();
+        self.optimize_jump_threading();
+        self.optimize_redundant_resolved_jumps();
+        self.optimize_move_elimination();
+        self.optimize_member_local_temporaries();
+        self.optimize_declare_store_pairs();
         self.renumber_registers();
+        self.optimize_local_load_templates();
         BytecodeModule {
             kind: module.kind.into(),
             extern_slots: self.extern_slots.clone(),
@@ -4150,6 +4793,192 @@ impl BytecodeBuilder {
 
             self.remove_instruction_indexes(&redundant_jumps);
             self.remove_unreferenced_label_instructions();
+        }
+    }
+
+    fn optimize_constant_temporaries(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        {
+            let end = self.instructions.len();
+            let mut removed = BTreeSet::new();
+            fold_constant_temporaries_in_range(
+                &mut self.instructions,
+                &self.functions,
+                &mut self.constants,
+                &mut self.constant_ids,
+                0,
+                end,
+                &mut removed,
+            );
+            self.remove_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_return_branches(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let end = self.instructions.len();
+            let mut removed = BTreeSet::new();
+            fold_return_branches_in_range(
+                &mut self.instructions,
+                &self.functions,
+                0,
+                end,
+                &mut removed,
+            );
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_member_local_temporaries(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let indexes = (0..self.instructions.len()).collect::<Vec<_>>();
+            let target_refs = resolved_jump_target_ref_counts(&self.instructions, &indexes);
+            let register_use_counts = frame_register_use_counts(&self.instructions, &indexes);
+            let mut removed = BTreeSet::new();
+            for index in indexes {
+                if removed.contains(&index) {
+                    continue;
+                }
+                fold_member_const_declare_store_local(
+                    &mut self.instructions,
+                    index,
+                    &target_refs,
+                    &register_use_counts,
+                    &mut removed,
+                );
+            }
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_conditional_jump_pairs(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let indexes = (0..self.instructions.len()).collect::<Vec<_>>();
+            let target_refs = resolved_jump_target_ref_counts(&self.instructions, &indexes);
+            let mut removed = BTreeSet::new();
+            for index in indexes {
+                if removed.contains(&index) {
+                    continue;
+                }
+                if fold_conditional_jump_pair(
+                    &mut self.instructions,
+                    index,
+                    &target_refs,
+                    &mut removed,
+                ) {
+                    continue;
+                }
+            }
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_branch_templates(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let end = self.instructions.len();
+            let mut removed = BTreeSet::new();
+            fold_branch_templates_in_range(
+                &mut self.instructions,
+                &self.functions,
+                0,
+                end,
+                &mut removed,
+            );
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_redundant_resolved_jumps(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let removed = redundant_resolved_jump_indexes(&self.instructions);
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_jump_threading(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        while thread_resolved_jumps(&mut self.instructions) {}
+    }
+
+    fn optimize_move_elimination(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let end = self.instructions.len();
+            let mut removed = BTreeSet::new();
+            eliminate_moves_in_range(
+                &mut self.instructions,
+                &self.functions,
+                0,
+                end,
+                &mut removed,
+            );
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_local_load_templates(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let end = self.instructions.len();
+            let mut removed = BTreeSet::new();
+            fold_local_load_templates_in_range(
+                &mut self.instructions,
+                &self.functions,
+                0,
+                end,
+                &mut removed,
+            );
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
+        }
+    }
+
+    fn optimize_declare_store_pairs(&mut self) {
+        #[cfg(feature = "compiler-optimizations")]
+        loop {
+            let indexes = (0..self.instructions.len()).collect::<Vec<_>>();
+            let target_refs = resolved_jump_target_ref_counts(&self.instructions, &indexes);
+            let mut removed = BTreeSet::new();
+            for index in indexes {
+                if removed.contains(&index) {
+                    continue;
+                }
+                fold_declare_store_local_pair(
+                    &mut self.instructions,
+                    index,
+                    &target_refs,
+                    &mut removed,
+                );
+            }
+            if removed.is_empty() {
+                break;
+            }
+            self.remove_resolved_instruction_indexes(&removed);
         }
     }
 
@@ -4268,12 +5097,17 @@ impl BytecodeBuilder {
         }
     }
 
+    fn remove_resolved_instruction_indexes(&mut self, removed: &BTreeSet<usize>) {
+        if removed.is_empty() {
+            return;
+        }
+        self.remove_instruction_indexes(removed);
+        remap_resolved_jump_targets(&mut self.instructions, removed);
+    }
+
     fn compile_instruction(&mut self, instruction: &LowerInstruction) {
         match instruction {
-            LowerInstruction::Marker(message) => {
-                let operand = self.string_constant_operand(message);
-                self.emit(BytecodeOp::Marker, vec![operand]);
-            }
+            LowerInstruction::Marker(_) => {}
             LowerInstruction::Label(label) => {
                 if !self.referenced_labels.contains(label) {
                     return;
@@ -4407,12 +5241,19 @@ impl BytecodeBuilder {
             LowerInstruction::Function {
                 name,
                 params,
+                is_async,
                 is_generator,
                 body,
             } => {
                 let scope = self.function_scope(params, body, Some(name));
-                let function =
-                    self.function_entry(Some(name), params, body, Some(&scope), *is_generator);
+                let function = self.function_entry(
+                    Some(name),
+                    params,
+                    body,
+                    Some(&scope),
+                    *is_async,
+                    *is_generator,
+                );
                 self.emit(
                     BytecodeOp::FunctionStart,
                     vec![BytecodeOperand::Function(function)],
@@ -4428,12 +5269,19 @@ impl BytecodeBuilder {
                 dst,
                 name,
                 params,
+                is_async,
                 is_generator,
                 body,
             } => {
                 let scope = self.function_scope(params, body, name.as_deref());
-                let function =
-                    self.function_entry(name.as_deref(), params, body, Some(&scope), *is_generator);
+                let function = self.function_entry(
+                    name.as_deref(),
+                    params,
+                    body,
+                    Some(&scope),
+                    *is_async,
+                    *is_generator,
+                );
                 self.emit(
                     BytecodeOp::FunctionExprStart,
                     vec![
@@ -4596,6 +5444,11 @@ impl BytecodeBuilder {
                     .unwrap_or(BytecodeOperand::None);
                 self.emit(BytecodeOp::Yield, vec![value, dst]);
             }
+            LowerInstruction::Await { dst, value } => {
+                let dst = self.register_operand(dst);
+                let value = self.value_operand(value);
+                self.emit(BytecodeOp::Await, vec![dst, value]);
+            }
             LowerInstruction::Unsupported(message) => {
                 let message = self.string_constant_operand(message);
                 self.emit(BytecodeOp::Unsupported, vec![message]);
@@ -4683,6 +5536,7 @@ impl BytecodeBuilder {
         params: &[LowerBinding],
         body: &[LowerInstruction],
         scope: Option<&NameScope>,
+        is_async: bool,
         is_generator: bool,
     ) -> u32 {
         let name = name.map(|name| {
@@ -4700,7 +5554,7 @@ impl BytecodeBuilder {
             params,
             body_start: 0,
             body_end: 0,
-            flags: function_flags(has_return, is_generator),
+            flags: function_flags(has_return, is_async, is_generator),
             has_return,
         });
         id
@@ -4877,10 +5731,14 @@ fn register_id(register: &str) -> u32 {
 
 const FUNCTION_FLAG_HAS_RETURN: u32 = 1 << 0;
 const FUNCTION_FLAG_GENERATOR: u32 = 1 << 1;
+const FUNCTION_FLAG_ASYNC: u32 = 1 << 2;
+#[cfg(feature = "compiler-optimizations")]
+const LIVENESS_REGISTER_ALLOCATION_LIMIT: usize = 4_096;
 
-fn function_flags(has_return: bool, is_generator: bool) -> u32 {
+fn function_flags(has_return: bool, is_async: bool, is_generator: bool) -> u32 {
     u32::from(has_return) * FUNCTION_FLAG_HAS_RETURN
         | u32::from(is_generator) * FUNCTION_FLAG_GENERATOR
+        | u32::from(is_async) * FUNCTION_FLAG_ASYNC
 }
 
 fn remap_instruction_boundary(boundary: usize, removed: &BTreeSet<usize>) -> u32 {
@@ -4891,10 +5749,2260 @@ fn remap_instruction_boundary(boundary: usize, removed: &BTreeSet<usize>) -> u32
     boundary.saturating_sub(removed_before) as u32
 }
 
+fn remap_resolved_jump_targets(
+    instructions: &mut [BytecodeInstruction],
+    removed: &BTreeSet<usize>,
+) {
+    for instruction in instructions {
+        match instruction.op {
+            BytecodeOp::Jump => {
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.first_mut() {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+            }
+            BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg | BytecodeOp::JumpIfTrueReg => {
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(1) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+            }
+            BytecodeOp::MoveJumpReg => {
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(3) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(4) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+            }
+            BytecodeOp::MoveJumpFallthroughReg => {
+                remap_packed_fallthrough_jump_target(instruction, 3, removed);
+            }
+            BytecodeOp::BinaryRegRegJump => {
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(5) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(6) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+            }
+            BytecodeOp::BinaryRegRegJumpFallthrough => {
+                remap_packed_fallthrough_jump_target(instruction, 5, removed);
+            }
+            BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+                if let Some(BytecodeOperand::Count(target)) = instruction.operands.get_mut(5) {
+                    *target = remap_instruction_boundary(*target as usize, removed);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn remap_packed_fallthrough_jump_target(
+    instruction: &mut BytecodeInstruction,
+    operand_index: usize,
+    removed: &BTreeSet<usize>,
+) {
+    if let Some(BytecodeOperand::Count(packed)) = instruction.operands.get_mut(operand_index) {
+        let jump_when_true = *packed & 1;
+        let target = (*packed >> 1) as usize;
+        let target = remap_instruction_boundary(target, removed);
+        *packed = (target << 1) | jump_when_true;
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn thread_resolved_jumps(instructions: &mut [BytecodeInstruction]) -> bool {
+    let mut changed = false;
+    let snapshot = instructions.to_vec();
+    for index in 0..instructions.len() {
+        match instructions[index].op {
+            BytecodeOp::Jump => {
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 0);
+            }
+            BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg | BytecodeOp::JumpIfTrueReg => {
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 1);
+            }
+            BytecodeOp::MoveJumpReg => {
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 3);
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 4);
+            }
+            BytecodeOp::MoveJumpFallthroughReg => {
+                changed |= thread_packed_fallthrough_operand(
+                    &snapshot,
+                    &mut instructions[index],
+                    index,
+                    3,
+                );
+            }
+            BytecodeOp::BinaryRegRegJump => {
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 5);
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 6);
+            }
+            BytecodeOp::BinaryRegRegJumpFallthrough => {
+                changed |= thread_packed_fallthrough_operand(
+                    &snapshot,
+                    &mut instructions[index],
+                    index,
+                    5,
+                );
+            }
+            BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+                changed |= thread_count_operand(&snapshot, &mut instructions[index], index, 5);
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn thread_count_operand(
+    snapshot: &[BytecodeInstruction],
+    instruction: &mut BytecodeInstruction,
+    origin: usize,
+    operand_index: usize,
+) -> bool {
+    let Some(BytecodeOperand::Count(target)) = instruction.operands.get(operand_index).cloned()
+    else {
+        return false;
+    };
+    let Some(threaded) = threaded_jump_target(snapshot, target as usize, origin) else {
+        return false;
+    };
+    if threaded == target as usize {
+        return false;
+    }
+    instruction.operands[operand_index] = BytecodeOperand::Count(threaded as u32);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn thread_packed_fallthrough_operand(
+    snapshot: &[BytecodeInstruction],
+    instruction: &mut BytecodeInstruction,
+    origin: usize,
+    operand_index: usize,
+) -> bool {
+    let Some(BytecodeOperand::Count(packed)) = instruction.operands.get(operand_index).cloned()
+    else {
+        return false;
+    };
+    let jump_when_true = (packed & 1) != 0;
+    let target = (packed >> 1) as usize;
+    let Some(threaded) = threaded_jump_target(snapshot, target, origin) else {
+        return false;
+    };
+    if threaded == target {
+        return false;
+    }
+    instruction.operands[operand_index] = BytecodeOperand::Count(pack_fallthrough_jump_target(
+        threaded as u32,
+        jump_when_true,
+    ));
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn threaded_jump_target(
+    instructions: &[BytecodeInstruction],
+    target: usize,
+    origin: usize,
+) -> Option<usize> {
+    let mut current = target;
+    let mut seen = BTreeSet::new();
+    loop {
+        if current >= instructions.len() || current == origin || !seen.insert(current) {
+            return None;
+        }
+        let instruction = instructions.get(current)?;
+        if instruction.op != BytecodeOp::Jump {
+            return Some(current);
+        }
+        let Some(next) = jump_target_count(instruction) else {
+            return Some(current);
+        };
+        if next == current {
+            return Some(current);
+        }
+        current = next;
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
 #[derive(Debug, Clone, Copy)]
 struct RegisterInterval {
     start: usize,
     end: usize,
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_return_branches_in_range(
+    instructions: &mut [BytecodeInstruction],
+    functions: &[BytecodeFunction],
+    start: usize,
+    end: usize,
+    removed: &mut BTreeSet<usize>,
+) {
+    let mut current_frame = Vec::new();
+    let mut index = start;
+    while index < end {
+        match instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => {
+                let function_start_op = instructions[index].op;
+                let function_end = function_body_end(instructions, functions, index)
+                    .filter(|function_end| *function_end > index)
+                    .unwrap_or(end);
+                if function_start_op == BytecodeOp::FunctionExprStart {
+                    current_frame.push(index);
+                }
+                if index + 1 < function_end {
+                    fold_return_branches_in_range(
+                        instructions,
+                        functions,
+                        index + 1,
+                        function_end,
+                        removed,
+                    );
+                }
+                index = function_end;
+            }
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                index += 1;
+            }
+            _ => {
+                current_frame.push(index);
+                index += 1;
+            }
+        }
+    }
+    fold_return_branches_in_frame(instructions, &current_frame, removed);
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_return_branches_in_frame(
+    instructions: &mut [BytecodeInstruction],
+    indexes: &[usize],
+    removed: &mut BTreeSet<usize>,
+) {
+    let target_refs = resolved_jump_target_ref_counts(instructions, indexes);
+    let register_use_counts = frame_register_use_counts(instructions, indexes);
+    if remove_unreachable_after_terminal(instructions, indexes, &target_refs, removed) {
+        return;
+    }
+    for index in indexes.iter().copied() {
+        if removed.contains(&index) {
+            continue;
+        }
+        if fold_member_const_declare_store_local(
+            instructions,
+            index,
+            &target_refs,
+            &register_use_counts,
+            removed,
+        ) || fold_return_if_local_false_member_binary_const(
+            instructions,
+            index,
+            &target_refs,
+            removed,
+        ) || fold_local_false_return_branch(instructions, index, &target_refs, removed)
+            || fold_local_binary_const_jump_branch(instructions, index, &target_refs, removed)
+            || fold_move_return_branch(instructions, index, &target_refs, removed)
+            || fold_literal_return_branch(instructions, index, &target_refs, removed)
+        {
+            continue;
+        }
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_branch_templates_in_range(
+    instructions: &mut [BytecodeInstruction],
+    functions: &[BytecodeFunction],
+    start: usize,
+    end: usize,
+    removed: &mut BTreeSet<usize>,
+) {
+    let mut current_frame = Vec::new();
+    let mut index = start;
+    while index < end {
+        match instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => {
+                let function_start_op = instructions[index].op;
+                let function_end = function_body_end(instructions, functions, index)
+                    .filter(|function_end| *function_end > index)
+                    .unwrap_or(end);
+                if function_start_op == BytecodeOp::FunctionExprStart {
+                    current_frame.push(index);
+                }
+                if index + 1 < function_end {
+                    fold_branch_templates_in_range(
+                        instructions,
+                        functions,
+                        index + 1,
+                        function_end,
+                        removed,
+                    );
+                }
+                index = function_end;
+            }
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                index += 1;
+            }
+            _ => {
+                current_frame.push(index);
+                index += 1;
+            }
+        }
+    }
+    fold_branch_templates_in_frame(instructions, &current_frame, removed);
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_branch_templates_in_frame(
+    instructions: &mut [BytecodeInstruction],
+    indexes: &[usize],
+    removed: &mut BTreeSet<usize>,
+) {
+    let target_refs = resolved_jump_target_ref_counts(instructions, indexes);
+    let register_use_counts = frame_register_use_counts(instructions, indexes);
+    for index in indexes.iter().copied() {
+        if removed.contains(&index) {
+            continue;
+        }
+        if fold_binary_reg_reg_jump_template(
+            instructions,
+            index,
+            &target_refs,
+            &register_use_counts,
+            removed,
+        ) || fold_move_jump_template(instructions, index, &target_refs, removed)
+        {
+            continue;
+        }
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn eliminate_moves_in_range(
+    instructions: &mut [BytecodeInstruction],
+    functions: &[BytecodeFunction],
+    start: usize,
+    end: usize,
+    removed: &mut BTreeSet<usize>,
+) {
+    let mut current_frame = Vec::new();
+    let mut index = start;
+    while index < end {
+        match instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => {
+                let function_start_op = instructions[index].op;
+                let function_end = function_body_end(instructions, functions, index)
+                    .filter(|function_end| *function_end > index)
+                    .unwrap_or(end);
+                if function_start_op == BytecodeOp::FunctionExprStart {
+                    current_frame.push(index);
+                }
+                if index + 1 < function_end {
+                    eliminate_moves_in_range(
+                        instructions,
+                        functions,
+                        index + 1,
+                        function_end,
+                        removed,
+                    );
+                }
+                index = function_end;
+            }
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                index += 1;
+            }
+            _ => {
+                current_frame.push(index);
+                index += 1;
+            }
+        }
+    }
+    eliminate_moves_in_frame(instructions, &current_frame, removed);
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn eliminate_moves_in_frame(
+    instructions: &mut [BytecodeInstruction],
+    indexes: &[usize],
+    removed: &mut BTreeSet<usize>,
+) {
+    let target_refs = resolved_jump_target_ref_counts(instructions, indexes);
+    let register_use_counts = frame_register_use_counts(instructions, indexes);
+    for index in indexes.iter().copied() {
+        if removed.contains(&index) {
+            continue;
+        }
+        eliminate_single_use_move(
+            instructions,
+            index,
+            &target_refs,
+            &register_use_counts,
+            removed,
+        );
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_templates_in_range(
+    instructions: &mut [BytecodeInstruction],
+    functions: &[BytecodeFunction],
+    start: usize,
+    end: usize,
+    removed: &mut BTreeSet<usize>,
+) {
+    let mut current_frame = Vec::new();
+    let mut index = start;
+    while index < end {
+        match instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => {
+                let function_start_op = instructions[index].op;
+                let function_end = function_body_end(instructions, functions, index)
+                    .filter(|function_end| *function_end > index)
+                    .unwrap_or(end);
+                if function_start_op == BytecodeOp::FunctionExprStart {
+                    current_frame.push(index);
+                }
+                if index + 1 < function_end {
+                    fold_local_load_templates_in_range(
+                        instructions,
+                        functions,
+                        index + 1,
+                        function_end,
+                        removed,
+                    );
+                }
+                index = function_end;
+            }
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                index += 1;
+            }
+            _ => {
+                current_frame.push(index);
+                index += 1;
+            }
+        }
+    }
+    fold_local_load_templates_in_frame(instructions, &current_frame, removed);
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_templates_in_frame(
+    instructions: &mut [BytecodeInstruction],
+    indexes: &[usize],
+    removed: &mut BTreeSet<usize>,
+) {
+    let target_refs = resolved_jump_target_ref_counts(instructions, indexes);
+    for (position, index) in indexes.iter().copied().enumerate() {
+        if removed.contains(&index) {
+            continue;
+        }
+        fold_local_load_template(
+            instructions,
+            indexes,
+            position,
+            index,
+            &target_refs,
+            removed,
+        );
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn resolved_jump_target_ref_counts(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+) -> BTreeMap<usize, usize> {
+    let mut refs = BTreeMap::new();
+    for index in indexes {
+        let target = match instructions[*index].op {
+            BytecodeOp::Jump => instructions[*index].operands.first(),
+            BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg | BytecodeOp::JumpIfTrueReg => {
+                instructions[*index].operands.get(1)
+            }
+            BytecodeOp::MoveJumpReg => {
+                if let Some(BytecodeOperand::Count(target)) = instructions[*index].operands.get(3) {
+                    *refs.entry(*target as usize).or_insert(0) += 1;
+                }
+                instructions[*index].operands.get(4)
+            }
+            BytecodeOp::MoveJumpFallthroughReg => {
+                if let Some(target) = packed_fallthrough_jump_target(&instructions[*index], 3) {
+                    *refs.entry(target).or_insert(0) += 1;
+                }
+                None
+            }
+            BytecodeOp::BinaryRegRegJump => {
+                if let Some(BytecodeOperand::Count(target)) = instructions[*index].operands.get(5) {
+                    *refs.entry(*target as usize).or_insert(0) += 1;
+                }
+                instructions[*index].operands.get(6)
+            }
+            BytecodeOp::BinaryRegRegJumpFallthrough => {
+                if let Some(target) = packed_fallthrough_jump_target(&instructions[*index], 5) {
+                    *refs.entry(target).or_insert(0) += 1;
+                }
+                None
+            }
+            BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+                instructions[*index].operands.get(5)
+            }
+            _ => None,
+        };
+        if let Some(BytecodeOperand::Count(target)) = target {
+            *refs.entry(*target as usize).or_insert(0) += 1;
+        }
+    }
+    refs
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn redundant_resolved_jump_indexes(instructions: &[BytecodeInstruction]) -> BTreeSet<usize> {
+    instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| {
+            if instruction.op != BytecodeOp::Jump {
+                return None;
+            }
+            (jump_target_count(instruction) == Some(index + 1)).then_some(index)
+        })
+        .collect()
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn packed_fallthrough_jump_target(
+    instruction: &BytecodeInstruction,
+    operand_index: usize,
+) -> Option<usize> {
+    match instruction.operands.get(operand_index) {
+        Some(BytecodeOperand::Count(packed)) => Some((*packed >> 1) as usize),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn remove_unreachable_after_terminal(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let mut unreachable = false;
+    let mut changed = false;
+    for index in indexes.iter().copied() {
+        if is_structural_control_boundary(instructions.get(index)) {
+            unreachable = false;
+            continue;
+        }
+        if target_refs.get(&index).copied().unwrap_or(0) > 0 {
+            unreachable = false;
+        }
+        if unreachable {
+            removed.insert(index);
+            changed = true;
+            continue;
+        }
+        if is_unconditional_terminal(instructions.get(index)) {
+            unreachable = true;
+        }
+    }
+    changed
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn is_structural_control_boundary(instruction: Option<&BytecodeInstruction>) -> bool {
+    matches!(
+        instruction.map(|instruction| instruction.op),
+        Some(
+            BytecodeOp::TryStart
+                | BytecodeOp::CatchStart
+                | BytecodeOp::FinallyStart
+                | BytecodeOp::TryEnd
+                | BytecodeOp::FunctionStart
+                | BytecodeOp::FunctionEnd
+                | BytecodeOp::FunctionExprStart
+                | BytecodeOp::FunctionExprEnd
+                | BytecodeOp::EnterScope
+                | BytecodeOp::LeaveScope
+        )
+    )
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn is_unconditional_terminal(instruction: Option<&BytecodeInstruction>) -> bool {
+    matches!(
+        instruction.map(|instruction| instruction.op),
+        Some(
+            BytecodeOp::Jump
+                | BytecodeOp::Return
+                | BytecodeOp::ReturnReg
+                | BytecodeOp::ReturnConst
+                | BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst
+                | BytecodeOp::Throw
+        )
+    )
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_conditional_jump_pair(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0 {
+        return false;
+    }
+    let Some(jump_target) = instructions.get(index + 1).and_then(jump_target_count) else {
+        return false;
+    };
+    match instructions.get(index).map(|instruction| instruction.op) {
+        Some(BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg) => {
+            if !matches!(
+                instructions[index].operands.first(),
+                Some(BytecodeOperand::Register(_))
+            ) {
+                return false;
+            }
+            let Some(BytecodeOperand::Count(false_target)) =
+                instructions[index].operands.get(1).cloned()
+            else {
+                return false;
+            };
+            if false_target as usize != index + 2 {
+                return false;
+            }
+            instructions[index].op = BytecodeOp::JumpIfTrueReg;
+            instructions[index].operands[1] = BytecodeOperand::Count(jump_target as u32);
+            removed.insert(index + 1);
+            true
+        }
+        Some(BytecodeOp::JumpIfLocalBinaryConstFalse) => {
+            let Some(BytecodeOperand::Count(false_target)) =
+                instructions[index].operands.get(5).cloned()
+            else {
+                return false;
+            };
+            if false_target as usize != index + 2 {
+                return false;
+            }
+            instructions[index].op = BytecodeOp::JumpIfLocalBinaryConstTrue;
+            instructions[index].operands[5] = BytecodeOperand::Count(jump_target as u32);
+            removed.insert(index + 1);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_binary_reg_reg_jump_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    register_use_counts: &BTreeMap<u32, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0
+        || target_refs.get(&(index + 2)).copied().unwrap_or(0) != 0
+    {
+        return false;
+    }
+    let Some((dst, operator, left, right)) = binary_reg_reg_parts(instructions.get(index)) else {
+        return false;
+    };
+    if register_use_counts.get(&dst).copied().unwrap_or(0) != 1 {
+        return false;
+    }
+    let Some(branch) = instructions.get(index + 1) else {
+        return false;
+    };
+    let Some((test, false_target, true_target)) =
+        branch_then_jump_targets(branch, instructions.get(index + 2))
+    else {
+        return false;
+    };
+    if test != dst {
+        return false;
+    }
+    if let Some((target, jump_when_true)) =
+        fallthrough_branch_target(index, false_target, true_target, 2)
+    {
+        instructions[index].op = BytecodeOp::BinaryRegRegJumpFallthrough;
+        instructions[index].operands = vec![
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Operator(operator),
+            BytecodeOperand::Register(left),
+            BytecodeOperand::Register(right),
+            BytecodeOperand::Register(test),
+            BytecodeOperand::Count(pack_fallthrough_jump_target(target, jump_when_true)),
+        ];
+    } else {
+        instructions[index].op = BytecodeOp::BinaryRegRegJump;
+        instructions[index].operands = vec![
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Operator(operator),
+            BytecodeOperand::Register(left),
+            BytecodeOperand::Register(right),
+            BytecodeOperand::Register(test),
+            BytecodeOperand::Count(false_target),
+            BytecodeOperand::Count(true_target),
+        ];
+    }
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_move_jump_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0
+        || target_refs.get(&(index + 2)).copied().unwrap_or(0) != 0
+    {
+        return false;
+    }
+    let Some((dst, source)) = move_parts(instructions.get(index)) else {
+        return false;
+    };
+    let Some(branch) = instructions.get(index + 1) else {
+        return false;
+    };
+    let Some((test, false_target, true_target)) =
+        branch_then_jump_targets(branch, instructions.get(index + 2))
+    else {
+        return false;
+    };
+    let tests_source = matches!(&source, BytecodeOperand::Register(source) if *source == test);
+    if test != dst && !tests_source {
+        return false;
+    }
+    if let Some((target, jump_when_true)) =
+        fallthrough_branch_target(index, false_target, true_target, 2)
+    {
+        instructions[index].op = BytecodeOp::MoveJumpFallthroughReg;
+        instructions[index].operands = vec![
+            BytecodeOperand::Register(dst),
+            source,
+            BytecodeOperand::Register(test),
+            BytecodeOperand::Count(pack_fallthrough_jump_target(target, jump_when_true)),
+        ];
+    } else {
+        instructions[index].op = BytecodeOp::MoveJumpReg;
+        instructions[index].operands = vec![
+            BytecodeOperand::Register(dst),
+            source,
+            BytecodeOperand::Register(test),
+            BytecodeOperand::Count(false_target),
+            BytecodeOperand::Count(true_target),
+        ];
+    }
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn eliminate_single_use_move(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    register_use_counts: &BTreeMap<u32, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((dst, source)) = move_parts(instructions.get(index)) else {
+        return false;
+    };
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0 {
+        return false;
+    }
+    if register_use_counts.get(&dst).copied().unwrap_or(0) != 1 {
+        return false;
+    }
+    if matches!(source, BytecodeOperand::Register(register) if register == dst) {
+        return false;
+    }
+    let Some(next) = instructions.get(index + 1) else {
+        return false;
+    };
+    if !move_elimination_can_remove_before(next) {
+        return false;
+    }
+    if instruction_register_defs(next).contains(&dst) {
+        return false;
+    }
+    if !instruction_register_uses(next).contains(&dst) {
+        return false;
+    }
+    if !replace_register_uses_in_instruction(&mut instructions[index + 1], dst, &source) {
+        return false;
+    }
+    removed.insert(index);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn move_elimination_can_remove_before(next: &BytecodeInstruction) -> bool {
+    !matches!(
+        next.op,
+        BytecodeOp::Jump
+            | BytecodeOp::JumpIfFalse
+            | BytecodeOp::JumpIfFalseReg
+            | BytecodeOp::JumpIfTrueReg
+            | BytecodeOp::JumpIfLocalBinaryConstFalse
+            | BytecodeOp::JumpIfLocalBinaryConstTrue
+            | BytecodeOp::BinaryRegRegJump
+            | BytecodeOp::BinaryRegRegJumpFallthrough
+            | BytecodeOp::MoveJumpReg
+            | BytecodeOp::MoveJumpFallthroughReg
+            | BytecodeOp::Marker
+            | BytecodeOp::Label
+            | BytecodeOp::Declare
+            | BytecodeOp::EnterScope
+            | BytecodeOp::LeaveScope
+            | BytecodeOp::TryStart
+            | BytecodeOp::CatchStart
+            | BytecodeOp::FinallyStart
+            | BytecodeOp::TryEnd
+            | BytecodeOp::FunctionStart
+            | BytecodeOp::FunctionEnd
+            | BytecodeOp::FunctionExprStart
+            | BytecodeOp::FunctionExprEnd
+    )
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_template(
+    instructions: &mut [BytecodeInstruction],
+    indexes: &[usize],
+    position: usize,
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((local_register, slot)) = local_load_instruction_parts(instructions.get(index)) else {
+        return false;
+    };
+    if removed.contains(&(index + 1)) || target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0 {
+        return false;
+    }
+    if register_used_after_next_before_def(instructions, indexes, position, local_register, removed)
+    {
+        return false;
+    }
+    if local_register < 16 && slot < 16 {
+        if fold_local_load_member_const_template(instructions, index, local_register, slot, removed)
+        {
+            return true;
+        }
+        if fold_local_load_member_template(instructions, index, local_register, slot, removed) {
+            return true;
+        }
+        if fold_local_load_binary_const_template(instructions, index, local_register, slot, removed)
+        {
+            return true;
+        }
+        if fold_local_load_call_template(instructions, index, local_register, slot, removed) {
+            return true;
+        }
+    }
+    fold_local_load_inline_value_template(instructions, index, local_register, slot, removed)
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn register_used_after_next_before_def(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+    position: usize,
+    register: u32,
+    removed: &BTreeSet<usize>,
+) -> bool {
+    if let Some(next_index) = indexes.get(position + 1)
+        && !removed.contains(next_index)
+        && instruction_register_defs(&instructions[*next_index]).contains(&register)
+    {
+        return false;
+    }
+    for later_index in indexes.iter().copied().skip(position + 2) {
+        if removed.contains(&later_index) {
+            continue;
+        }
+        let instruction = &instructions[later_index];
+        if instruction_register_uses(instruction).contains(&register) {
+            return true;
+        }
+        if instruction_register_defs(instruction).contains(&register) {
+            return false;
+        }
+    }
+    false
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_member_const_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    local_register: u32,
+    slot: u32,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((dst, object, property)) = member_const_parts(instructions.get(index + 1)) else {
+        return false;
+    };
+    if object != local_register
+        || dst >= 16
+        || register_used_outside_value_operand_positions(
+            instructions.get(index + 1),
+            local_register,
+            &[1],
+        )
+    {
+        return false;
+    }
+    instructions[index].op = BytecodeOp::MemberLocalConst;
+    instructions[index].operands = vec![
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::LocalSlot(slot),
+        BytecodeOperand::Constant(property),
+    ];
+    removed.insert(index + 1);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_member_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    local_register: u32,
+    slot: u32,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((dst, object, property)) = member_value_parts(instructions.get(index + 1)) else {
+        return false;
+    };
+    if object != BytecodeOperand::Register(local_register)
+        || matches!(property, BytecodeOperand::Constant(_))
+        || dst >= 16
+        || register_used_outside_value_operand_positions(
+            instructions.get(index + 1),
+            local_register,
+            &[1],
+        )
+    {
+        return false;
+    }
+    instructions[index].op = BytecodeOp::MemberLocal;
+    instructions[index].operands = vec![
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::LocalSlot(slot),
+        property,
+    ];
+    removed.insert(index + 1);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_binary_const_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    local_register: u32,
+    slot: u32,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((dst, operator, left, constant)) = binary_reg_const_parts(instructions.get(index + 1))
+    else {
+        return false;
+    };
+    if left != local_register
+        || dst >= 16
+        || register_used_outside_value_operand_positions(
+            instructions.get(index + 1),
+            local_register,
+            &[2],
+        )
+    {
+        return false;
+    }
+    instructions[index].op = BytecodeOp::BinaryLocalConst;
+    instructions[index].operands = vec![
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::LocalSlot(slot),
+        BytecodeOperand::Operator(operator),
+        BytecodeOperand::Constant(constant),
+    ];
+    removed.insert(index + 1);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_call_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    local_register: u32,
+    slot: u32,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some(call) = instructions.get(index + 1) else {
+        return false;
+    };
+    if !matches!(
+        call.op,
+        BytecodeOp::Call | BytecodeOp::CallZero | BytecodeOp::CallOne | BytecodeOp::CallTwo
+    ) {
+        return false;
+    }
+    let (dst, callee, count, args) = match call.operands.as_slice() {
+        [
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Register(callee),
+            BytecodeOperand::Count(count),
+            args @ ..,
+        ] => (*dst, *callee, *count, args.to_vec()),
+        _ => return false,
+    };
+    if callee != local_register
+        || dst >= 16
+        || count > 2
+        || args.len() != count as usize
+        || register_used_outside_value_operand_positions(
+            instructions.get(index + 1),
+            local_register,
+            &[1],
+        )
+    {
+        return false;
+    }
+    instructions[index].op = match count {
+        0 => BytecodeOp::CallLocalZero,
+        1 => BytecodeOp::CallLocalOne,
+        2 => BytecodeOp::CallLocalTwo,
+        _ => return false,
+    };
+    let mut operands = vec![
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::LocalSlot(slot),
+        BytecodeOperand::Count(count),
+    ];
+    operands.extend(args);
+    instructions[index].operands = operands;
+    removed.insert(index + 1);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_load_inline_value_template(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    local_register: u32,
+    slot: u32,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some(next) = instructions.get_mut(index + 1) else {
+        return false;
+    };
+    let positions = register_value_operand_positions(next, local_register);
+    if positions.len() != 1 {
+        return false;
+    }
+    if register_use_operand_positions(next, local_register) != positions {
+        return false;
+    }
+    if !replace_register_value_operand(
+        next,
+        positions[0],
+        local_register,
+        &BytecodeOperand::LocalSlot(slot),
+    ) {
+        return false;
+    }
+    removed.insert(index);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn register_used_outside_value_operand_positions(
+    instruction: Option<&BytecodeInstruction>,
+    register: u32,
+    allowed_positions: &[usize],
+) -> bool {
+    let Some(instruction) = instruction else {
+        return false;
+    };
+    let allowed_positions = allowed_positions.iter().copied().collect::<BTreeSet<_>>();
+    value_operand_positions(instruction)
+        .into_iter()
+        .any(|position| {
+            !allowed_positions.contains(&position)
+                && matches!(
+                    instruction.operands.get(position),
+                    Some(BytecodeOperand::Register(current)) if *current == register
+                )
+        })
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn register_value_operand_positions(
+    instruction: &BytecodeInstruction,
+    register: u32,
+) -> Vec<usize> {
+    value_operand_positions(instruction)
+        .into_iter()
+        .filter(|position| {
+            matches!(
+                instruction.operands.get(*position),
+                Some(BytecodeOperand::Register(current)) if *current == register
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn register_use_operand_positions(instruction: &BytecodeInstruction, register: u32) -> Vec<usize> {
+    use_operand_positions(instruction)
+        .into_iter()
+        .filter(|position| {
+            matches!(
+                instruction.operands.get(*position),
+                Some(BytecodeOperand::Register(current)) if *current == register
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn use_operand_positions(instruction: &BytecodeInstruction) -> Vec<usize> {
+    match instruction.op {
+        BytecodeOp::LoadConst | BytecodeOp::StoreName => vec![1],
+        BytecodeOp::StoreLocal | BytecodeOp::StoreLocalSmall => vec![1],
+        BytecodeOp::StoreMember => vec![0, 1, 2],
+        BytecodeOp::StoreMemberConst => vec![0, 2],
+        BytecodeOp::StoreLocalMemberConst | BytecodeOp::DeclareStoreLocal => vec![2],
+        BytecodeOp::Move => vec![1],
+        BytecodeOp::MoveJumpReg | BytecodeOp::MoveJumpFallthroughReg => vec![1, 2],
+        BytecodeOp::Binary => vec![2, 3],
+        BytecodeOp::BinaryRegReg => vec![2, 3],
+        BytecodeOp::BinaryRegRegJump | BytecodeOp::BinaryRegRegJumpFallthrough => vec![2, 3, 4],
+        BytecodeOp::BinaryRegConst => vec![2],
+        BytecodeOp::Unary => vec![2],
+        BytecodeOp::Member => vec![1, 2],
+        BytecodeOp::MemberConst => vec![1],
+        BytecodeOp::MemberLocal => vec![2],
+        BytecodeOp::MemberLocalConst | BytecodeOp::BinaryLocalConst | BytecodeOp::CallLocalZero => {
+            Vec::new()
+        }
+        BytecodeOp::CallLocalOne => vec![3],
+        BytecodeOp::CallLocalTwo => vec![3, 4],
+        BytecodeOp::Throw
+        | BytecodeOp::Return
+        | BytecodeOp::Pop
+        | BytecodeOp::Yield
+        | BytecodeOp::JumpIfFalse => (0..instruction.operands.len()).collect(),
+        BytecodeOp::ReturnReg
+        | BytecodeOp::PopReg
+        | BytecodeOp::JumpIfFalseReg
+        | BytecodeOp::JumpIfTrueReg => vec![0],
+        BytecodeOp::ReturnIfLocalFalse => vec![2],
+        BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => vec![1],
+        BytecodeOp::Array => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (2..2 + count).collect()
+        }
+        BytecodeOp::Object => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (0..count).map(|index| 3 + index * 2).collect()
+        }
+        BytecodeOp::ObjectRest => vec![1],
+        BytecodeOp::Call | BytecodeOp::New => {
+            let count = count_operand_at(&instruction.operands, 2);
+            std::iter::once(1).chain(3..3 + count).collect()
+        }
+        BytecodeOp::CallZero => vec![1],
+        BytecodeOp::CallOne => vec![1, 3],
+        BytecodeOp::CallTwo => vec![1, 3, 4],
+        BytecodeOp::Template => {
+            let quasi_count = count_operand_at(&instruction.operands, 1);
+            let expr_count_index = 2 + quasi_count;
+            let expr_count = count_operand_at(&instruction.operands, expr_count_index);
+            (expr_count_index + 1..expr_count_index + 1 + expr_count).collect()
+        }
+        BytecodeOp::Class => vec![2],
+        BytecodeOp::Await => vec![1],
+        BytecodeOp::Export => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (0..count).map(|index| 3 + index * 2).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn value_operand_positions(instruction: &BytecodeInstruction) -> Vec<usize> {
+    match instruction.op {
+        BytecodeOp::LoadConst | BytecodeOp::StoreName => vec![1],
+        BytecodeOp::StoreMember => vec![0, 1, 2],
+        BytecodeOp::StoreMemberConst => vec![0, 2],
+        BytecodeOp::StoreLocalMemberConst => vec![2],
+        BytecodeOp::Move => vec![1],
+        BytecodeOp::MoveJumpReg | BytecodeOp::MoveJumpFallthroughReg => vec![1],
+        BytecodeOp::Binary => vec![2, 3],
+        BytecodeOp::Unary => vec![2],
+        BytecodeOp::Member => vec![1, 2],
+        BytecodeOp::MemberConst => vec![1],
+        BytecodeOp::Throw
+        | BytecodeOp::Return
+        | BytecodeOp::Pop
+        | BytecodeOp::Yield
+        | BytecodeOp::JumpIfFalse => (0..instruction.operands.len()).collect(),
+        BytecodeOp::ReturnIfLocalFalse => vec![2],
+        BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => vec![1],
+        BytecodeOp::Array => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (2..2 + count).collect()
+        }
+        BytecodeOp::Object => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (0..count).map(|index| 3 + index * 2).collect()
+        }
+        BytecodeOp::ObjectRest => vec![1],
+        BytecodeOp::Call | BytecodeOp::New => {
+            let count = count_operand_at(&instruction.operands, 2);
+            std::iter::once(1).chain(3..3 + count).collect()
+        }
+        BytecodeOp::CallZero => vec![1],
+        BytecodeOp::CallOne => vec![1, 3],
+        BytecodeOp::CallTwo => vec![1, 3, 4],
+        BytecodeOp::Template => {
+            let quasi_count = count_operand_at(&instruction.operands, 1);
+            let expr_count_index = 2 + quasi_count;
+            let expr_count = count_operand_at(&instruction.operands, expr_count_index);
+            (expr_count_index + 1..expr_count_index + 1 + expr_count).collect()
+        }
+        BytecodeOp::Class => vec![2],
+        BytecodeOp::Await => vec![1],
+        BytecodeOp::Export => {
+            let count = count_operand_at(&instruction.operands, 1);
+            (0..count).map(|index| 3 + index * 2).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fallthrough_branch_target(
+    index: usize,
+    false_target: u32,
+    true_target: u32,
+    removed_after_source: usize,
+) -> Option<(u32, bool)> {
+    let fallthrough = index.checked_add(removed_after_source)?.checked_add(1)? as u32;
+    if false_target == fallthrough && true_target != fallthrough {
+        Some((true_target, true))
+    } else if true_target == fallthrough && false_target != fallthrough {
+        Some((false_target, false))
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn pack_fallthrough_jump_target(target: u32, jump_when_true: bool) -> u32 {
+    (target << 1) | u32::from(jump_when_true)
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn branch_then_jump_targets(
+    branch: &BytecodeInstruction,
+    jump: Option<&BytecodeInstruction>,
+) -> Option<(u32, u32, u32)> {
+    let [
+        BytecodeOperand::Register(test),
+        BytecodeOperand::Count(branch_target),
+    ] = branch.operands.as_slice()
+    else {
+        return None;
+    };
+    let jump_target = jump.and_then(jump_target_count)? as u32;
+    match branch.op {
+        BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg => {
+            Some((*test, *branch_target, jump_target))
+        }
+        BytecodeOp::JumpIfTrueReg => Some((*test, jump_target, *branch_target)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_declare_store_local_pair(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0 {
+        return false;
+    }
+    let Some((decl_kind, slot)) = declare_local_parts(instructions.get(index)) else {
+        return false;
+    };
+    let Some((store_slot, source)) = store_local_parts(instructions.get(index + 1)) else {
+        return false;
+    };
+    if store_slot != slot {
+        return false;
+    }
+    instructions[index].op = BytecodeOp::DeclareStoreLocal;
+    instructions[index].operands = vec![
+        BytecodeOperand::DeclKind(decl_kind),
+        BytecodeOperand::LocalSlot(slot),
+        BytecodeOperand::Register(source),
+    ];
+    removed.insert(index + 1);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_member_const_declare_store_local(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    register_use_counts: &BTreeMap<u32, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((member_register, object, property)) =
+        member_const_value_parts(instructions.get(index))
+    else {
+        return false;
+    };
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0
+        || target_refs.get(&(index + 2)).copied().unwrap_or(0) != 0
+    {
+        return false;
+    }
+    let Some((decl_kind, slot)) = declare_local_parts(instructions.get(index + 1)) else {
+        return false;
+    };
+    let Some((store_slot, store_source)) = store_local_parts(instructions.get(index + 2)) else {
+        return false;
+    };
+    if store_slot != slot || store_source != member_register {
+        return false;
+    }
+    if register_use_counts
+        .get(&member_register)
+        .copied()
+        .unwrap_or(0)
+        > 1
+        && let Some(next) = instructions.get(index + 3)
+    {
+        let defs = instruction_register_defs(next);
+        let uses = instruction_register_uses(next);
+        if !defs.contains(&member_register) || uses.contains(&member_register) {
+            return false;
+        }
+    }
+
+    instructions[index].op = BytecodeOp::StoreLocalMemberConst;
+    instructions[index].operands = vec![
+        BytecodeOperand::DeclKind(decl_kind),
+        BytecodeOperand::LocalSlot(slot),
+        object,
+        BytecodeOperand::Constant(property),
+    ];
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_return_if_local_false_member_binary_const(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((slot, false_return)) = return_if_local_false_parts(instructions.get(index)) else {
+        return false;
+    };
+    for offset in 1..=4 {
+        let next_index = index + offset;
+        if removed.contains(&next_index) || target_refs.get(&next_index).copied().unwrap_or(0) != 0
+        {
+            return false;
+        }
+    }
+    let Some((object_register, object_slot)) =
+        local_load_instruction_parts(instructions.get(index + 1))
+    else {
+        return false;
+    };
+    if object_slot != slot {
+        return false;
+    }
+    let Some((member_register, member_object, property)) =
+        member_const_parts(instructions.get(index + 2))
+    else {
+        return false;
+    };
+    if member_object != object_register {
+        return false;
+    }
+    let Some((test_register, operator, left_register, constant)) =
+        binary_reg_const_parts(instructions.get(index + 3))
+    else {
+        return false;
+    };
+    if left_register != member_register {
+        return false;
+    }
+    let Some(return_instruction) = instructions.get(index + 4) else {
+        return false;
+    };
+    if !return_reg_matches(return_instruction, test_register) {
+        return false;
+    }
+
+    instructions[index].op = BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst;
+    instructions[index].operands = vec![
+        BytecodeOperand::LocalSlot(slot),
+        false_return,
+        BytecodeOperand::Constant(property),
+        BytecodeOperand::Operator(operator),
+        BytecodeOperand::Constant(constant),
+    ];
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    removed.insert(index + 3);
+    removed.insert(index + 4);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_false_return_branch(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((test_register, slot)) = local_load_instruction_parts(instructions.get(index)) else {
+        return false;
+    };
+    let Some(jump_if_false) = instructions.get(index + 1) else {
+        return false;
+    };
+    let Some(jump_true) = instructions.get(index + 2) else {
+        return false;
+    };
+    if !matches!(
+        jump_if_false.op,
+        BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg
+    ) || jump_true.op != BytecodeOp::Jump
+    {
+        return false;
+    }
+    let [
+        BytecodeOperand::Register(jump_test),
+        BytecodeOperand::Count(false_pc),
+    ] = jump_if_false.operands.as_slice()
+    else {
+        return false;
+    };
+    let Some(true_pc) = jump_target_count(jump_true) else {
+        return false;
+    };
+    let false_pc = *false_pc as usize;
+    if *jump_test != test_register || false_pc != index + 3 || true_pc != false_pc + 1 {
+        return false;
+    }
+    if target_refs.get(&false_pc).copied().unwrap_or(0) != 1 {
+        return false;
+    }
+    let Some(return_operand) = return_value_operand(instructions.get(false_pc)) else {
+        return false;
+    };
+
+    instructions[index].op = BytecodeOp::ReturnIfLocalFalse;
+    instructions[index].operands = vec![
+        BytecodeOperand::Register(test_register),
+        BytecodeOperand::LocalSlot(slot),
+        return_operand,
+    ];
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    removed.insert(false_pc);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_local_binary_const_jump_branch(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((local_register, slot)) = local_load_instruction_parts(instructions.get(index)) else {
+        return false;
+    };
+    if target_refs.get(&(index + 1)).copied().unwrap_or(0) != 0
+        || target_refs.get(&(index + 2)).copied().unwrap_or(0) != 0
+    {
+        return false;
+    }
+    let Some((test_register, operator, left_register, constant)) =
+        binary_reg_const_parts(instructions.get(index + 1))
+    else {
+        return false;
+    };
+    if left_register != local_register {
+        return false;
+    }
+    let Some(jump_if_false) = instructions.get(index + 2) else {
+        return false;
+    };
+    if !matches!(
+        jump_if_false.op,
+        BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg
+    ) {
+        return false;
+    }
+    let [
+        BytecodeOperand::Register(jump_test),
+        BytecodeOperand::Count(target),
+    ] = jump_if_false.operands.as_slice()
+    else {
+        return false;
+    };
+    if *jump_test != test_register {
+        return false;
+    }
+    let target = *target;
+
+    instructions[index].op = BytecodeOp::JumpIfLocalBinaryConstFalse;
+    instructions[index].operands = vec![
+        BytecodeOperand::Register(local_register),
+        BytecodeOperand::LocalSlot(slot),
+        BytecodeOperand::Register(test_register),
+        BytecodeOperand::Operator(operator),
+        BytecodeOperand::Constant(constant),
+        BytecodeOperand::Count(target),
+    ];
+    removed.insert(index + 1);
+    removed.insert(index + 2);
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_move_return_branch(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((dst, source)) = move_parts(instructions.get(index)) else {
+        return false;
+    };
+    let Some(next) = instructions.get(index + 1) else {
+        return false;
+    };
+    match next.op {
+        BytecodeOp::Return | BytecodeOp::ReturnReg if return_reg_matches(next, dst) => {
+            instructions[index].op = BytecodeOp::Return;
+            instructions[index].operands = vec![source];
+            if target_refs.get(&(index + 1)).copied().unwrap_or(0) == 0 {
+                removed.insert(index + 1);
+            }
+            true
+        }
+        BytecodeOp::Jump => {
+            let Some(target) = jump_target_count(next) else {
+                return false;
+            };
+            let Some(return_instruction) = instructions.get(target) else {
+                return false;
+            };
+            if !return_reg_matches(return_instruction, dst) {
+                return false;
+            }
+            instructions[index].op = BytecodeOp::Return;
+            instructions[index].operands = vec![source];
+            removed.insert(index + 1);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_literal_return_branch(
+    instructions: &mut [BytecodeInstruction],
+    index: usize,
+    target_refs: &BTreeMap<usize, usize>,
+    removed: &mut BTreeSet<usize>,
+) -> bool {
+    let Some((literal_register, literal_operand)) = literal_load_parts(instructions.get(index))
+    else {
+        return false;
+    };
+    let Some(next) = instructions.get(index + 1) else {
+        return false;
+    };
+    if return_reg_matches(next, literal_register) {
+        instructions[index].op = BytecodeOp::Return;
+        instructions[index].operands = vec![literal_operand];
+        if target_refs.get(&(index + 1)).copied().unwrap_or(0) == 0 {
+            removed.insert(index + 1);
+        }
+        return true;
+    }
+    let Some((return_register, move_source)) = move_parts(Some(next)) else {
+        return false;
+    };
+    if move_source != BytecodeOperand::Register(literal_register) {
+        return false;
+    }
+    let Some(return_instruction) = instructions.get(index + 2) else {
+        return false;
+    };
+    if !return_reg_matches(return_instruction, return_register) {
+        return false;
+    }
+    instructions[index].op = BytecodeOp::Return;
+    instructions[index].operands = vec![literal_operand];
+    removed.insert(index + 1);
+    if target_refs.get(&(index + 2)).copied().unwrap_or(0) == 0 {
+        removed.insert(index + 2);
+    }
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn move_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, BytecodeOperand)> {
+    let instruction = instruction?;
+    if instruction.op != BytecodeOp::Move {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [BytecodeOperand::Register(dst), source] => Some((*dst, source.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn replace_register_uses_in_instruction(
+    instruction: &mut BytecodeInstruction,
+    register: u32,
+    replacement: &BytecodeOperand,
+) -> bool {
+    match instruction.op {
+        BytecodeOp::LoadConst => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::StoreName => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::StoreLocal | BytecodeOp::StoreLocalSmall => {
+            replace_register_only_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::StoreMember => {
+            replace_register_value_operands(instruction, &[0, 1, 2], register, replacement)
+        }
+        BytecodeOp::StoreMemberConst => {
+            replace_register_value_operands(instruction, &[0, 2], register, replacement)
+        }
+        BytecodeOp::StoreLocalMemberConst | BytecodeOp::DeclareStoreLocal => {
+            replace_register_value_operand(instruction, 2, register, replacement)
+        }
+        BytecodeOp::Move => replace_register_value_operand(instruction, 1, register, replacement),
+        BytecodeOp::MoveJumpReg => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+                | replace_register_only_operand(instruction, 2, register, replacement)
+        }
+        BytecodeOp::MoveJumpFallthroughReg => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+                | replace_register_only_operand(instruction, 2, register, replacement)
+        }
+        BytecodeOp::Binary => {
+            replace_register_value_operands(instruction, &[2, 3], register, replacement)
+        }
+        BytecodeOp::BinaryRegReg => {
+            replace_register_only_operands(instruction, &[2, 3], register, replacement)
+        }
+        BytecodeOp::BinaryRegRegJump | BytecodeOp::BinaryRegRegJumpFallthrough => {
+            replace_register_only_operands(instruction, &[2, 3, 4], register, replacement)
+        }
+        BytecodeOp::BinaryRegConst => {
+            replace_register_only_operand(instruction, 2, register, replacement)
+        }
+        BytecodeOp::Unary => replace_register_value_operand(instruction, 2, register, replacement),
+        BytecodeOp::Member => {
+            replace_register_value_operands(instruction, &[1, 2], register, replacement)
+        }
+        BytecodeOp::MemberConst => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::Throw
+        | BytecodeOp::Return
+        | BytecodeOp::Pop
+        | BytecodeOp::Yield
+        | BytecodeOp::JumpIfFalse => {
+            let positions = (0..instruction.operands.len()).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        BytecodeOp::ReturnReg
+        | BytecodeOp::PopReg
+        | BytecodeOp::JumpIfFalseReg
+        | BytecodeOp::JumpIfTrueReg => {
+            replace_register_only_operand(instruction, 0, register, replacement)
+        }
+        BytecodeOp::ReturnIfLocalFalse => {
+            replace_register_value_operand(instruction, 2, register, replacement)
+        }
+        BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::Array => {
+            let count = count_operand_at(&instruction.operands, 1);
+            let positions = (2..2 + count).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        BytecodeOp::Object => {
+            let count = count_operand_at(&instruction.operands, 1);
+            let positions = (0..count).map(|index| 3 + index * 2).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        BytecodeOp::ObjectRest => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::Call | BytecodeOp::New => {
+            let count = count_operand_at(&instruction.operands, 2);
+            let positions = std::iter::once(1).chain(3..3 + count).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        BytecodeOp::CallZero => {
+            replace_register_value_operand(instruction, 1, register, replacement)
+        }
+        BytecodeOp::CallOne => {
+            replace_register_value_operands(instruction, &[1, 3], register, replacement)
+        }
+        BytecodeOp::CallTwo => {
+            replace_register_value_operands(instruction, &[1, 3, 4], register, replacement)
+        }
+        BytecodeOp::Template => {
+            let quasi_count = count_operand_at(&instruction.operands, 1);
+            let expr_count_index = 2 + quasi_count;
+            let expr_count = count_operand_at(&instruction.operands, expr_count_index);
+            let positions =
+                (expr_count_index + 1..expr_count_index + 1 + expr_count).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        BytecodeOp::Class => replace_register_value_operand(instruction, 2, register, replacement),
+        BytecodeOp::Await => replace_register_value_operand(instruction, 1, register, replacement),
+        BytecodeOp::Export => {
+            let count = count_operand_at(&instruction.operands, 1);
+            let positions = (0..count).map(|index| 3 + index * 2).collect::<Vec<_>>();
+            replace_register_value_operands(instruction, &positions, register, replacement)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn replace_register_value_operands(
+    instruction: &mut BytecodeInstruction,
+    positions: &[usize],
+    register: u32,
+    replacement: &BytecodeOperand,
+) -> bool {
+    positions.iter().copied().fold(false, |changed, position| {
+        replace_register_value_operand(instruction, position, register, replacement) || changed
+    })
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn replace_register_only_operands(
+    instruction: &mut BytecodeInstruction,
+    positions: &[usize],
+    register: u32,
+    replacement: &BytecodeOperand,
+) -> bool {
+    positions.iter().copied().fold(false, |changed, position| {
+        replace_register_only_operand(instruction, position, register, replacement) || changed
+    })
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn replace_register_value_operand(
+    instruction: &mut BytecodeInstruction,
+    position: usize,
+    register: u32,
+    replacement: &BytecodeOperand,
+) -> bool {
+    let Some(operand) = instruction.operands.get_mut(position) else {
+        return false;
+    };
+    if !matches!(operand, BytecodeOperand::Register(current) if *current == register) {
+        return false;
+    }
+    *operand = replacement.clone();
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn replace_register_only_operand(
+    instruction: &mut BytecodeInstruction,
+    position: usize,
+    register: u32,
+    replacement: &BytecodeOperand,
+) -> bool {
+    let BytecodeOperand::Register(replacement) = replacement else {
+        return false;
+    };
+    let Some(BytecodeOperand::Register(current)) = instruction.operands.get_mut(position) else {
+        return false;
+    };
+    if *current != register {
+        return false;
+    }
+    *current = *replacement;
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn binary_reg_const_parts(
+    instruction: Option<&BytecodeInstruction>,
+) -> Option<(u32, u32, u32, u32)> {
+    let instruction = instruction?;
+    if !matches!(
+        instruction.op,
+        BytecodeOp::Binary | BytecodeOp::BinaryRegConst
+    ) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Operator(operator),
+            BytecodeOperand::Register(left),
+            BytecodeOperand::Constant(constant),
+        ] => Some((*dst, *operator, *left, *constant)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn binary_reg_reg_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, u32, u32, u32)> {
+    let instruction = instruction?;
+    if !matches!(
+        instruction.op,
+        BytecodeOp::Binary | BytecodeOp::BinaryRegReg
+    ) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Operator(operator),
+            BytecodeOperand::Register(left),
+            BytecodeOperand::Register(right),
+        ] => Some((*dst, *operator, *left, *right)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn return_if_local_false_parts(
+    instruction: Option<&BytecodeInstruction>,
+) -> Option<(u32, BytecodeOperand)> {
+    let instruction = instruction?;
+    if instruction.op != BytecodeOp::ReturnIfLocalFalse {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(_),
+            BytecodeOperand::LocalSlot(slot),
+            false_return,
+        ] => Some((*slot, false_return.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn member_const_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, u32, u32)> {
+    let instruction = instruction?;
+    if !matches!(instruction.op, BytecodeOp::Member | BytecodeOp::MemberConst) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(dst),
+            BytecodeOperand::Register(object),
+            BytecodeOperand::Constant(property),
+        ] => Some((*dst, *object, *property)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn member_const_value_parts(
+    instruction: Option<&BytecodeInstruction>,
+) -> Option<(u32, BytecodeOperand, u32)> {
+    let instruction = instruction?;
+    if !matches!(instruction.op, BytecodeOp::Member | BytecodeOp::MemberConst) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(dst),
+            object,
+            BytecodeOperand::Constant(property),
+        ] => Some((*dst, object.clone(), *property)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn member_value_parts(
+    instruction: Option<&BytecodeInstruction>,
+) -> Option<(u32, BytecodeOperand, BytecodeOperand)> {
+    let instruction = instruction?;
+    if instruction.op != BytecodeOp::Member {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [BytecodeOperand::Register(dst), object, property] => {
+            Some((*dst, object.clone(), property.clone()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn declare_local_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, u32)> {
+    let instruction = instruction?;
+    if instruction.op != BytecodeOp::Declare {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::DeclKind(kind),
+            BytecodeOperand::LocalSlot(slot),
+        ] => Some((*kind, *slot)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn store_local_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, u32)> {
+    let instruction = instruction?;
+    if !matches!(
+        instruction.op,
+        BytecodeOp::StoreName | BytecodeOp::StoreLocal | BytecodeOp::StoreLocalSmall
+    ) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::LocalSlot(slot),
+            BytecodeOperand::Register(source),
+        ] => Some((*slot, *source)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn local_load_instruction_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, u32)> {
+    let instruction = instruction?;
+    if !matches!(
+        instruction.op,
+        BytecodeOp::LoadName | BytecodeOp::LoadLocal | BytecodeOp::LoadLocalSmall
+    ) {
+        return None;
+    }
+    match instruction.operands.as_slice() {
+        [
+            BytecodeOperand::Register(register),
+            BytecodeOperand::LocalSlot(slot),
+        ] => Some((*register, *slot)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn return_value_operand(instruction: Option<&BytecodeInstruction>) -> Option<BytecodeOperand> {
+    let instruction = instruction?;
+    match instruction.op {
+        BytecodeOp::Return | BytecodeOp::ReturnReg | BytecodeOp::ReturnConst => {
+            match instruction.operands.as_slice() {
+                [operand] => Some(operand.clone()),
+                [] => Some(BytecodeOperand::None),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn literal_load_parts(instruction: Option<&BytecodeInstruction>) -> Option<(u32, BytecodeOperand)> {
+    let instruction = instruction?;
+    match (instruction.op, instruction.operands.as_slice()) {
+        (
+            BytecodeOp::LoadConst,
+            [
+                BytecodeOperand::Register(register),
+                literal @ BytecodeOperand::Constant(_),
+            ],
+        ) => Some((*register, literal.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn jump_target_count(instruction: &BytecodeInstruction) -> Option<usize> {
+    match instruction.operands.as_slice() {
+        [BytecodeOperand::Count(target)] if instruction.op == BytecodeOp::Jump => {
+            Some(*target as usize)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn return_reg_matches(instruction: &BytecodeInstruction, register: u32) -> bool {
+    matches!(
+        instruction.operands.as_slice(),
+        [BytecodeOperand::Register(value)]
+            if matches!(instruction.op, BytecodeOp::Return | BytecodeOp::ReturnReg)
+                && *value == register
+    )
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_constant_temporaries_in_range(
+    instructions: &mut [BytecodeInstruction],
+    functions: &[BytecodeFunction],
+    constants: &mut Vec<BytecodeConstant>,
+    constant_ids: &mut BTreeMap<String, u32>,
+    start: usize,
+    end: usize,
+    removed: &mut BTreeSet<usize>,
+) {
+    let mut current_frame = Vec::new();
+    let mut index = start;
+    while index < end {
+        match instructions[index].op {
+            BytecodeOp::FunctionStart | BytecodeOp::FunctionExprStart => {
+                let function_start_op = instructions[index].op;
+                let function_end = function_body_end(instructions, functions, index)
+                    .filter(|function_end| *function_end > index)
+                    .unwrap_or(end);
+                if function_start_op == BytecodeOp::FunctionExprStart {
+                    current_frame.push(index);
+                }
+                if index + 1 < function_end {
+                    fold_constant_temporaries_in_range(
+                        instructions,
+                        functions,
+                        constants,
+                        constant_ids,
+                        index + 1,
+                        function_end,
+                        removed,
+                    );
+                }
+                index = function_end;
+            }
+            BytecodeOp::FunctionEnd | BytecodeOp::FunctionExprEnd => {
+                index += 1;
+            }
+            _ => {
+                current_frame.push(index);
+                index += 1;
+            }
+        }
+    }
+    fold_constant_temporaries_in_frame(
+        instructions,
+        constants,
+        constant_ids,
+        &current_frame,
+        removed,
+    );
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_constant_temporaries_in_frame(
+    instructions: &mut [BytecodeInstruction],
+    constants: &mut Vec<BytecodeConstant>,
+    constant_ids: &mut BTreeMap<String, u32>,
+    indexes: &[usize],
+    removed: &mut BTreeSet<usize>,
+) {
+    let use_counts = frame_register_use_counts(instructions, indexes);
+    for pair in indexes.windows(2) {
+        let move_index = pair[0];
+        let next_index = pair[1];
+        if next_index != move_index + 1 || removed.contains(&move_index) {
+            continue;
+        }
+        let Some((temp_register, constant)) = move_constant_register(&instructions[move_index])
+        else {
+            continue;
+        };
+        if use_counts.get(&temp_register).copied().unwrap_or(0) != 1 {
+            continue;
+        }
+        if fold_constant_binary_operand(&mut instructions[next_index], temp_register, &constant)
+            || fold_constant_unary_operand(
+                &mut instructions[next_index],
+                temp_register,
+                &constant,
+                constants,
+                constant_ids,
+            )
+        {
+            removed.insert(move_index);
+        }
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn frame_register_use_counts(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+) -> BTreeMap<u32, usize> {
+    let mut counts = BTreeMap::new();
+    for index in indexes {
+        for register in instruction_register_uses(&instructions[*index]) {
+            *counts.entry(register).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn move_constant_register(instruction: &BytecodeInstruction) -> Option<(u32, BytecodeOperand)> {
+    match (instruction.op, instruction.operands.as_slice()) {
+        (
+            BytecodeOp::Move | BytecodeOp::LoadConst,
+            [
+                BytecodeOperand::Register(register),
+                constant @ BytecodeOperand::Constant(_),
+            ],
+        ) => Some((*register, constant.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_constant_binary_operand(
+    instruction: &mut BytecodeInstruction,
+    temp_register: u32,
+    constant: &BytecodeOperand,
+) -> bool {
+    if instruction.op != BytecodeOp::Binary {
+        return false;
+    }
+    match instruction.operands.as_mut_slice() {
+        [
+            BytecodeOperand::Register(_),
+            BytecodeOperand::Operator(_),
+            _,
+            BytecodeOperand::Register(register),
+        ] if *register == temp_register => {
+            instruction.operands[3] = constant.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_constant_unary_operand(
+    instruction: &mut BytecodeInstruction,
+    temp_register: u32,
+    constant: &BytecodeOperand,
+    constants: &mut Vec<BytecodeConstant>,
+    constant_ids: &mut BTreeMap<String, u32>,
+) -> bool {
+    if instruction.op != BytecodeOp::Unary {
+        return false;
+    }
+    let [
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::Operator(operator),
+        BytecodeOperand::Register(register),
+    ] = instruction.operands.as_slice()
+    else {
+        return false;
+    };
+    if *register != temp_register {
+        return false;
+    }
+    let Some(folded) = fold_unary_constant(operator_name(*operator), constant, constants) else {
+        return false;
+    };
+    let dst = *dst;
+    let constant_index = constant_id_for(constants, constant_ids, folded);
+    instruction.op = BytecodeOp::LoadConst;
+    instruction.operands = vec![
+        BytecodeOperand::Register(dst),
+        BytecodeOperand::Constant(constant_index),
+    ];
+    true
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn fold_unary_constant(
+    operator: Option<&str>,
+    operand: &BytecodeOperand,
+    constants: &[BytecodeConstant],
+) -> Option<BytecodeConstant> {
+    let BytecodeOperand::Constant(index) = operand else {
+        return None;
+    };
+    let constant = constants.get(*index as usize)?;
+    match operator? {
+        "!" => Some(BytecodeConstant::Bool(!constant_truthy(constant))),
+        "void" => Some(BytecodeConstant::Undefined),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn constant_truthy(constant: &BytecodeConstant) -> bool {
+    match constant {
+        BytecodeConstant::Number(value) => *value != 0.0 && !value.is_nan(),
+        BytecodeConstant::String(value) => !value.is_empty(),
+        BytecodeConstant::BigInt(value) => value != "0",
+        BytecodeConstant::Bool(value) => *value,
+        BytecodeConstant::Null | BytecodeConstant::Undefined => false,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn constant_id_for(
+    constants: &mut Vec<BytecodeConstant>,
+    constant_ids: &mut BTreeMap<String, u32>,
+    constant: BytecodeConstant,
+) -> u32 {
+    let key = constant_key(&constant);
+    if let Some(id) = constant_ids.get(&key) {
+        return *id;
+    }
+    let id = constants.len() as u32;
+    constants.push(constant);
+    constant_ids.insert(key, id);
+    id
 }
 
 fn renumber_registers_in_range(
@@ -4930,11 +8038,16 @@ fn renumber_registers_in_range(
         }
     }
 
-    let mapping = if current_frame_has_control_flow(instructions, &current_frame) {
+    #[cfg(feature = "compiler-optimizations")]
+    let mapping = if current_frame.len() > LIVENESS_REGISTER_ALLOCATION_LIMIT
+        || current_frame_has_exception_flow(instructions, &current_frame)
+    {
         dense_register_mapping(instructions, &current_frame)
     } else {
-        allocate_register_mapping(instructions, &current_frame)
+        allocate_register_mapping_with_liveness(instructions, &current_frame)
     };
+    #[cfg(not(feature = "compiler-optimizations"))]
+    let mapping = dense_register_mapping(instructions, &current_frame);
     if mapping.is_empty() {
         return;
     }
@@ -4972,14 +8085,15 @@ fn function_index_from_start_instruction(instruction: &BytecodeInstruction) -> O
     }
 }
 
-fn current_frame_has_control_flow(instructions: &[BytecodeInstruction], indexes: &[usize]) -> bool {
+#[cfg(feature = "compiler-optimizations")]
+fn current_frame_has_exception_flow(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+) -> bool {
     indexes.iter().copied().any(|index| {
         matches!(
             instructions[index].op,
-            BytecodeOp::Label
-                | BytecodeOp::Jump
-                | BytecodeOp::JumpIfFalse
-                | BytecodeOp::TryStart
+            BytecodeOp::TryStart
                 | BytecodeOp::CatchStart
                 | BytecodeOp::FinallyStart
                 | BytecodeOp::TryEnd
@@ -5003,25 +8117,18 @@ fn dense_register_mapping(
     mapping
 }
 
-fn allocate_register_mapping(
+#[cfg(feature = "compiler-optimizations")]
+fn allocate_register_mapping_with_liveness(
     instructions: &[BytecodeInstruction],
     indexes: &[usize],
 ) -> BTreeMap<u32, u32> {
-    let mut intervals = BTreeMap::<u32, RegisterInterval>::new();
-    for (position, index) in indexes.iter().copied().enumerate() {
-        for operand in &instructions[index].operands {
-            if let BytecodeOperand::Register(register) = operand {
-                intervals
-                    .entry(*register)
-                    .and_modify(|interval| interval.end = position)
-                    .or_insert(RegisterInterval {
-                        start: position,
-                        end: position,
-                    });
-            }
-        }
-    }
+    allocate_register_mapping_from_intervals(live_register_intervals(instructions, indexes))
+}
 
+#[cfg(feature = "compiler-optimizations")]
+fn allocate_register_mapping_from_intervals(
+    intervals: BTreeMap<u32, RegisterInterval>,
+) -> BTreeMap<u32, u32> {
     let mut ordered = intervals
         .into_iter()
         .map(|(register, interval)| (register, interval.start, interval.end))
@@ -5039,6 +8146,415 @@ fn allocate_register_mapping(
     mapping
 }
 
+#[cfg(feature = "compiler-optimizations")]
+fn live_register_intervals(
+    instructions: &[BytecodeInstruction],
+    indexes: &[usize],
+) -> BTreeMap<u32, RegisterInterval> {
+    let positions = indexes
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, index)| (index, position))
+        .collect::<BTreeMap<_, _>>();
+    let mut uses = Vec::with_capacity(indexes.len());
+    let mut defs = Vec::with_capacity(indexes.len());
+    let mut successors = Vec::with_capacity(indexes.len());
+
+    for (position, index) in indexes.iter().copied().enumerate() {
+        let instruction = &instructions[index];
+        uses.push(instruction_register_uses(instruction));
+        defs.push(instruction_register_defs(instruction));
+        successors.push(instruction_successors(
+            instruction,
+            position,
+            indexes,
+            &positions,
+        ));
+    }
+
+    let mut live_in = vec![BTreeSet::<u32>::new(); indexes.len()];
+    let mut live_out = vec![BTreeSet::<u32>::new(); indexes.len()];
+    loop {
+        let mut changed = false;
+        for position in (0..indexes.len()).rev() {
+            let mut next_out = BTreeSet::new();
+            for successor in &successors[position] {
+                next_out.extend(live_in[*successor].iter().copied());
+            }
+
+            let mut next_in = uses[position].clone();
+            next_in.extend(
+                next_out
+                    .iter()
+                    .filter(|register| !defs[position].contains(register))
+                    .copied(),
+            );
+
+            if next_out != live_out[position] {
+                live_out[position] = next_out;
+                changed = true;
+            }
+            if next_in != live_in[position] {
+                live_in[position] = next_in;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut intervals = BTreeMap::<u32, RegisterInterval>::new();
+    for position in 0..indexes.len() {
+        let mut registers = BTreeSet::new();
+        registers.extend(uses[position].iter().copied());
+        registers.extend(defs[position].iter().copied());
+        registers.extend(live_in[position].iter().copied());
+        registers.extend(live_out[position].iter().copied());
+        for register in registers {
+            intervals
+                .entry(register)
+                .and_modify(|interval| interval.end = interval.end.max(position))
+                .or_insert(RegisterInterval {
+                    start: position,
+                    end: position,
+                });
+        }
+    }
+    intervals
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn instruction_successors(
+    instruction: &BytecodeInstruction,
+    position: usize,
+    indexes: &[usize],
+    positions: &BTreeMap<usize, usize>,
+) -> Vec<usize> {
+    let mut successors = Vec::new();
+    match instruction.op {
+        BytecodeOp::Jump => {
+            push_jump_successor(instruction, 0, positions, &mut successors);
+        }
+        BytecodeOp::JumpIfFalse => {
+            push_jump_successor(instruction, 1, positions, &mut successors);
+            push_fallthrough_successor(position, indexes, &mut successors);
+        }
+        BytecodeOp::JumpIfFalseReg | BytecodeOp::JumpIfTrueReg => {
+            push_jump_successor(instruction, 1, positions, &mut successors);
+            push_fallthrough_successor(position, indexes, &mut successors);
+        }
+        BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue => {
+            push_jump_successor(instruction, 5, positions, &mut successors);
+            push_fallthrough_successor(position, indexes, &mut successors);
+        }
+        BytecodeOp::MoveJumpReg => {
+            push_jump_successor(instruction, 3, positions, &mut successors);
+            push_jump_successor(instruction, 4, positions, &mut successors);
+        }
+        BytecodeOp::MoveJumpFallthroughReg => {
+            push_packed_fallthrough_jump_successor(instruction, 3, positions, &mut successors);
+            push_fallthrough_successor(position, indexes, &mut successors);
+        }
+        BytecodeOp::BinaryRegRegJump => {
+            push_jump_successor(instruction, 5, positions, &mut successors);
+            push_jump_successor(instruction, 6, positions, &mut successors);
+        }
+        BytecodeOp::BinaryRegRegJumpFallthrough => {
+            push_packed_fallthrough_jump_successor(instruction, 5, positions, &mut successors);
+            push_fallthrough_successor(position, indexes, &mut successors);
+        }
+        BytecodeOp::Return
+        | BytecodeOp::ReturnReg
+        | BytecodeOp::ReturnConst
+        | BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst
+        | BytecodeOp::Throw => {}
+        _ => push_fallthrough_successor(position, indexes, &mut successors),
+    }
+    successors.sort_unstable();
+    successors.dedup();
+    successors
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn push_jump_successor(
+    instruction: &BytecodeInstruction,
+    operand_index: usize,
+    positions: &BTreeMap<usize, usize>,
+    successors: &mut Vec<usize>,
+) {
+    if let Some(BytecodeOperand::Count(target)) = instruction.operands.get(operand_index)
+        && let Some(position) = positions.get(&(*target as usize))
+    {
+        successors.push(*position);
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn push_packed_fallthrough_jump_successor(
+    instruction: &BytecodeInstruction,
+    operand_index: usize,
+    positions: &BTreeMap<usize, usize>,
+    successors: &mut Vec<usize>,
+) {
+    if let Some(target) = packed_fallthrough_jump_target(instruction, operand_index)
+        && let Some(position) = positions.get(&target)
+    {
+        successors.push(*position);
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn push_fallthrough_successor(position: usize, indexes: &[usize], successors: &mut Vec<usize>) {
+    if position + 1 < indexes.len() {
+        successors.push(position + 1);
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn instruction_register_defs(instruction: &BytecodeInstruction) -> BTreeSet<u32> {
+    let mut defs = BTreeSet::new();
+    match instruction.op {
+        BytecodeOp::LoadConst
+        | BytecodeOp::LoadConstConst
+        | BytecodeOp::LoadUndefined
+        | BytecodeOp::LoadNull
+        | BytecodeOp::LoadTrue
+        | BytecodeOp::LoadFalse
+        | BytecodeOp::LoadIntSmall
+        | BytecodeOp::LoadName
+        | BytecodeOp::LoadLocal
+        | BytecodeOp::LoadLocalSmall
+        | BytecodeOp::Move
+        | BytecodeOp::Binary
+        | BytecodeOp::BinaryRegReg
+        | BytecodeOp::BinaryRegConst
+        | BytecodeOp::Unary
+        | BytecodeOp::Member
+        | BytecodeOp::MemberConst
+        | BytecodeOp::FunctionExprStart
+        | BytecodeOp::Array
+        | BytecodeOp::Object
+        | BytecodeOp::ObjectRest
+        | BytecodeOp::Call
+        | BytecodeOp::CallZero
+        | BytecodeOp::CallOne
+        | BytecodeOp::CallTwo
+        | BytecodeOp::New
+        | BytecodeOp::Template
+        | BytecodeOp::Await
+        | BytecodeOp::ReturnIfLocalFalse
+        | BytecodeOp::JumpIfLocalBinaryConstFalse
+        | BytecodeOp::JumpIfLocalBinaryConstTrue
+        | BytecodeOp::MoveJumpReg
+        | BytecodeOp::MoveJumpFallthroughReg
+        | BytecodeOp::BinaryRegRegJump
+        | BytecodeOp::BinaryRegRegJumpFallthrough
+        | BytecodeOp::MemberLocalConst
+        | BytecodeOp::BinaryLocalConst
+        | BytecodeOp::MemberLocal
+        | BytecodeOp::CallLocalZero
+        | BytecodeOp::CallLocalOne
+        | BytecodeOp::CallLocalTwo => {
+            insert_register_operand(instruction.operands.first(), &mut defs);
+            if matches!(
+                instruction.op,
+                BytecodeOp::JumpIfLocalBinaryConstFalse | BytecodeOp::JumpIfLocalBinaryConstTrue
+            ) {
+                insert_register_operand(instruction.operands.get(2), &mut defs);
+            }
+        }
+        BytecodeOp::Class => {
+            if matches!(
+                instruction.operands.first(),
+                Some(BytecodeOperand::Register(_))
+            ) {
+                insert_register_operand(instruction.operands.first(), &mut defs);
+            }
+        }
+        _ => {}
+    }
+    defs
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn instruction_register_uses(instruction: &BytecodeInstruction) -> BTreeSet<u32> {
+    let mut uses = BTreeSet::new();
+    match instruction.op {
+        BytecodeOp::LoadConst => insert_register_operand(instruction.operands.get(1), &mut uses),
+        BytecodeOp::StoreName => insert_register_operand(instruction.operands.get(1), &mut uses),
+        BytecodeOp::StoreLocal | BytecodeOp::StoreLocalSmall => {
+            insert_register_operand(instruction.operands.get(1), &mut uses)
+        }
+        BytecodeOp::StoreMember => {
+            insert_register_operand(instruction.operands.first(), &mut uses);
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::StoreMemberConst => {
+            insert_register_operand(instruction.operands.first(), &mut uses);
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::StoreLocalMemberConst => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::DeclareStoreLocal => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::Move => insert_register_operand(instruction.operands.get(1), &mut uses),
+        BytecodeOp::MoveJumpReg => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::MoveJumpFallthroughReg => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::Binary => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+        }
+        BytecodeOp::BinaryRegReg => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+        }
+        BytecodeOp::BinaryRegRegJump => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+            insert_register_operand(instruction.operands.get(4), &mut uses);
+        }
+        BytecodeOp::BinaryRegRegJumpFallthrough => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+            insert_register_operand(instruction.operands.get(4), &mut uses);
+        }
+        BytecodeOp::BinaryRegConst => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::Unary => insert_register_operand(instruction.operands.get(2), &mut uses),
+        BytecodeOp::Member => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::MemberConst => insert_register_operand(instruction.operands.get(1), &mut uses),
+        BytecodeOp::MemberLocal => insert_register_operand(instruction.operands.get(2), &mut uses),
+        BytecodeOp::MemberLocalConst | BytecodeOp::BinaryLocalConst | BytecodeOp::CallLocalZero => {
+        }
+        BytecodeOp::CallLocalOne => {
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+        }
+        BytecodeOp::CallLocalTwo => {
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+            insert_register_operand(instruction.operands.get(4), &mut uses);
+        }
+        BytecodeOp::Throw
+        | BytecodeOp::Return
+        | BytecodeOp::Pop
+        | BytecodeOp::Yield
+        | BytecodeOp::JumpIfFalse => {
+            for operand in &instruction.operands {
+                insert_register_operand(Some(operand), &mut uses);
+            }
+        }
+        BytecodeOp::ReturnReg
+        | BytecodeOp::PopReg
+        | BytecodeOp::JumpIfFalseReg
+        | BytecodeOp::JumpIfTrueReg => {
+            insert_register_operand(instruction.operands.first(), &mut uses);
+        }
+        BytecodeOp::ReturnIfLocalFalse => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+        }
+        BytecodeOp::Array => {
+            let count = count_operand_at(&instruction.operands, 1);
+            insert_register_operands(&instruction.operands, 2, count, &mut uses);
+        }
+        BytecodeOp::Object => {
+            let count = count_operand_at(&instruction.operands, 1);
+            for index in 0..count {
+                insert_register_operand(instruction.operands.get(3 + index * 2), &mut uses);
+            }
+        }
+        BytecodeOp::ObjectRest => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+        }
+        BytecodeOp::Call | BytecodeOp::New => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            let count = count_operand_at(&instruction.operands, 2);
+            insert_register_operands(&instruction.operands, 3, count, &mut uses);
+        }
+        BytecodeOp::CallZero => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+        }
+        BytecodeOp::CallOne => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+        }
+        BytecodeOp::CallTwo => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+            insert_register_operand(instruction.operands.get(3), &mut uses);
+            insert_register_operand(instruction.operands.get(4), &mut uses);
+        }
+        BytecodeOp::Template => {
+            let quasi_count = count_operand_at(&instruction.operands, 1);
+            let expr_count_index = 2 + quasi_count;
+            let expr_count = count_operand_at(&instruction.operands, expr_count_index);
+            insert_register_operands(
+                &instruction.operands,
+                expr_count_index + 1,
+                expr_count,
+                &mut uses,
+            );
+        }
+        BytecodeOp::Class => {
+            insert_register_operand(instruction.operands.get(2), &mut uses);
+        }
+        BytecodeOp::Await => {
+            insert_register_operand(instruction.operands.get(1), &mut uses);
+        }
+        BytecodeOp::Export => {
+            let count = count_operand_at(&instruction.operands, 1);
+            for index in 0..count {
+                insert_register_operand(instruction.operands.get(3 + index * 2), &mut uses);
+            }
+        }
+        _ => {}
+    }
+    uses
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn count_operand_at(operands: &[BytecodeOperand], index: usize) -> usize {
+    match operands.get(index) {
+        Some(BytecodeOperand::Count(count)) => *count as usize,
+        _ => 0,
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn insert_register_operands(
+    operands: &[BytecodeOperand],
+    start: usize,
+    count: usize,
+    out: &mut BTreeSet<u32>,
+) {
+    for index in 0..count {
+        insert_register_operand(operands.get(start + index), out);
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
+fn insert_register_operand(operand: Option<&BytecodeOperand>, out: &mut BTreeSet<u32>) {
+    if let Some(BytecodeOperand::Register(register)) = operand {
+        out.insert(*register);
+    }
+}
+
+#[cfg(feature = "compiler-optimizations")]
 fn first_free_register(active: &[(u32, usize, u32)]) -> u32 {
     let mut candidate = 0u32;
     loop {
@@ -5892,7 +9408,8 @@ fn decode_base36_digit(value: u8) -> Result<u8, EncodingError> {
         .ok_or_else(|| EncodingError::Seed(format!("invalid seed digit {:?}", char::from(value))))
 }
 
-const SEED_DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~";
+const SEED_DIGITS: &[u8] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~!$@*()[]{}+#";
 
 fn seed_fingerprint(permutation: &str, bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
@@ -6353,6 +9870,37 @@ mod tests {
         }
     }
 
+    fn optimized_bytecode_from_lower(instructions: Vec<LowerInstruction>) -> BytecodeModule {
+        let mut builder = BytecodeBuilder {
+            referenced_labels: referenced_labels(&instructions),
+            ..BytecodeBuilder::default()
+        };
+        builder.compile_instructions(&instructions);
+        builder.optimize_control_flow();
+        builder.optimize_constant_temporaries();
+        builder.resolve_labels_to_jump_targets();
+        builder.optimize_jump_threading();
+        builder.optimize_return_branches();
+        builder.optimize_redundant_resolved_jumps();
+        builder.optimize_branch_templates();
+        builder.optimize_conditional_jump_pairs();
+        builder.optimize_jump_threading();
+        builder.optimize_redundant_resolved_jumps();
+        builder.optimize_move_elimination();
+        builder.optimize_member_local_temporaries();
+        builder.optimize_declare_store_pairs();
+        builder.renumber_registers();
+        builder.optimize_local_load_templates();
+        BytecodeModule {
+            kind: BytecodeModuleKind::Script,
+            extern_slots: builder.extern_slots,
+            names: builder.names,
+            functions: builder.functions,
+            constants: builder.constants,
+            instructions: builder.instructions,
+        }
+    }
+
     fn max_register(module: &BytecodeModule) -> Option<u32> {
         module
             .instructions
@@ -6363,6 +9911,18 @@ mod tests {
                 _ => None,
             })
             .max()
+    }
+
+    fn canonicalized_bytecode(module: &BytecodeModule) -> BytecodeModule {
+        let mut canonical = module.clone();
+        for instruction in &mut canonical.instructions {
+            instruction.op = instruction.op.canonical();
+        }
+        canonical
+    }
+
+    fn assert_semantic_bytecode_eq(left: &BytecodeModule, right: &BytecodeModule) {
+        assert_eq!(canonicalized_bytecode(left), canonicalized_bytecode(right));
     }
 
     fn simple_ir_module(
@@ -6436,11 +9996,1147 @@ mod tests {
         );
 
         let bytecode = module.to_bytecode();
-        assert!(bytecode.to_text().contains("MOVE"));
+        assert!(
+            bytecode.instructions.iter().any(|instruction| {
+                instruction.op == BytecodeOp::Return
+                    && matches!(
+                        instruction.operands.as_slice(),
+                        [BytecodeOperand::Constant(0)]
+                    )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .all(|instruction| instruction.op != BytecodeOp::Move),
+            "{}",
+            bytecode.to_text()
+        );
         assert!(
             bytecode
                 .to_bytes()
                 .starts_with(DEFAULT_BYTECODE_MAGIC.as_bytes())
+        );
+    }
+
+    #[test]
+    fn fuses_local_false_return_branch_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "test".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("test".to_string()),
+                label: "false".to_string(),
+            },
+            LowerInstruction::Jump("truthy".to_string()),
+            LowerInstruction::Label("false".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(false))),
+            LowerInstruction::Label("truthy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Register("test".to_string()))),
+        ]);
+
+        assert!(
+            matches!(
+                bytecode.instructions.first(),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::ReturnIfLocalFalse,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::Register(0),
+                        BytecodeOperand::LocalSlot(0),
+                        BytecodeOperand::Constant(_)
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            !bytecode.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.op,
+                    BytecodeOp::JumpIfFalse | BytecodeOp::JumpIfFalseReg | BytecodeOp::Jump
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_local_binary_const_jump_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "value".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Binary {
+                dst: "is_missing".to_string(),
+                op: "==".to_string(),
+                left: LowerValue::Register("value".to_string()),
+                right: LowerValue::Undefined,
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("is_missing".to_string()),
+                label: "present".to_string(),
+            },
+            LowerInstruction::Return(Some(LowerValue::Bool(true))),
+            LowerInstruction::Label("present".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(false))),
+        ]);
+
+        assert!(
+            matches!(
+                bytecode.instructions.first(),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::JumpIfLocalBinaryConstFalse,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::Register(0),
+                        BytecodeOperand::LocalSlot(0),
+                        BytecodeOperand::Register(_),
+                        BytecodeOperand::Operator(_),
+                        BytecodeOperand::Constant(_),
+                        BytecodeOperand::Count(_)
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            !bytecode.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.op,
+                    BytecodeOp::Binary | BytecodeOp::BinaryRegConst | BytecodeOp::JumpIfFalse
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert_semantic_bytecode_eq(
+            &BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap(),
+            &bytecode,
+        );
+    }
+
+    #[test]
+    fn fuses_false_reg_then_jump_into_true_reg_jump() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "test".to_string(),
+                value: LowerValue::Bool(true),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("test".to_string()),
+                label: "next".to_string(),
+            },
+            LowerInstruction::Jump("truthy".to_string()),
+            LowerInstruction::Label("next".to_string()),
+            LowerInstruction::LoadConst {
+                dst: "value".to_string(),
+                value: LowerValue::Number(1.0),
+            },
+            LowerInstruction::Label("truthy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Register("value".to_string()))),
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .any(|instruction| instruction.op == BytecodeOp::JumpIfTrueReg),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .all(|instruction| instruction.op != BytecodeOp::Jump),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_local_binary_const_false_then_jump_into_true_jump() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "key".to_string(),
+                name: LowerBinding::LocalSlot(1),
+            },
+            LowerInstruction::Binary {
+                dst: "test".to_string(),
+                op: "===".to_string(),
+                left: LowerValue::Register("key".to_string()),
+                right: LowerValue::String("__v_skip".to_string()),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("test".to_string()),
+                label: "next".to_string(),
+            },
+            LowerInstruction::Jump("truthy".to_string()),
+            LowerInstruction::Label("next".to_string()),
+            LowerInstruction::LoadConst {
+                dst: "value".to_string(),
+                value: LowerValue::Number(1.0),
+            },
+            LowerInstruction::Label("truthy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Register("value".to_string()))),
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .any(|instruction| instruction.op == BytecodeOp::JumpIfLocalBinaryConstTrue),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode.instructions.iter().all(|instruction| {
+                instruction.op != BytecodeOp::JumpIfLocalBinaryConstFalse
+                    && instruction.op != BytecodeOp::Jump
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_move_jump_template_to_fallthrough_branch() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "source".to_string(),
+                value: LowerValue::Bool(true),
+            },
+            LowerInstruction::Move {
+                dst: "test".to_string(),
+                src: LowerValue::Register("source".to_string()),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("source".to_string()),
+                label: "falsy".to_string(),
+            },
+            LowerInstruction::Jump("truthy".to_string()),
+            LowerInstruction::Label("falsy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(false))),
+            LowerInstruction::Label("truthy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Register("test".to_string()))),
+        ]);
+
+        assert!(
+            bytecode.instructions.iter().any(|instruction| {
+                instruction.op == BytecodeOp::MoveJumpFallthroughReg
+                    && instruction.operands.len() == 4
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            !bytecode.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.op,
+                    BytecodeOp::Move
+                        | BytecodeOp::Jump
+                        | BytecodeOp::JumpIfFalse
+                        | BytecodeOp::JumpIfFalseReg
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert_semantic_bytecode_eq(
+            &BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap(),
+            &bytecode,
+        );
+    }
+
+    #[test]
+    fn fuses_binary_reg_reg_jump_template_to_fallthrough_branch() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t1".to_string(),
+                name: LowerBinding::LocalSlot(1),
+            },
+            LowerInstruction::LoadName {
+                dst: "t2".to_string(),
+                name: LowerBinding::LocalSlot(2),
+            },
+            LowerInstruction::Binary {
+                dst: "t3".to_string(),
+                op: "<".to_string(),
+                left: LowerValue::Register("t1".to_string()),
+                right: LowerValue::Register("t2".to_string()),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("t3".to_string()),
+                label: "falsy".to_string(),
+            },
+            LowerInstruction::Jump("truthy".to_string()),
+            LowerInstruction::Label("falsy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(false))),
+            LowerInstruction::Label("truthy".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(true))),
+        ]);
+
+        assert!(
+            bytecode.instructions.iter().any(|instruction| {
+                instruction.op == BytecodeOp::BinaryRegRegJumpFallthrough
+                    && instruction.operands.len() == 6
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            !bytecode.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction.op,
+                    BytecodeOp::Binary
+                        | BytecodeOp::BinaryRegReg
+                        | BytecodeOp::Jump
+                        | BytecodeOp::JumpIfFalse
+                        | BytecodeOp::JumpIfFalseReg
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        assert_semantic_bytecode_eq(
+            &BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap(),
+            &bytecode,
+        );
+    }
+
+    #[test]
+    fn removes_redundant_resolved_jump_to_next_instruction() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::Jump("next".to_string()),
+            LowerInstruction::Label("next".to_string()),
+            LowerInstruction::LoadConst {
+                dst: "t0".to_string(),
+                value: LowerValue::Number(1.0),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t0".to_string())),
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .all(|instruction| instruction.op != BytecodeOp::Jump),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_declare_store_local_pair() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "value".to_string(),
+                value: LowerValue::Number(7.0),
+            },
+            LowerInstruction::Declare {
+                kind: "const".to_string(),
+                name: LowerBinding::LocalSlot(2),
+            },
+            LowerInstruction::StoreName {
+                name: LowerBinding::LocalSlot(2),
+                src: LowerValue::Register("value".to_string()),
+            },
+            LowerInstruction::Return(Some(LowerValue::Register("value".to_string()))),
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .any(|instruction| instruction.op == BytecodeOp::DeclareStoreLocal),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .all(|instruction| instruction.op != BytecodeOp::Declare),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_local_false_member_binary_const_return_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "test".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("test".to_string()),
+                label: "missing".to_string(),
+            },
+            LowerInstruction::Jump("present".to_string()),
+            LowerInstruction::Label("missing".to_string()),
+            LowerInstruction::Return(Some(LowerValue::Bool(false))),
+            LowerInstruction::Label("present".to_string()),
+            LowerInstruction::LoadName {
+                dst: "object".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Member {
+                dst: "member".to_string(),
+                object: LowerValue::Register("object".to_string()),
+                property: LowerValue::String("ready".to_string()),
+            },
+            LowerInstruction::Binary {
+                dst: "result".to_string(),
+                op: "!==".to_string(),
+                left: LowerValue::Register("member".to_string()),
+                right: LowerValue::Undefined,
+            },
+            LowerInstruction::Return(Some(LowerValue::Register("result".to_string()))),
+        ]);
+
+        assert!(
+            matches!(
+                bytecode.instructions.first(),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::LocalSlot(0),
+                        BytecodeOperand::Constant(_),
+                        BytecodeOperand::Constant(_),
+                        BytecodeOperand::Operator(_),
+                        BytecodeOperand::Constant(_),
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode.instructions.iter().all(|instruction| {
+                !matches!(
+                    instruction.op,
+                    BytecodeOp::ReturnIfLocalFalse
+                        | BytecodeOp::LoadName
+                        | BytecodeOp::Member
+                        | BytecodeOp::Binary
+                        | BytecodeOp::Return
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        let decoded = BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap();
+        assert_eq!(
+            decoded.instructions.first().map(|item| item.op),
+            Some(BytecodeOp::ReturnIfLocalFalseElseMemberBinaryConst)
+        );
+    }
+
+    #[test]
+    fn fuses_member_const_declare_store_local_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::Member {
+                dst: "tmp".to_string(),
+                object: LowerValue::LocalSlot(0),
+                property: LowerValue::String("flag".to_string()),
+            },
+            LowerInstruction::Declare {
+                kind: "const".to_string(),
+                name: LowerBinding::LocalSlot(1),
+            },
+            LowerInstruction::StoreName {
+                name: LowerBinding::LocalSlot(1),
+                src: LowerValue::Register("tmp".to_string()),
+            },
+            LowerInstruction::LoadConst {
+                dst: "tmp".to_string(),
+                value: LowerValue::Number(1.0),
+            },
+        ]);
+
+        assert!(
+            matches!(
+                bytecode.instructions.first(),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::StoreLocalMemberConst,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::DeclKind(_),
+                        BytecodeOperand::LocalSlot(1),
+                        BytecodeOperand::LocalSlot(0),
+                        BytecodeOperand::Constant(_),
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode.instructions.iter().all(|instruction| {
+                !matches!(
+                    instruction.op,
+                    BytecodeOp::Member | BytecodeOp::Declare | BytecodeOp::StoreName
+                )
+            }),
+            "{}",
+            bytecode.to_text()
+        );
+        let decoded = BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap();
+        assert_eq!(
+            decoded.instructions.first().map(|item| item.op),
+            Some(BytecodeOp::StoreLocalMemberConst)
+        );
+    }
+
+    #[test]
+    fn threads_jump_to_jump_target() {
+        let mut instructions = vec![
+            BytecodeInstruction {
+                op: BytecodeOp::Jump,
+                operands: vec![BytecodeOperand::Count(1)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Jump,
+                operands: vec![BytecodeOperand::Count(3)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::LoadConst,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::Constant(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Return,
+                operands: vec![BytecodeOperand::Register(0)],
+            },
+        ];
+
+        assert!(thread_resolved_jumps(&mut instructions));
+        assert_eq!(jump_target_count(&instructions[0]), Some(3));
+    }
+
+    #[test]
+    fn eliminates_single_use_move_into_next_instruction() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Move {
+                dst: "t1".to_string(),
+                src: LowerValue::Register("t0".to_string()),
+            },
+            LowerInstruction::Binary {
+                dst: "t2".to_string(),
+                op: "+".to_string(),
+                left: LowerValue::Register("t1".to_string()),
+                right: LowerValue::Number(1.0),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t2".to_string())),
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .all(|instruction| instruction.op != BytecodeOp::Move),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_local_load_member_const_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Member {
+                dst: "t1".to_string(),
+                object: LowerValue::Register("t0".to_string()),
+                property: LowerValue::String("length".to_string()),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t1".to_string())),
+        ]);
+
+        assert_eq!(
+            bytecode
+                .instructions
+                .first()
+                .map(|instruction| instruction.op),
+            Some(BytecodeOp::MemberLocalConst),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert!(bytes.contains(&(BytecodeOp::MemberLocalConst as u8)));
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn fuses_local_load_binary_const_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Binary {
+                dst: "t1".to_string(),
+                op: "<".to_string(),
+                left: LowerValue::Register("t0".to_string()),
+                right: LowerValue::Number(10.0),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t1".to_string())),
+        ]);
+
+        assert_eq!(
+            bytecode
+                .instructions
+                .first()
+                .map(|instruction| instruction.op),
+            Some(BytecodeOp::BinaryLocalConst),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert!(bytes.contains(&(BytecodeOp::BinaryLocalConst as u8)));
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn fuses_local_load_dynamic_member_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Member {
+                dst: "t1".to_string(),
+                object: LowerValue::Register("t0".to_string()),
+                property: LowerValue::Register("t2".to_string()),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t1".to_string())),
+        ]);
+
+        assert_eq!(
+            bytecode
+                .instructions
+                .first()
+                .map(|instruction| instruction.op),
+            Some(BytecodeOp::MemberLocal),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert!(bytes.contains(&(BytecodeOp::MemberLocal as u8)));
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn fuses_local_load_call_zero_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Call {
+                dst: "t1".to_string(),
+                callee: LowerValue::Register("t0".to_string()),
+                args: Vec::new(),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t1".to_string())),
+        ]);
+
+        assert_eq!(
+            bytecode
+                .instructions
+                .first()
+                .map(|instruction| instruction.op),
+            Some(BytecodeOp::CallLocalZero),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert!(bytes.contains(&(BytecodeOp::CallLocalZero as u8)));
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn fuses_local_load_call_two_template() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadName {
+                dst: "t0".to_string(),
+                name: LowerBinding::LocalSlot(0),
+            },
+            LowerInstruction::Call {
+                dst: "t1".to_string(),
+                callee: LowerValue::Register("t0".to_string()),
+                args: vec![
+                    LowerValue::Number(1.0),
+                    LowerValue::Register("t2".to_string()),
+                ],
+            },
+            LowerInstruction::Pop(LowerValue::Register("t1".to_string())),
+        ]);
+
+        assert_eq!(
+            bytecode
+                .instructions
+                .first()
+                .map(|instruction| instruction.op),
+            Some(BytecodeOp::CallLocalTwo),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert!(bytes.contains(&(BytecodeOp::CallLocalTwo as u8)));
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn inlines_single_use_local_load_as_dynamic_member_key() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "t0".to_string(),
+                value: LowerValue::String("object".to_string()),
+            },
+            LowerInstruction::LoadName {
+                dst: "t1".to_string(),
+                name: LowerBinding::LocalSlot(1),
+            },
+            LowerInstruction::Member {
+                dst: "t2".to_string(),
+                object: LowerValue::Register("t0".to_string()),
+                property: LowerValue::Register("t1".to_string()),
+            },
+            LowerInstruction::Pop(LowerValue::Register("t2".to_string())),
+        ]);
+
+        assert!(
+            bytecode.instructions.iter().all(|instruction| !matches!(
+                instruction.op,
+                BytecodeOp::LoadName | BytecodeOp::LoadLocal | BytecodeOp::LoadLocalSmall
+            )),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            matches!(
+                bytecode.instructions.iter().find(|instruction| matches!(
+                    instruction.op,
+                    BytecodeOp::Member
+                )),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::Member,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::Register(_),
+                        _,
+                        BytecodeOperand::LocalSlot(1),
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn inlines_single_use_local_load_as_call_argument() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "t0".to_string(),
+                value: LowerValue::String("callee".to_string()),
+            },
+            LowerInstruction::LoadName {
+                dst: "t1".to_string(),
+                name: LowerBinding::LocalSlot(1),
+            },
+            LowerInstruction::Call {
+                dst: "t2".to_string(),
+                callee: LowerValue::Register("t0".to_string()),
+                args: vec![LowerValue::Register("t1".to_string())],
+            },
+            LowerInstruction::Pop(LowerValue::Register("t2".to_string())),
+        ]);
+
+        assert!(
+            bytecode.instructions.iter().all(|instruction| !matches!(
+                instruction.op,
+                BytecodeOp::LoadName | BytecodeOp::LoadLocal | BytecodeOp::LoadLocalSmall
+            )),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            matches!(
+                bytecode.instructions.iter().find(|instruction| matches!(
+                    instruction.op,
+                    BytecodeOp::Call
+                )),
+                Some(BytecodeInstruction {
+                    op: BytecodeOp::Call,
+                    operands
+                }) if matches!(
+                    operands.as_slice(),
+                    [
+                        BytecodeOperand::Register(_),
+                        _,
+                        BytecodeOperand::Count(1),
+                        BytecodeOperand::LocalSlot(1),
+                    ]
+                )
+            ),
+            "{}",
+            bytecode.to_text()
+        );
+        let bytes = bytecode.to_bytes();
+        assert_semantic_bytecode_eq(&BytecodeModule::from_bytes(&bytes).unwrap(), &bytecode);
+    }
+
+    #[test]
+    fn fuses_store_name_local_member_const_instruction_shape() {
+        let mut instructions = vec![
+            BytecodeInstruction {
+                op: BytecodeOp::Member,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Name(2),
+                    BytecodeOperand::Constant(2),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Declare,
+                operands: vec![BytecodeOperand::DeclKind(1), BytecodeOperand::LocalSlot(7)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::StoreName,
+                operands: vec![BytecodeOperand::LocalSlot(7), BytecodeOperand::Register(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Member,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Name(2),
+                    BytecodeOperand::Constant(3),
+                ],
+            },
+        ];
+        let mut removed = BTreeSet::new();
+        let target_refs = BTreeMap::new();
+        let indexes = (0..instructions.len()).collect::<Vec<_>>();
+        let register_use_counts = frame_register_use_counts(&instructions, &indexes);
+
+        assert!(fold_member_const_declare_store_local(
+            &mut instructions,
+            0,
+            &target_refs,
+            &register_use_counts,
+            &mut removed,
+        ));
+        assert_eq!(instructions[0].op, BytecodeOp::StoreLocalMemberConst);
+        assert_eq!(removed, BTreeSet::from([1, 2]));
+    }
+
+    #[test]
+    fn member_local_temporary_pass_handles_compiler_vue_getter_shape() {
+        let mut builder = BytecodeBuilder::default();
+        builder.functions.push(BytecodeFunction {
+            name: Some(1),
+            params: vec![
+                BytecodeOperand::LocalSlot(4),
+                BytecodeOperand::LocalSlot(5),
+                BytecodeOperand::LocalSlot(6),
+            ],
+            body_start: 3,
+            body_end: 21,
+            flags: 1,
+            has_return: true,
+        });
+        builder.instructions = vec![
+            BytecodeInstruction {
+                op: BytecodeOp::Class,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Name(0),
+                    BytecodeOperand::None,
+                    BytecodeOperand::Count(1),
+                    BytecodeOperand::Constant(0),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::StoreName,
+                operands: vec![BytecodeOperand::LocalSlot(0), BytecodeOperand::Register(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::FunctionExprStart,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::Function(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::JumpIfLocalBinaryConstFalse,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::LocalSlot(5),
+                    BytecodeOperand::Register(1),
+                    BytecodeOperand::Operator(11),
+                    BytecodeOperand::Constant(1),
+                    BytecodeOperand::Count(5),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Jump,
+                operands: vec![BytecodeOperand::Count(15)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Member,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Name(2),
+                    BytecodeOperand::Constant(2),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Declare,
+                operands: vec![BytecodeOperand::DeclKind(1), BytecodeOperand::LocalSlot(7)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::StoreName,
+                operands: vec![BytecodeOperand::LocalSlot(7), BytecodeOperand::Register(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Member,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Name(2),
+                    BytecodeOperand::Constant(3),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Declare,
+                operands: vec![BytecodeOperand::DeclKind(1), BytecodeOperand::LocalSlot(8)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::StoreName,
+                operands: vec![BytecodeOperand::LocalSlot(8), BytecodeOperand::Register(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::JumpIfLocalBinaryConstFalse,
+                operands: vec![
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::LocalSlot(5),
+                    BytecodeOperand::Register(1),
+                    BytecodeOperand::Operator(11),
+                    BytecodeOperand::Constant(4),
+                    BytecodeOperand::Count(13),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Jump,
+                operands: vec![BytecodeOperand::Count(18)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::LoadName,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::LocalSlot(8)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Return,
+                operands: vec![BytecodeOperand::Register(0)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::LoadName,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::LocalSlot(4)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Member,
+                operands: vec![
+                    BytecodeOperand::Register(1),
+                    BytecodeOperand::Register(0),
+                    BytecodeOperand::Constant(1),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Return,
+                operands: vec![BytecodeOperand::Register(1)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::LoadName,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::LocalSlot(7)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Unary,
+                operands: vec![
+                    BytecodeOperand::Register(1),
+                    BytecodeOperand::Operator(23),
+                    BytecodeOperand::Register(0),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::Return,
+                operands: vec![BytecodeOperand::Register(1)],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::StoreMember,
+                operands: vec![
+                    BytecodeOperand::LocalSlot(0),
+                    BytecodeOperand::Constant(5),
+                    BytecodeOperand::Register(0),
+                ],
+            },
+            BytecodeInstruction {
+                op: BytecodeOp::LoadName,
+                operands: vec![BytecodeOperand::Register(0), BytecodeOperand::LocalSlot(0)],
+            },
+        ];
+
+        builder.optimize_member_local_temporaries();
+
+        assert!(
+            builder
+                .instructions
+                .iter()
+                .filter(|instruction| instruction.op == BytecodeOp::StoreLocalMemberConst)
+                .count()
+                >= 2,
+            "{:?}",
+            builder.instructions
+        );
+    }
+
+    #[test]
+    fn fuses_member_const_declare_store_local_when_jump_targets_member() {
+        let bytecode = optimized_bytecode_from_lower(vec![
+            LowerInstruction::LoadConst {
+                dst: "guard".to_string(),
+                value: LowerValue::Bool(false),
+            },
+            LowerInstruction::JumpIfFalse {
+                test: LowerValue::Register("guard".to_string()),
+                label: "read".to_string(),
+            },
+            LowerInstruction::LoadConst {
+                dst: "tmp".to_string(),
+                value: LowerValue::Number(0.0),
+            },
+            LowerInstruction::Label("read".to_string()),
+            LowerInstruction::Member {
+                dst: "tmp".to_string(),
+                object: LowerValue::Name("this".to_string()),
+                property: LowerValue::String("_isReadonly".to_string()),
+            },
+            LowerInstruction::Declare {
+                kind: "const".to_string(),
+                name: LowerBinding::LocalSlot(23),
+            },
+            LowerInstruction::StoreName {
+                name: LowerBinding::LocalSlot(23),
+                src: LowerValue::Register("tmp".to_string()),
+            },
+            LowerInstruction::Member {
+                dst: "tmp".to_string(),
+                object: LowerValue::Name("this".to_string()),
+                property: LowerValue::String("_isShallow".to_string()),
+            },
+        ]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.op, BytecodeOp::StoreLocalMemberConst)),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode.instructions.iter().all(|instruction| !matches!(
+                instruction.op,
+                BytecodeOp::Declare | BytecodeOp::StoreName
+            )),
+            "{}",
+            bytecode.to_text()
+        );
+    }
+
+    #[test]
+    fn fuses_member_const_declare_store_local_inside_function_body() {
+        let bytecode = optimized_bytecode_from_lower(vec![LowerInstruction::FunctionExpr {
+            dst: "fn".to_string(),
+            name: None,
+            params: vec![LowerBinding::LocalSlot(21)],
+            is_async: false,
+            is_generator: false,
+            body: vec![
+                LowerInstruction::LoadConst {
+                    dst: "guard".to_string(),
+                    value: LowerValue::Bool(false),
+                },
+                LowerInstruction::JumpIfFalse {
+                    test: LowerValue::Register("guard".to_string()),
+                    label: "read".to_string(),
+                },
+                LowerInstruction::LoadConst {
+                    dst: "tmp".to_string(),
+                    value: LowerValue::Number(0.0),
+                },
+                LowerInstruction::Label("read".to_string()),
+                LowerInstruction::Member {
+                    dst: "tmp".to_string(),
+                    object: LowerValue::Name("this".to_string()),
+                    property: LowerValue::String("_isReadonly".to_string()),
+                },
+                LowerInstruction::Declare {
+                    kind: "const".to_string(),
+                    name: LowerBinding::LocalSlot(23),
+                },
+                LowerInstruction::StoreName {
+                    name: LowerBinding::LocalSlot(23),
+                    src: LowerValue::Register("tmp".to_string()),
+                },
+                LowerInstruction::Member {
+                    dst: "tmp".to_string(),
+                    object: LowerValue::Name("this".to_string()),
+                    property: LowerValue::String("_isShallow".to_string()),
+                },
+            ],
+        }]);
+
+        assert!(
+            bytecode
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.op, BytecodeOp::StoreLocalMemberConst)),
+            "{}",
+            bytecode.to_text()
+        );
+        assert!(
+            bytecode.instructions.iter().all(|instruction| !matches!(
+                instruction.op,
+                BytecodeOp::Declare | BytecodeOp::StoreName
+            )),
+            "{}",
+            bytecode.to_text()
         );
     }
 
@@ -6482,6 +11178,7 @@ mod tests {
                     name: "named".to_string(),
                     params: vec![LowerBinding::Name("value".to_string())],
                     is_generator: false,
+                    is_async: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                         "value".to_string(),
                     )))],
@@ -6494,6 +11191,7 @@ mod tests {
                         LowerBinding::Name("right".to_string()),
                     ],
                     is_generator: false,
+                    is_async: false,
                     body: vec![LowerInstruction::Return(None)],
                 },
                 LowerInstruction::Class {
@@ -6520,7 +11218,7 @@ mod tests {
         let mut expected = bytecode.clone();
         expected.extern_slots = vec!["e0".to_string()];
 
-        assert_eq!(restored, expected);
+        assert_semantic_bytecode_eq(&restored, &expected);
         assert!(bytes.starts_with(DEFAULT_BYTECODE_MAGIC.as_bytes()));
     }
 
@@ -6535,6 +11233,7 @@ mod tests {
                     LowerBinding::Name("right".to_string()),
                 ],
                 is_generator: false,
+                is_async: false,
                 body: vec![LowerInstruction::Return(Some(LowerValue::Name(
                     "left".to_string(),
                 )))],
@@ -6553,7 +11252,7 @@ mod tests {
         assert!(text.contains("FUNCTION_START fun#0"), "{text}");
         assert!(!text.contains("FUNCTION_START fun#0("), "{text}");
         assert!(!text.contains("FUNCTION_START name#"), "{text}");
-        assert_eq!(restored, bytecode);
+        assert_semantic_bytecode_eq(&restored, &bytecode);
     }
 
     #[test]
@@ -6586,11 +11285,11 @@ mod tests {
             super::BytecodeOp::LeaveScope
         );
         assert!(text.contains("ENTER_SCOPE block"), "{text}");
-        assert_eq!(restored, bytecode);
+        assert_semantic_bytecode_eq(&restored, &bytecode);
     }
 
     #[test]
-    fn specialized_opcodes_decode_to_canonical_instructions() {
+    fn specialized_opcodes_decode_to_runtime_instructions() {
         let bytecode = super::BytecodeModule {
             kind: super::BytecodeModuleKind::Script,
             extern_slots: Vec::new(),
@@ -6781,7 +11480,29 @@ mod tests {
         assert!(bytes.contains(&(super::BytecodeOp::StoreLocal as u8)));
         assert!(bytes.contains(&(super::BytecodeOp::LoadLocalSmall as u8)));
         assert!(bytes.contains(&(super::BytecodeOp::StoreLocalSmall as u8)));
-        assert_eq!(super::BytecodeModule::from_bytes(&bytes).unwrap(), bytecode);
+        let mut decoded = bytecode.clone();
+        decoded.instructions[0].op = super::BytecodeOp::LoadConstConst;
+        decoded.instructions[1].op = super::BytecodeOp::LoadUndefined;
+        decoded.instructions[2].op = super::BytecodeOp::LoadNull;
+        decoded.instructions[3].op = super::BytecodeOp::LoadTrue;
+        decoded.instructions[4].op = super::BytecodeOp::LoadFalse;
+        decoded.instructions[5].op = super::BytecodeOp::LoadIntSmall;
+        decoded.instructions[6].op = super::BytecodeOp::PopReg;
+        decoded.instructions[7].op = super::BytecodeOp::LoadLocalSmall;
+        decoded.instructions[8].op = super::BytecodeOp::LoadLocal;
+        decoded.instructions[9].op = super::BytecodeOp::StoreLocalSmall;
+        decoded.instructions[10].op = super::BytecodeOp::StoreLocal;
+        decoded.instructions[11].op = super::BytecodeOp::MemberConst;
+        decoded.instructions[12].op = super::BytecodeOp::StoreMemberConst;
+        decoded.instructions[13].op = super::BytecodeOp::BinaryRegReg;
+        decoded.instructions[14].op = super::BytecodeOp::BinaryRegConst;
+        decoded.instructions[15].op = super::BytecodeOp::JumpIfFalseReg;
+        decoded.instructions[16].op = super::BytecodeOp::ReturnReg;
+        decoded.instructions[17].op = super::BytecodeOp::ReturnConst;
+        decoded.instructions[18].op = super::BytecodeOp::CallZero;
+        decoded.instructions[19].op = super::BytecodeOp::CallOne;
+        decoded.instructions[20].op = super::BytecodeOp::CallTwo;
+        assert_eq!(super::BytecodeModule::from_bytes(&bytes).unwrap(), decoded);
     }
 
     #[test]
@@ -6809,6 +11530,7 @@ mod tests {
                     name: Some("inner".to_string()),
                     params: Vec::new(),
                     is_generator: false,
+                    is_async: false,
                     body: vec![
                         LowerInstruction::LoadConst {
                             dst: "t400".to_string(),
@@ -6831,9 +11553,9 @@ mod tests {
             "{:#?}",
             bytecode.instructions
         );
-        assert_eq!(
-            super::BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap(),
-            bytecode
+        assert_semantic_bytecode_eq(
+            &super::BytecodeModule::from_bytes(&bytecode.to_bytes()).unwrap(),
+            &bytecode,
         );
     }
 
@@ -6847,6 +11569,7 @@ mod tests {
                     name: Some("outer".to_string()),
                     params: Vec::new(),
                     is_generator: false,
+                    is_async: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Number(1.0)))],
                 },
                 LowerInstruction::Jump("late".to_string()),
@@ -6856,6 +11579,7 @@ mod tests {
                     name: Some("factory".to_string()),
                     params: Vec::new(),
                     is_generator: false,
+                    is_async: false,
                     body: vec![LowerInstruction::Return(Some(LowerValue::Number(2.0)))],
                 },
                 LowerInstruction::Call {
@@ -6984,7 +11708,10 @@ mod tests {
         assert!(bytes.contains(&0xff), "{bytes:?}");
         let mut expected = bytecode.clone();
         expected.extern_slots = vec!["e0".to_string()];
-        assert_eq!(super::BytecodeModule::from_bytes(&bytes).unwrap(), expected);
+        assert_semantic_bytecode_eq(
+            &super::BytecodeModule::from_bytes(&bytes).unwrap(),
+            &expected,
+        );
     }
 
     #[test]
@@ -7039,7 +11766,7 @@ mod tests {
         let bytes = bytecode.to_bytes();
         let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
 
-        assert_eq!(restored, bytecode);
+        assert_semantic_bytecode_eq(&restored, &bytecode);
         assert_eq!(count_subslice(&bytes, b"exports"), 0);
         assert_eq!(count_subslice(&bytes, b"createElement"), 0);
         let raw_string_total = DEFAULT_BYTECODE_MAGIC.len()
@@ -7072,7 +11799,7 @@ mod tests {
         let bytes = bytecode.to_bytes();
         let restored = super::BytecodeModule::from_bytes(&bytes).unwrap();
 
-        assert_eq!(restored, bytecode);
+        assert_semantic_bytecode_eq(&restored, &bytecode);
         assert_eq!(count_subslice(&bytes, b"prototype."), 0);
         assert_eq!(count_subslice(&bytes, b"document."), 0);
         assert_eq!(count_subslice(&bytes, b"module."), 0);
@@ -7134,7 +11861,7 @@ mod tests {
         let mut expected = bytecode.clone();
         expected.extern_slots = vec!["e0".to_string()];
 
-        assert_eq!(restored, expected);
+        assert_semantic_bytecode_eq(&restored, &expected);
         assert_eq!(count_subslice(&bytes, b"console"), 0);
         assert!(!text.contains(".names"));
         assert!(text.contains("LOAD_NAME r0, extern#0(\"console\")"));
@@ -7160,12 +11887,14 @@ mod tests {
                     name: "first".to_string(),
                     params: vec![LowerBinding::LocalSlot(1)],
                     is_generator: false,
+                    is_async: false,
                     body: function_body.clone(),
                 },
                 LowerInstruction::Function {
                     name: "second".to_string(),
                     params: vec![LowerBinding::LocalSlot(1)],
                     is_generator: false,
+                    is_async: false,
                     body: function_body,
                 },
             ],
@@ -7195,6 +11924,7 @@ mod tests {
                 name: None,
                 params: vec![LowerBinding::Name("window".to_string())],
                 is_generator: false,
+                is_async: false,
                 body: vec![
                     LowerInstruction::LoadName {
                         dst: "1".to_string(),
@@ -7292,7 +12022,7 @@ mod tests {
         let bytes = bytecode.to_bytes_with_encoding(&encoding).unwrap();
         let restored = super::BytecodeModule::from_bytes_with_encoding(&bytes, &encoding).unwrap();
         assert!(bytes.starts_with(b"CUSTOM01"));
-        assert_eq!(restored, bytecode);
+        assert_semantic_bytecode_eq(&restored, &bytecode);
         assert!(super::BytecodeModule::from_bytes(&bytes).is_err());
     }
 
@@ -7331,9 +12061,9 @@ mod tests {
         assert_eq!(restored.operand_tags.get("constant"), Some(&0));
         assert_eq!(restored.constant_tags.get("number"), Some(&2));
         assert_eq!(restored.constant_tags.get("string"), Some(&0));
-        assert_eq!(
-            bytecode,
-            super::BytecodeModule::from_bytes_with_seed(&bytes, &seed).unwrap()
+        assert_semantic_bytecode_eq(
+            &bytecode,
+            &super::BytecodeModule::from_bytes_with_seed(&bytes, &seed).unwrap(),
         );
 
         let mut tampered = bytes.clone();

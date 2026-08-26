@@ -1,22 +1,43 @@
+//! 执行错误模型。
+//!
+//! 默认构建保留详细错误信息，方便定位 pc、callee、property 等问题。
+//! 开启 `compact-errors` feature 后，错误会压缩成短错误码，用于减小 runtime wasm 体积。
+
 use crate::value::Value;
 use std::fmt;
 
+/// bytecode 执行错误。
+///
+/// 这里同时承载 VM 内部错误和 JavaScript 语义错误。能被 JS `try/catch` 捕获的错误会在
+/// executor 中转成错误对象；真正的解码/运行时结构错误会直接返回给调用方。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecuteError {
+    /// 指令缺少指定位置的操作数。
     MissingOperand { op: &'static str, index: usize },
+    /// 操作数类型不符合指令预期。
     InvalidOperand(&'static str),
+    /// 常量池下标无效。
     BadConstant(u32),
+    /// 跳转标签不存在。
     UnknownLabel(String),
+    /// 当前构建未启用或尚未实现的语义。
     Unsupported(&'static str),
+    /// JavaScript `throw` 抛出的值。
     Thrown(Value),
+    /// JavaScript ReferenceError。
     ReferenceError(String),
+    /// JavaScript TypeError。
     TypeError(String),
+    /// JavaScript RangeError。
     RangeError(String),
+    /// JavaScript SyntaxError。
     SyntaxError(String),
+    /// VM runtime 错误。
     Runtime(String),
 }
 
 #[cfg(feature = "compact-errors")]
+/// 紧凑错误模式：保留错误码，丢弃格式化细节以减小 wasm 字符串段。
 macro_rules! compact_error_message {
     ($code:literal) => {
         $code.to_string()
@@ -28,6 +49,7 @@ macro_rules! compact_error_message {
 }
 
 #[cfg(not(feature = "compact-errors"))]
+/// 默认错误模式：保留完整错误信息。
 macro_rules! compact_error_message {
     ($code:literal) => {
         $code.to_string()

@@ -39,11 +39,15 @@ function parseMeta(source, file) {
     if (!match) continue;
     meta[match[1]] = match[2];
   }
-  if (!Object.prototype.hasOwnProperty.call(meta, 'expect')) {
-    throw new Error(`${relative(file)} is missing // @expect <value>`);
+  if (
+    !Object.prototype.hasOwnProperty.call(meta, 'expect') &&
+    !Object.prototype.hasOwnProperty.call(meta, 'expect-async')
+  ) {
+    throw new Error(`${relative(file)} is missing // @expect <value> or // @expect-async <value>`);
   }
   return {
     expect: meta.expect,
+    expectAsync: meta['expect-async'],
     moduleExpect: meta['module-expect'],
     seeds: meta.seeds ? Number.parseInt(meta.seeds, 10) : undefined,
   };

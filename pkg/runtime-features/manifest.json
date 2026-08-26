@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-17T01:29:59.750Z",
+  "generatedAt": "2026-07-21T03:40:31.637Z",
   "canonicalFeatures": [
     "array-builtins",
     "bigint",
@@ -32,6 +32,11 @@
     ],
     "test262-compat": [
       "test262-eval"
+    ]
+  },
+  "implications": {
+    "debugger": [
+      "source-map"
     ]
   },
   "count": 2048,

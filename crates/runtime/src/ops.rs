@@ -1,12 +1,22 @@
+//! 执行器语义 helper。
+//!
+//! `executor.rs` 负责 pc 调度和控制流，这个模块集中处理可复用的 JS 语义：
+//! 操作数读取、常量转换、成员访问、二元/一元运算、参数展开、try 区间识别和对象/函数辅助逻辑。
+//!
+//! 优先原则：
+//! - 简单 number/string/bool 路径在 VM 内快速处理。
+//! - 对象、数组、函数、Symbol、BigInt 等复杂 coercion 尽量下沉到 `JsValue`/HostBridge。
+
 use crate::error::ExecuteError;
 #[cfg(feature = "object-builtins")]
 use crate::host::js_object_to_string_tag;
 use crate::host::{
     JsHostBridge, VmJsHandle, can_represent_value_as_js, get_js_property, host_overlay_set_path,
     is_js_boxable_primitive, is_js_property_target, js_error, js_instance_of, js_overlay_get,
-    js_overlay_set, js_reflect_property_key, js_value_display, js_value_is_array_prototype,
-    js_value_property_key, js_value_typeof, update_vm_js_handle, value_to_js_value,
-    vm_bound_function_to_js_value, vm_bound_native_function_to_js_value, vm_js_handle,
+    js_overlay_set, js_reflect_property_key, js_typed_array_index_set, js_value_display,
+    js_value_is_array_prototype, js_value_property_key, js_value_typeof, update_vm_js_handle,
+    value_to_js_value, vm_bound_function_to_js_value, vm_bound_native_function_to_js_value,
+    vm_js_handle,
 };
 #[cfg(feature = "array-builtins")]
 use crate::host::{
@@ -23,9 +33,13 @@ use js_sys::{Function as JsFunction, Reflect};
 use js_token_core::{
     BytecodeConstant, BytecodeInstruction, BytecodeModule, BytecodeOp, BytecodeOperand,
 };
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 use wasm_bindgen::{JsCast, JsValue};
 
+/// `try/catch/finally` 在扁平 bytecode 中的区间划分。
+///
+/// Core 当前仍用结构标记指令表示 try 区域，执行器进入 try 时会扫描出 body/catch/finally/end
+/// 的 pc 区间，然后按 JS 异常语义调度。
 pub(crate) struct TryParts {
     pub(crate) body_start: usize,
     pub(crate) body_end: usize,
@@ -141,15 +155,25 @@ pub(crate) fn count_operand(
     }
 }
 
+pub(crate) fn local_slot_operand(
+    instruction: &BytecodeInstruction,
+    index: usize,
+) -> Result<u32, ExecuteError> {
+    match operand(instruction, index)? {
+        BytecodeOperand::LocalSlot(index) => Ok(*index),
+        _ => Err(ExecuteError::InvalidOperand("local slot")),
+    }
+}
+
 pub(crate) fn constant_value(module: &BytecodeModule, index: u32) -> Result<Value, ExecuteError> {
     match module.constants.get(index as usize) {
-        Some(BytecodeConstant::Number(value)) => Ok(Value::Number(*value)),
-        Some(BytecodeConstant::String(value)) => Ok(Value::String(value.clone())),
+        Some(BytecodeConstant::Number(value)) => Ok(Value::JsValue(JsValue::from_f64(*value))),
+        Some(BytecodeConstant::String(value)) => Ok(Value::JsValue(JsValue::from_str(value))),
         #[cfg(feature = "bigint")]
         Some(BytecodeConstant::BigInt(value)) => Ok(Value::BigInt(normalize_bigint_text(value))),
         #[cfg(not(feature = "bigint"))]
         Some(BytecodeConstant::BigInt(_)) => Err(ExecuteError::Unsupported("BigInt")),
-        Some(BytecodeConstant::Bool(value)) => Ok(Value::Bool(*value)),
+        Some(BytecodeConstant::Bool(value)) => Ok(Value::JsValue(JsValue::from_bool(*value))),
         Some(BytecodeConstant::Null) => Ok(Value::Null),
         Some(BytecodeConstant::Undefined) => Ok(Value::Undefined),
         None => Err(ExecuteError::BadConstant(index)),
@@ -221,29 +245,34 @@ const OPERATOR_NAMES: &[&str] = &[
 
 pub(crate) fn get_local_member(object: &Value, property: &str) -> Result<Value, ExecuteError> {
     match object {
-        Value::Object(props) => match props.borrow().get(property).cloned() {
-            Some(Value::Function(function)) => Ok(Value::JsValue(vm_bound_function_to_js_value(
-                function,
-                object.clone(),
-            ))),
-            Some(Value::NativeFunction(function)) => Ok(Value::JsValue(
-                vm_bound_native_function_to_js_value(function, object.clone()),
-            )),
-            Some(value) => Ok(bind_member_value(value, object)),
-            None => object_prototype_member(object, property),
-        },
+        Value::Object(props) => {
+            let value = { props.borrow().get(property).cloned() };
+            match value {
+                Some(Value::Function(function)) => Ok(Value::JsValue(
+                    vm_bound_function_to_js_value(function, object.clone()),
+                )),
+                Some(Value::NativeFunction(function)) => Ok(Value::JsValue(
+                    vm_bound_native_function_to_js_value(function, object.clone()),
+                )),
+                Some(value) => Ok(bind_member_value(value, object)),
+                None => object_prototype_member(object, property),
+            }
+        }
         Value::Function(function) | Value::BoundFunction(function, _) => {
             if property == "name" {
                 Ok(Value::String(function.name.clone().unwrap_or_default()))
-            } else if let Some(value) = function.props.borrow().get(property).cloned() {
-                Ok(bind_member_value(value, object))
-            } else if is_function_native_method(property) {
-                Ok(bound_native_method_value(
-                    format!("Function.{property}"),
-                    object,
-                ))
+            } else if property == "length" {
+                Ok(Value::Number(function.params.len() as f64))
             } else {
-                object_prototype_member(object, property)
+                let value = { function.props.borrow().get(property).cloned() };
+                match value {
+                    Some(value) => Ok(bind_member_value(value, object)),
+                    None if is_function_native_method(property) => Ok(bound_native_method_value(
+                        format!("Function.{property}"),
+                        object,
+                    )),
+                    None => object_prototype_member(object, property),
+                }
             }
         }
         Value::NativeFunction(_) | Value::BoundNativeFunction(_, _)
@@ -280,6 +309,13 @@ pub(crate) fn get_local_member(object: &Value, property: &str) -> Result<Value, 
                     "cannot read property {property:?} of {}",
                     js_value_display(value)
                 )));
+            }
+            #[cfg(feature = "regexp")]
+            if crate::host::js_value_is_regexp(value) && is_regexp_native_method(property) {
+                return Ok(bound_native_method_value(
+                    format!("RegExp.{property}"),
+                    object,
+                ));
             }
             if let Some(member) = get_vm_js_handle_member(value, object, property)? {
                 return Ok(member);
@@ -393,7 +429,11 @@ fn get_vm_js_handle_member(
                     function.name.clone().unwrap_or_default(),
                 )));
             }
-            if let Some(value) = function.props.borrow().get(property).cloned() {
+            if property == "length" {
+                return Ok(Some(Value::Number(function.params.len() as f64)));
+            }
+            let value = { function.props.borrow().get(property).cloned() };
+            if let Some(value) = value {
                 return Ok(Some(bind_member_value(value, object)));
             }
             if is_function_native_method(property) {
@@ -495,10 +535,7 @@ pub(crate) fn object_prototype_member(
 }
 
 fn bound_native_method_value(name: String, this_value: &Value) -> Value {
-    Value::JsValue(vm_bound_native_function_to_js_value(
-        NativeFunctionValue { name },
-        this_value.clone(),
-    ))
+    Value::BoundNativeFunction(NativeFunctionValue { name }, Box::new(this_value.clone()))
 }
 
 #[cfg(feature = "object-builtins")]
@@ -585,6 +622,10 @@ pub(crate) fn is_array_native_method(property: &str) -> bool {
             | "forEach"
             | "map"
             | "filter"
+            | "flatMap"
+            | "find"
+            | "reduce"
+            | "every"
             | "includes"
             | "indexOf"
             | "pop"
@@ -610,9 +651,12 @@ pub(crate) fn is_string_native_method(property: &str) -> bool {
     matches!(
         property,
         "charAt"
+            | "charCodeAt"
+            | "endsWith"
             | "includes"
             | "indexOf"
             | "slice"
+            | "startsWith"
             | "trim"
             | "toLowerCase"
             | "toUpperCase"
@@ -665,10 +709,12 @@ pub(crate) fn regexp_exec_value(regexp: &Value, input: &str) -> Value {
         let result = regexp_match_array(&needle, index, input);
         if global {
             if let Value::Object(props) = regexp {
-                props.borrow_mut().insert(
-                    "lastIndex".to_string(),
-                    Value::Number((index + needle.len()) as f64),
-                );
+                let _ = props.try_borrow_mut().map(|mut props| {
+                    props.insert(
+                        "lastIndex".to_string(),
+                        Value::Number((index + needle.len()) as f64),
+                    )
+                });
             }
         }
         result
@@ -890,12 +936,37 @@ pub(crate) fn set_member(
     property: &str,
     value: Value,
 ) -> Result<(), ExecuteError> {
+    thread_local! {
+        static SET_MEMBER_DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+    SET_MEMBER_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current >= 128 {
+            return Err(ExecuteError::RangeError(format!(
+                "maximum set_member recursion exceeded while setting {property:?}"
+            )));
+        }
+        depth.set(current + 1);
+        let result = set_member_inner(object, property, value);
+        depth.set(current);
+        result
+    })
+}
+
+fn set_member_inner(object: &mut Value, property: &str, value: Value) -> Result<(), ExecuteError> {
     match object {
         Value::Null | Value::Undefined => Err(ExecuteError::TypeError(format!(
             "cannot set property {property:?} of {object}"
         ))),
         Value::Object(props) => {
-            props.borrow_mut().insert(property.to_string(), value);
+            props
+                .try_borrow_mut()
+                .map_err(|_| {
+                    ExecuteError::Runtime(format!(
+                        "object properties are already borrowed while setting {property:?}"
+                    ))
+                })?
+                .insert(property.to_string(), value);
             Ok(())
         }
         Value::Class(class) => {
@@ -941,7 +1012,12 @@ pub(crate) fn set_member(
         Value::Function(function) | Value::BoundFunction(function, _) => {
             function
                 .props
-                .borrow_mut()
+                .try_borrow_mut()
+                .map_err(|_| {
+                    ExecuteError::Runtime(format!(
+                        "function properties are already borrowed while setting {property:?}"
+                    ))
+                })?
                 .insert(property.to_string(), value);
             Ok(())
         }
@@ -958,12 +1034,23 @@ pub(crate) fn set_member(
                     js_value_display(target)
                 )));
             }
+            if let Some(result) = js_typed_array_index_set(target, property, &value) {
+                return result;
+            }
             if set_vm_js_handle_member(target, property, value.clone())? {
                 return Ok(());
             }
             if property.starts_with("Symbol.") {
                 if js_value_is_array_prototype(target) {
                     host_overlay_set_path(&format!("Array.prototype.{property}"), value.clone());
+                }
+                if can_represent_value_as_js(&value) {
+                    Reflect::set(
+                        target,
+                        &js_reflect_property_key(property),
+                        &value_to_js_value(&value, &JsHostBridge::empty())?,
+                    )
+                    .map_err(js_error)?;
                 }
                 js_overlay_set(target, property, value);
                 return Ok(());
@@ -1016,7 +1103,12 @@ fn set_vm_js_handle_member(
             VmJsHandle::Function(function) | VmJsHandle::BoundFunction(function, _) => {
                 function
                     .props
-                    .borrow_mut()
+                    .try_borrow_mut()
+                    .map_err(|_| {
+                        ExecuteError::Runtime(format!(
+                            "function properties are already borrowed while setting {property:?}"
+                        ))
+                    })?
                     .insert(property.to_string(), value);
                 Ok(true)
             }
@@ -1026,8 +1118,14 @@ fn set_vm_js_handle_member(
                     match value {
                         Value::Function(function) => class.constructor = Some(function),
                         Value::JsValue(_) | Value::BoundJsFunction(_, _) => {
-                            class.constructor =
-                                js_constructor_function.expect("checked constructor js value")?;
+                            class.constructor = match js_constructor_function {
+                                Some(function) => function?,
+                                None => {
+                                    return Err(ExecuteError::Runtime(
+                                        "class constructor must be a function".to_string(),
+                                    ));
+                                }
+                            };
                         }
                         Value::Undefined => class.constructor = None,
                         value => {
@@ -1274,14 +1372,10 @@ fn bigint_binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteEr
             )),
             "===" => Ok(Value::Bool(false)),
             "!==" => Ok(Value::Bool(true)),
-            "<" | "<=" | ">" | ">="
-                if js_bigint_number_compare(op, &left, right, true).is_some() =>
-            {
-                Ok(Value::Bool(
-                    js_bigint_number_compare(op, &left, right, true).unwrap(),
-                ))
-            }
             "<" | "<=" | ">" | ">=" => {
+                if let Some(result) = js_bigint_number_compare(op, &left, right, true) {
+                    return Ok(Value::Bool(result));
+                }
                 let left = parse_bigint(&left)
                     .ok_or_else(|| ExecuteError::TypeError("invalid BigInt value".to_string()))?
                     as f64;
@@ -1302,14 +1396,10 @@ fn bigint_binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteEr
             )),
             "===" => Ok(Value::Bool(false)),
             "!==" => Ok(Value::Bool(true)),
-            "<" | "<=" | ">" | ">="
-                if js_bigint_number_compare(op, &right, left, false).is_some() =>
-            {
-                Ok(Value::Bool(
-                    js_bigint_number_compare(op, &right, left, false).unwrap(),
-                ))
-            }
             "<" | "<=" | ">" | ">=" => {
+                if let Some(result) = js_bigint_number_compare(op, &right, left, false) {
+                    return Ok(Value::Bool(result));
+                }
                 let right = parse_bigint(&right)
                     .ok_or_else(|| ExecuteError::TypeError("invalid BigInt value".to_string()))?
                     as f64;
@@ -1332,7 +1422,9 @@ fn bigint_binary(op: &str, left: Value, right: Value) -> Result<Value, ExecuteEr
                 "cannot mix BigInt and other types".to_string(),
             )),
         },
-        _ => unreachable!("checked by caller"),
+        _ => Err(ExecuteError::TypeError(
+            "BigInt operator fallback received non-BigInt operands".to_string(),
+        )),
     }
 }
 
@@ -1374,10 +1466,7 @@ pub(crate) fn binary(op: &str, left: Value, right: Value) -> Result<Value, Execu
         "!=" => Ok(Value::Bool(!loose_eq(&left, &right))),
         "===" => Ok(Value::Bool(strict_eq(&left, &right))),
         "!==" => Ok(Value::Bool(!strict_eq(&left, &right))),
-        "<" => Ok(Value::Bool(left.to_number() < right.to_number())),
-        "<=" => Ok(Value::Bool(left.to_number() <= right.to_number())),
-        ">" => Ok(Value::Bool(left.to_number() > right.to_number())),
-        ">=" => Ok(Value::Bool(left.to_number() >= right.to_number())),
+        "<" | "<=" | ">" | ">=" => Ok(Value::Bool(relational_compare(op, &left, &right))),
         "&&" => Ok(if left.is_truthy() { right } else { left }),
         "||" => Ok(if left.is_truthy() { left } else { right }),
         "??" => Ok(match left {
@@ -1400,6 +1489,33 @@ pub(crate) fn binary(op: &str, left: Value, right: Value) -> Result<Value, Execu
         "in" => Ok(Value::Bool(has_property(&right, &property_key(&left)))),
         "instanceof" => Ok(Value::Bool(instance_of(&left, &right))),
         op => Err(ExecuteError::Runtime(format!("unsupported binary op {op}"))),
+    }
+}
+
+fn relational_compare(op: &str, left: &Value, right: &Value) -> bool {
+    match (relational_string(left), relational_string(right)) {
+        (Some(left), Some(right)) => match op {
+            "<" => left < right,
+            "<=" => left <= right,
+            ">" => left > right,
+            ">=" => left >= right,
+            _ => false,
+        },
+        _ => match op {
+            "<" => left.to_number() < right.to_number(),
+            "<=" => left.to_number() <= right.to_number(),
+            ">" => left.to_number() > right.to_number(),
+            ">=" => left.to_number() >= right.to_number(),
+            _ => false,
+        },
+    }
+}
+
+fn relational_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::JsValue(value) | Value::BoundJsFunction(value, _) => value.as_string(),
+        _ => None,
     }
 }
 
@@ -1526,6 +1642,12 @@ fn vm_constructed_by(value: &Value, constructor_name: Option<&str>) -> bool {
             Some(Value::String(value)) => value == constructor_name,
             _ => false,
         },
+        Value::JsValue(value) | Value::BoundJsFunction(value, _) => {
+            get_js_property(value, "__constructor_name")
+                .ok()
+                .and_then(|value| value.as_string())
+                .is_some_and(|value| value == constructor_name)
+        }
         _ => false,
     }
 }

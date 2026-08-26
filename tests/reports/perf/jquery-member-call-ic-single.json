@@ -1,0 +1,420 @@
+{
+  "generatedAt": "2026-08-11T04:16:09.914Z",
+  "target": {
+    "bin": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-vm/jquery.bin",
+    "wrapper": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-vm/jquery.js",
+    "map": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-vm/jquery.bin.map",
+    "byteLength": 106748,
+    "md5": "0fd8eb70ef57d67fd8e02869ead4209d",
+    "externSlots": [
+      "module",
+      "window",
+      "Array",
+      "Date",
+      "Error",
+      "JSON",
+      "Math",
+      "Object",
+      "RegExp",
+      "String",
+      "Symbol",
+      "TypeError",
+      "define",
+      "encodeURIComponent",
+      "isFinite",
+      "parseFloat",
+      "parseInt",
+      "r",
+      "i",
+      "e",
+      "o",
+      "l",
+      "s",
+      "c"
+    ]
+  },
+  "settings": {
+    "steps": 1000000,
+    "repeat": 1,
+    "warmup": 0,
+    "callDepth": 2048,
+    "recursion": 128
+  },
+  "result": {
+    "ok": true,
+    "value": "true"
+  },
+  "runsMs": [
+    142.11175
+  ],
+  "stats": {
+    "minMs": 142.11175,
+    "maxMs": 142.11175,
+    "avgMs": 142.11175,
+    "p50Ms": 142.11175,
+    "p90Ms": 142.11175,
+    "p99Ms": 142.11175,
+    "stepsPerSecond": 7036716
+  },
+  "hostBridge": {
+    "get": 1818,
+    "set": 2,
+    "call": 195,
+    "construct": 48
+  },
+  "callbacks": {
+    "total": 0,
+    "fastPath": 0
+  },
+  "inlineCache": {
+    "loadNameHits": 778,
+    "loadNameMisses": 418,
+    "memberConstHits": 765,
+    "memberConstMisses": 281,
+    "callOneHits": 82,
+    "callOneMisses": 258
+  },
+  "instructionCount": 22310,
+  "opcodes": [
+    {
+      "name": "LOAD_LOCAL_SMALL",
+      "count": 3866
+    },
+    {
+      "name": "MOVE",
+      "count": 3483
+    },
+    {
+      "name": "JUMP",
+      "count": 1886
+    },
+    {
+      "name": "BINARY_REG_REG",
+      "count": 1622
+    },
+    {
+      "name": "JUMP_IF_FALSE_REG",
+      "count": 1619
+    },
+    {
+      "name": "LOAD_NAME",
+      "count": 1196
+    },
+    {
+      "name": "MEMBER_CONST",
+      "count": 1003
+    },
+    {
+      "name": "JUMP_IF_TRUE_REG",
+      "count": 890
+    }
+  ],
+  "functions": [
+    {
+      "name": "<anonymous>",
+      "bodyStart": 472,
+      "bodyEnd": 695,
+      "callCount": 39,
+      "instructionCount": 10008,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 816,
+      "bodyEnd": 896,
+      "callCount": 31,
+      "instructionCount": 4395,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 36,
+      "bodyEnd": 24783,
+      "callCount": 1,
+      "instructionCount": 1979,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "v",
+      "bodyStart": 142,
+      "bodyEnd": 204,
+      "callCount": 31,
+      "instructionCount": 1306,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "h",
+      "bodyStart": 100,
+      "bodyEnd": 127,
+      "callCount": 31,
+      "instructionCount": 619,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 12454,
+      "bodyEnd": 12499,
+      "callCount": 31,
+      "instructionCount": 589,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 20230,
+      "bodyEnd": 20321,
+      "callCount": 6,
+      "instructionCount": 401,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 7504,
+      "bodyEnd": 7899,
+      "callCount": 6,
+      "instructionCount": 396,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    }
+  ],
+  "hotPcs": [
+    {
+      "pc": 540,
+      "op": "BINARY_REG_REG",
+      "count": 187,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "BINARY"
+      }
+    },
+    {
+      "pc": 541,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 187,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 542,
+      "op": "JUMP",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "JUMP"
+      }
+    },
+    {
+      "pc": 543,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 544,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 545,
+      "op": "JUMP",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "JUMP"
+      }
+    },
+    {
+      "pc": 546,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 547,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16690,
+        "byteEnd": 106727,
+        "pcStart": 36,
+        "pcEnd": 24783,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    }
+  ]
+}

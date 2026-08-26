@@ -348,6 +348,7 @@ dependencies = [
 name = "js_vm_compiler"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "js_token_core",
  "swc_common",
  "swc_ecma_ast",

@@ -12,6 +12,7 @@
     "test:diff": "node tests/index.js diff",
     "test:test262": "node tests/index.js test262",
     "test:fuzz": "node tests/index.js fuzz",
+    "perf": "node tests/perf.js",
     "precommit": "node tests/index.js precommit",
     "compile:runtime": "cargo run -p js_vm_cli -- package",
     "runtime:features": "node scripts/runtime-features.js",

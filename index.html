@@ -1337,8 +1337,8 @@
         <span id="wasmState">WASM loading</span>
       </div>
       <div class="actions">
-        <label class="limit-control">Depth <input id="maxCallDepthInput" type="number" min="1" max="4096" value="128"></label>
-        <label class="limit-control">Recursion <input id="maxRecursiveDepthInput" type="number" min="1" max="1024" value="8"></label>
+        <label class="limit-control">Depth <input id="maxCallDepthInput" type="number" min="1" max="4096" value="2048"></label>
+        <label class="limit-control">Recursion <input id="maxRecursiveDepthInput" type="number" min="1" max="1024" value="128"></label>
         <button id="downloadPkgBtn" type="button">下载运行包</button>
       </div>
     </header>
@@ -1514,9 +1514,11 @@
 
     const {
       Compiler,
+      js_analyze_module_source,
       js_encoding_rows_from_seed,
       js_encoding_seed_for_seed_and_bytes,
       js_encoding_seed_from_rows,
+      js_package_module_source,
     } = compilerPkg;
 
     const initialFiles = {
@@ -1610,6 +1612,7 @@ message;`,
       compiledFile: '',
       compiledExternSlots: [],
       compiledRuntimeFiles: [],
+      previewObjectUrls: [],
       runtimeFeatureManifest: {
         features: [],
         canonical: '',
@@ -1681,7 +1684,7 @@ message;`,
     const LARGE_EDITOR_LINE_LIMIT = 2400;
     const HUGE_EDITOR_CHAR_LIMIT = 180 * 1024;
     const PREVIEW_SYNC_DELAY_MS = 2000;
-    const SEED_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~';
+    const SEED_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_~!$@*()[]{}+#';
     let seedInputTimer = null;
     let monacoEditor = null;
     let monacoEditorReady = null;
@@ -2194,6 +2197,24 @@ message;`,
       ['STORE_LOCAL_SMALL', 55],
       ['OBJECT_REST', 56],
       ['YIELD', 57],
+      ['AWAIT', 58],
+      ['RETURN_IF_LOCAL_FALSE', 59],
+      ['JUMP_IF_LOCAL_BINARY_CONST_FALSE', 60],
+      ['RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST', 61],
+      ['STORE_LOCAL_MEMBER_CONST', 62],
+      ['JUMP_IF_TRUE_REG', 63],
+      ['JUMP_IF_LOCAL_BINARY_CONST_TRUE', 64],
+      ['DECLARE_STORE_LOCAL', 65],
+      ['MOVE_JUMP_REG', 66],
+      ['BINARY_REG_REG_JUMP', 67],
+      ['MOVE_JUMP_FALLTHROUGH_REG', 68],
+      ['BINARY_REG_REG_JUMP_FALLTHROUGH', 69],
+      ['MEMBER_LOCAL_CONST', 70],
+      ['BINARY_LOCAL_CONST', 71],
+      ['MEMBER_LOCAL', 72],
+      ['CALL_LOCAL_0', 73],
+      ['CALL_LOCAL_1', 74],
+      ['CALL_LOCAL_2', 75],
     ].map(([name, code]) => ({ name, code }));
 
     state.opcodeRows = defaultOpcodeRows.map((row) => ({ ...row }));
@@ -3205,36 +3226,48 @@ message;`,
       return Array.from(bytes, (byte) => byte.toString()).join(', ');
     }
 
-    function runtimeLoaderModuleCode() {
-      const maxCallDepth = readPositiveInt(maxCallDepthInput.value, 128);
-      const maxRecursiveCallDepth = readPositiveInt(maxRecursiveDepthInput.value, 8);
-      return `// JS VM multi-bin runtime loader.
-// Keep this file next to manifest.json, js_vm_runtime.js and js_vm_runtime_bg.wasm.
+    function runtimeEnvBrowserModuleCode(options = {}) {
+      const maxCallDepth = readPositiveInt(maxCallDepthInput.value, 2048);
+      const maxRecursiveCallDepth = readPositiveInt(maxRecursiveDepthInput.value, 128);
+      const maxExecutionSteps = readPositiveInt(options.maxExecutionSteps, 2000000);
+      const runtimeJs = options.runtimeJs || './js_vm_runtime.js';
+      const runtimeWasm = options.runtimeWasm || './js_vm_runtime_bg.wasm';
+      return `// JS VM browser environment package.
 import init, {
-  js_execute_bytes_with_seed,
-  js_execute_bytes_with_seed_and_limits,
-} from './js_vm_runtime.js';
+  js_execute_module_bytes_with_seed,
+  js_execute_module_bytes_with_seed_and_runtime_limits,
+  js_execute_void_bytes_with_seed,
+  js_execute_void_bytes_with_seed_and_runtime_limits,
+} from ${JSON.stringify(runtimeJs)};
 
 const maxCallDepth = ${JSON.stringify(maxCallDepth)};
 const maxRecursiveCallDepth = ${JSON.stringify(maxRecursiveCallDepth)};
+const maxExecutionSteps = ${JSON.stringify(maxExecutionSteps)};
+let runtimeReady;
 
-async function loadJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(\`failed to load \${url}: \${response.status} \${response.statusText}\`);
-  }
-  return response.json();
+if (typeof globalThis.__jsVmHostLog !== 'function') {
+  globalThis.__jsVmHostLog = (level, message) => {
+    const method = console && typeof console[level] === 'function' ? console[level] : console.log;
+    method.call(console, message);
+  };
 }
 
-async function loadBin(url) {
-  const response = await fetch(url);
+function ensureRuntime() {
+  if (!runtimeReady) {
+    runtimeReady = init({ module_or_path: new URL(${JSON.stringify(runtimeWasm)}, import.meta.url) });
+  }
+  return runtimeReady;
+}
+
+export async function loadBin(url) {
+  const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) {
     throw new Error(\`failed to load \${url}: \${response.status} \${response.statusText}\`);
   }
   return new Uint8Array(await response.arrayBuffer());
 }
 
-function resolveExternal(name) {
+export function resolveExternal(name) {
   const parts = String(name).split('.');
   let current = globalThis;
   for (const part of parts) {
@@ -3244,43 +3277,96 @@ function resolveExternal(name) {
   return current;
 }
 
-globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {};
-
-await init(new URL('./js_vm_runtime_bg.wasm', import.meta.url));
-const manifest = await loadJson(new URL('./manifest.json', import.meta.url));
-const execute = typeof js_execute_bytes_with_seed_and_limits === 'function'
-  ? (bytes, seed, externs) => js_execute_bytes_with_seed_and_limits(
-    bytes,
-    seed,
-    externs,
-    maxCallDepth,
-    maxRecursiveCallDepth,
-  )
-  : (bytes, seed, externs) => js_execute_bytes_with_seed(bytes, seed, externs);
-
-for (const module of manifest.modules) {
-  const bytes = await loadBin(new URL(module.bin, import.meta.url));
-  const externs = module.externs.map(resolveExternal);
-  module.result = execute(bytes, module.seed, externs);
+export async function ready() {
+  await ensureRuntime();
 }
 
-console.log('[js-vm]', {
-  entry: manifest.entry,
-  modules: manifest.modules.length,
-  results: manifest.modules.map((module) => ({ file: module.file, result: module.result })),
-});
+function assertReady() {
+  if (!runtimeReady) {
+    throw new Error('JS VM runtime is not initialized; call ready() before execute()');
+  }
+}
 
-export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
+export function executeScript(bytes, seed, externs = []) {
+  assertReady();
+  const run = typeof js_execute_void_bytes_with_seed_and_runtime_limits === 'function'
+    ? js_execute_void_bytes_with_seed_and_runtime_limits
+    : js_execute_void_bytes_with_seed;
+  if (run === js_execute_void_bytes_with_seed_and_runtime_limits) {
+    run(bytes, seed, externs, maxCallDepth, maxRecursiveCallDepth, maxExecutionSteps);
+  } else {
+    run(bytes, seed, externs);
+  }
+}
+
+export function executeModule(bytes, seed, externs = []) {
+  assertReady();
+  const run = typeof js_execute_module_bytes_with_seed_and_runtime_limits === 'function'
+    ? js_execute_module_bytes_with_seed_and_runtime_limits
+    : js_execute_module_bytes_with_seed;
+  if (run === js_execute_module_bytes_with_seed_and_runtime_limits) {
+    return run(bytes, seed, externs, maxCallDepth, maxRecursiveCallDepth, maxExecutionSteps);
+  }
+  return run(bytes, seed, externs);
+}
+
+export const execute = executeModule;
+
+await ready();`;
     }
 
-    function previewHtmlWithRuntimeLoader() {
-      const preview = state.files['index.html'];
-      const html = preview?.content || '<!doctype html><div id="app"></div>';
-      const script = '<script type="module" src="./js-vm-loader.js"></' + 'script>';
+    function moduleScriptTag(scriptSource) {
+      return scriptSource.startsWith('blob:')
+        ? '<script type="module">import ' + JSON.stringify(scriptSource) + ';</' + 'script>'
+        : '<script type="module" src="' + escapeHtml(scriptSource) + '"></' + 'script>';
+    }
+
+    function appendModuleScriptToHtml(html, script) {
       if (/<\/body>/i.test(html)) {
         return html.replace(/<\/body>/i, `  ${script}\n</body>`);
       }
       return `${html}\n${script}\n`;
+    }
+
+    function tagAttrValue(tag, name) {
+      const pattern = new RegExp(`${name}\\s*=\\s*(['"])(.*?)\\1`, 'i');
+      return tag.match(pattern)?.[2] || '';
+    }
+
+    function tagHasModuleType(tag) {
+      return tagAttrValue(tag, 'type').toLowerCase() === 'module';
+    }
+
+    function removeJsModulepreloadLinks(html) {
+      return html.replace(/<link\b[^>]*>/gi, (tag) => {
+        const rel = tagAttrValue(tag, 'rel').toLowerCase();
+        const href = tagAttrValue(tag, 'href').split(/[?#]/)[0];
+        return rel === 'modulepreload' && /\.(m?js|ts)$/i.test(href) ? '' : tag;
+      });
+    }
+
+    function replaceExistingJsModuleScripts(html, script) {
+      let replaced = false;
+      const next = html.replace(/<script\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1[^>]*>\s*<\/script>/gi, (tag, _quote, src) => {
+        const path = String(src).split(/[?#]/)[0];
+        if (!tagHasModuleType(tag) || !/\.(m?js|ts)$/i.test(path)) return tag;
+        if (replaced) return '';
+        replaced = true;
+        return script;
+      });
+      return { html: next, replaced };
+    }
+
+    function packageHtmlWithEntry(entrySource) {
+      const preview = state.files['index.html'];
+      const html = removeJsModulepreloadLinks(preview?.content || '<!doctype html><div id="app"></div>');
+      const script = moduleScriptTag(entrySource);
+      const replaced = replaceExistingJsModuleScripts(html, script);
+      return replaced.replaced ? replaced.html : appendModuleScriptToHtml(html, script);
+    }
+
+    function previewHtmlWithEntry(entrySource) {
+      return packageHtmlWithEntry(entrySource);
     }
 
     function encodingSeedFromCurrentRowsOnly(bytes = new Uint8Array()) {
@@ -3297,29 +3383,159 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       return `${prefix}/${normalizeVirtualPath(file)}${suffix}`;
     }
 
-    function compileRuntimePackageFiles() {
+    function replaceVirtualExtension(file, extension) {
+      const normalized = normalizeVirtualPath(file);
+      const dot = normalized.lastIndexOf('.');
+      return dot >= 0
+        ? `${normalized.slice(0, dot)}.${extension}`
+        : `${normalized}.${extension}`;
+    }
+
+    function moduleJsPath(file) {
+      return replaceVirtualExtension(file, 'js');
+    }
+
+    function moduleBinPath(file) {
+      return replaceVirtualExtension(file, 'bin');
+    }
+
+    function relativeImportSpecifier(fromFile, toFile) {
+      const fromDir = dirname(normalizeVirtualPath(fromFile));
+      const fromParts = fromDir ? fromDir.split('/') : [];
+      const toParts = normalizeVirtualPath(toFile).split('/').filter(Boolean);
+      let common = 0;
+      while (
+        common < fromParts.length
+        && common < toParts.length
+        && fromParts[common] === toParts[common]
+      ) {
+        common += 1;
+      }
+      const rel = [];
+      for (let index = common; index < fromParts.length; index += 1) {
+        rel.push('..');
+      }
+      rel.push(...toParts.slice(common));
+      const joined = rel.join('/');
+      return joined.startsWith('.') ? joined : `./${joined}`;
+    }
+
+    function seedCacheVersion(seed) {
+      return String(seed || '')
+        .split('-')[1]
+        ?.replace(/[^A-Za-z0-9]/g, '')
+        .slice(0, 32) || '';
+    }
+
+    function analyzeVirtualModuleSource(source) {
+      return js_analyze_module_source(source);
+    }
+
+    function moduleImportRewrites(file, replacementForResolved) {
+      const source = state.files[file]?.content || '';
+      let analysis;
+      try {
+        analysis = analyzeVirtualModuleSource(source);
+      } catch (_err) {
+        analysis = { imports: [], dynamicImports: [] };
+      }
+      return [
+        ...(analysis.imports || []).map((item) => item.specifier),
+        ...(analysis.dynamicImports || []),
+      ]
+        .filter((specifier, index, all) => specifier && all.indexOf(specifier) === index)
+        .map((specifier) => {
+          const resolved = resolveVirtualImport(file, specifier);
+          if (!resolved || !state.files[resolved] || state.files[resolved].type !== 'js') {
+            return null;
+          }
+          const replacement = replacementForResolved(resolved, specifier);
+          return replacement ? { specifier, replacement } : null;
+        })
+        .filter(Boolean);
+    }
+
+    function compilePackagedVirtualFiles(options = {}) {
       saveActiveFile();
-      renderPreviewHtml();
-      const ordered = virtualModuleOrder(state.entryFile);
+      const preview = options.preview === true;
+      const ordered = virtualModuleOrder(state.entryFile, { includeAll: !preview });
       const baseSeed = encodingSeedFromCurrentRowsOnly();
       const modules = [];
+      const objectUrls = [];
+      const wrapperUrls = new Map();
+      const previewEnvSpecifier = preview
+        ? createPreviewObjectUrl(
+          runtimeEnvBrowserModuleCode({
+            runtimeJs: new URL('./pkg/executor/js_vm_runtime.js?v=jsvalue-runtime', window.location.href).href,
+            runtimeWasm: new URL('./pkg/executor/js_vm_runtime_bg.wasm?v=jsvalue-runtime', window.location.href).href,
+          }),
+          'text/javascript;charset=utf-8',
+          objectUrls,
+        )
+        : './js_vm_env_browser.js';
       for (const file of ordered) {
-        const source = transformVirtualBinModule(file);
-        const compiler = new Compiler(source);
+        const source = state.files[file].content;
+        const sourcePath = moduleJsPath(file);
+        const bin = moduleBinPath(file);
+        const envSpecifier = preview
+          ? previewEnvSpecifier
+          : relativeImportSpecifier(sourcePath, 'js_vm_env_browser.js');
+        const importRewrites = moduleImportRewrites(file, (resolved) => {
+          if (preview) return wrapperUrls.get(resolved);
+          return relativeImportSpecifier(sourcePath, moduleJsPath(resolved));
+        });
+        const prepared = js_package_module_source(source, {
+          sourceFile: file,
+          wrapperPath: sourcePath,
+          binPath: bin,
+          seed: '',
+          envSpecifier,
+          binSpecifier: preview ? './pending.bin' : relativeImportSpecifier(sourcePath, bin),
+          importRewrites,
+          externSlots: [],
+        });
+        const compiler = new Compiler(prepared.vmSource);
         const externs = compiler.extern_slots();
         const artifact = compiler.to_bytecode_artifact(baseSeed, externs);
         const runtimeFeatureManifest = parseRuntimeFeatureManifest(compiler, { compactErrors: true });
         const bytes = new Uint8Array(artifact.bytes());
+        const sourceMap = artifact.source_map();
         const seed = js_encoding_seed_for_seed_and_bytes(baseSeed, bytes);
+        const binVersion = seedCacheVersion(seed);
+        const binSpecifier = preview
+          ? createPreviewObjectUrl(bytes, 'application/octet-stream', objectUrls)
+          : `${relativeImportSpecifier(sourcePath, bin)}${binVersion ? `?v=${binVersion}` : ''}`;
+        const packaged = js_package_module_source(source, {
+          sourceFile: file,
+          wrapperPath: sourcePath,
+          binPath: bin,
+          seed,
+          envSpecifier,
+          binSpecifier,
+          importRewrites,
+          externSlots: externs,
+        });
+        const wrapperSource = packaged.wrapperSource;
+        const wrapperUrl = preview
+          ? createPreviewObjectUrl(wrapperSource, 'text/javascript;charset=utf-8', objectUrls)
+          : '';
+        if (preview) {
+          wrapperUrls.set(file, wrapperUrl);
+        }
         artifact.free();
         compiler.free();
         recordRuntimeFeatureManifest(file, runtimeFeatureManifest);
         modules.push({
           file,
           source,
-          bin: packagePathForVirtualFile('bytecode', file, '.bin'),
-          sourcePath: packagePathForVirtualFile('sources', file),
+          vmSource: prepared.vmSource,
+          wrapperSource,
+          wrapperUrl,
+          bin,
+          sourceMap: `${bin}.map`,
+          sourcePath,
           bytes,
+          sourceMapContent: sourceMap,
           seed,
           externs,
           runtimeFeatures: runtimeFeatureManifest.features,
@@ -3329,10 +3545,14 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       }
       state.compiledRuntimeFiles = modules;
       return {
+        entryUrl: preview ? wrapperUrls.get(state.entryFile) : '',
+        objectUrls,
         manifest: {
           format: 'js-vm-runtime-package',
-          version: 1,
+          version: 2,
+          allJavaScriptCompiledToBin: true,
           entry: state.entryFile,
+          entrySource: moduleJsPath(state.entryFile),
           preview: 'index.html',
           moduleCount: modules.length,
           runtimeFeatures: Array.from(new Set(
@@ -3341,6 +3561,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
           modules: modules.map((module) => ({
             file: module.file,
             bin: module.bin,
+            sourceMap: module.sourceMap,
             source: module.sourcePath,
             seed: module.seed,
             externs: module.externs,
@@ -3351,6 +3572,26 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         },
         modules,
       };
+    }
+
+    function compileRuntimePackageFiles() {
+      return compilePackagedVirtualFiles({ preview: false });
+    }
+
+    function createPreviewObjectUrl(content, type, urls) {
+      const blob = content instanceof Uint8Array
+        ? new Blob([content], { type })
+        : new Blob([String(content)], { type });
+      const url = URL.createObjectURL(blob);
+      urls.push(url);
+      return url;
+    }
+
+    function clearPreviewObjectUrls() {
+      for (const url of state.previewObjectUrls) {
+        URL.revokeObjectURL(url);
+      }
+      state.previewObjectUrls = [];
     }
 
     async function downloadTextFile(filename, text) {
@@ -3415,8 +3656,9 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
     async function downloadRuntimePackage() {
       try {
         const runtimePackage = compileRuntimePackageFiles();
-        const loaderCode = runtimeLoaderModuleCode();
-        const script = '<script type="module" src="./js-vm-loader.js"></' + 'script>';
+        const envCode = runtimeEnvBrowserModuleCode();
+        const entrySource = runtimePackage.manifest.entrySource || moduleJsPath(state.entryFile);
+        const script = '<script type="module" src="./' + entrySource + '"></' + 'script>';
         const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
         const copied = await copyRunnerScript(script);
         const [jsVmRuntime, jsVmRuntimeBg] = await Promise.all([
@@ -3426,12 +3668,13 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         const zip = new JSZip()
         zip.file('js_vm_runtime.js', jsVmRuntime.text())
         zip.file('js_vm_runtime_bg.wasm', jsVmRuntimeBg.arrayBuffer())
-        zip.file('index.html', previewHtmlWithRuntimeLoader())
-        zip.file('js-vm-loader.js', loaderCode)
+        zip.file('js_vm_env_browser.js', envCode)
         zip.file('manifest.json', JSON.stringify(runtimePackage.manifest, null, 2))
+        zip.file('index.html', previewHtmlWithEntry(`./${entrySource}`))
         for (const module of runtimePackage.modules) {
-          zip.file(module.sourcePath, state.files[module.file].content)
+          zip.file(module.sourcePath, module.wrapperSource)
           zip.file(module.bin, module.bytes)
+          zip.file(module.sourceMap, module.sourceMapContent)
         }
         // 创建下载链接
         const zipBlob = await zip.generateAsync({
@@ -3450,7 +3693,7 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         // 清理
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
-        appendLog('compile', `Downloaded runtime pkg with ${runtimePackage.modules.length} bytecode bins`);
+        appendLog('compile', `Downloaded runtime pkg with ${runtimePackage.modules.length} wrapper/bin pair(s)`);
         if (copied) {
           appendLog('compile', 'Copied multi-bin loader script to clipboard');
           showToast('Runtime ready');
@@ -4084,9 +4327,11 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       selectVirtualFile(name);
     }
 
-    function renderPreviewHtml() {
+    function renderPreviewHtml(entrySource = '') {
       const preview = state.files['index.html'];
-      const html = preview?.content || '<!doctype html><div id="app"></div>';
+      const html = entrySource
+        ? previewHtmlWithEntry(entrySource)
+        : preview?.content || '<!doctype html><div id="app"></div>';
       const doc = previewFrame.contentDocument;
       if (!doc) {
         previewFrame.srcdoc = html;
@@ -4103,16 +4348,36 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
       if (file?.type === 'html') {
         return {
           file: state.activeFile,
-          source: bundleVirtualJavaScript(state.entryFile),
+          source: packagedVmSourceForFile(state.entryFile),
         };
       }
       return {
         file: state.activeFile,
-        source: bundleVirtualJavaScript(state.activeFile),
+        source: packagedVmSourceForFile(state.activeFile),
       };
     }
 
-    function virtualModuleOrder(entryFile) {
+    function packagedVmSourceForFile(file) {
+      const sourceFile = normalizeVirtualPath(file);
+      const source = state.files[sourceFile]?.content || '';
+      const sourcePath = moduleJsPath(sourceFile);
+      const bin = moduleBinPath(sourceFile);
+      const packaged = js_package_module_source(source, {
+        sourceFile,
+        wrapperPath: sourcePath,
+        binPath: bin,
+        seed: '',
+        envSpecifier: relativeImportSpecifier(sourcePath, 'js_vm_env_browser.js'),
+        binSpecifier: relativeImportSpecifier(sourcePath, bin),
+        importRewrites: moduleImportRewrites(sourceFile, (resolved) => (
+          relativeImportSpecifier(sourcePath, moduleJsPath(resolved))
+        )),
+        externSlots: [],
+      });
+      return packaged.vmSource;
+    }
+
+    function virtualModuleOrder(entryFile, options = {}) {
       const ordered = [];
       const seen = new Set();
       const visit = (file) => {
@@ -4129,183 +4394,39 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         }
         ordered.push(normalized);
       };
-      visit(entryFile);
+      const entry = normalizeVirtualPath(entryFile);
+      visit(entry);
+      if (options.includeAll) {
+        Object.entries(state.files)
+          .filter(([, file]) => file.type === 'js')
+          .map(([name]) => normalizeVirtualPath(name))
+          .sort((left, right) => left.localeCompare(right))
+          .forEach(visit);
+        const entryIndex = ordered.indexOf(entry);
+        if (entryIndex >= 0) {
+          ordered.splice(entryIndex, 1);
+          ordered.push(entry);
+        }
+      }
       return ordered;
     }
 
-    function bundleVirtualJavaScript(entryFile) {
-      const ordered = virtualModuleOrder(entryFile);
-      const moduleNames = new Map();
-      const moduleName = (file) => {
-        if (!moduleNames.has(file)) {
-          moduleNames.set(file, `__vm_module_${moduleNames.size}`);
-        }
-        return moduleNames.get(file);
-      };
-      const chunks = ordered.map((file) => transformVirtualModule(file, moduleName));
-      return [
-        `// Bundled virtual files: ${ordered.join(', ')}`,
-        ...chunks,
-        `// Entry: ${entryFile}`,
-        `${moduleName(entryFile)};`,
-      ].join('\n\n');
-    }
-
     function localImportSpecifiers(source) {
-      const specifiers = [];
-      const importRe = /^\s*import(?:\s+[\s\S]*?\s+from)?\s*["']([^"']+)["'];?\s*$/gm;
-      for (const match of source.matchAll(importRe)) {
-        specifiers.push(match[1]);
+      try {
+        const analysis = analyzeVirtualModuleSource(source);
+        return [
+          ...(analysis.imports || []).map((item) => item.specifier),
+          ...(analysis.dynamicImports || []),
+        ]
+          .filter(Boolean);
+      } catch (_err) {
+        const specifiers = [];
+        const importRe = /^\s*import(?:\s+[\s\S]*?\s+from)?\s*["']([^"']+)["'];?\s*$/gm;
+        for (const match of source.matchAll(importRe)) {
+          specifiers.push(match[1]);
+        }
+        return specifiers;
       }
-      return specifiers;
-    }
-
-    function transformVirtualModule(file, moduleName) {
-      const source = state.files[file].content;
-      const exportsName = `__vm_exports_${moduleName(file).replace('__vm_module_', '')}`;
-      const deferredExports = [];
-      const lines = source.split(/\r?\n/);
-      const out = [`const ${moduleName(file)} = (() => {`, `  const ${exportsName} = {};`];
-      for (const line of lines) {
-        const importMatch = line.match(/^\s*import\s+([\s\S]+?)\s+from\s+["']([^"']+)["'];?\s*$/);
-        const sideEffectImportMatch = line.match(/^\s*import\s+["']([^"']+)["'];?\s*$/);
-        if (importMatch) {
-          const resolved = resolveVirtualImport(file, importMatch[2]);
-          if (!resolved) {
-            out.push(`  ${line}`);
-          } else {
-            out.push(...importBindingLines(importMatch[1].trim(), moduleName(resolved)).map((value) => `  ${value}`));
-          }
-          continue;
-        }
-        if (sideEffectImportMatch) {
-          const resolved = resolveVirtualImport(file, sideEffectImportMatch[1]);
-          if (!resolved) out.push(`  ${line}`);
-          continue;
-        }
-        const exportDecl = line.match(/^(\s*)export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
-        if (exportDecl) {
-          out.push(`${exportDecl[1]}${exportDecl[2]} ${exportDecl[3]}${exportDecl[4]}`);
-          out.push(`${exportDecl[1]}${exportsName}[${JSON.stringify(exportDecl[3])}] = ${exportDecl[3]};`);
-          continue;
-        }
-        const exportNamedFn = line.match(/^(\s*)export\s+(function|class)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
-        if (exportNamedFn) {
-          out.push(`${exportNamedFn[1]}${exportNamedFn[2]} ${exportNamedFn[3]}${exportNamedFn[4]}`);
-          deferredExports.push(`${exportsName}[${JSON.stringify(exportNamedFn[3])}] = ${exportNamedFn[3]};`);
-          continue;
-        }
-        const exportDefault = line.match(/^(\s*)export\s+default\s+([\s\S]+?);?\s*$/);
-        if (exportDefault) {
-          out.push(`${exportDefault[1]}const __vm_default = ${exportDefault[2].replace(/;$/, '')};`);
-          out.push(`${exportDefault[1]}${exportsName}.default = __vm_default;`);
-          continue;
-        }
-        const exportList = line.match(/^\s*export\s+\{([\s\S]+)\};?\s*$/);
-        if (exportList) {
-          out.push(...exportList[1].split(',').map((part) => {
-            const [local, exported = local] = part.trim().split(/\s+as\s+/);
-            return `  ${exportsName}[${JSON.stringify(exported.trim())}] = ${local.trim()};`;
-          }));
-          continue;
-        }
-        out.push(`  ${line}`);
-      }
-      out.push(...deferredExports.map((value) => `  ${value}`));
-      out.push(`  return ${exportsName};`);
-      out.push('})();');
-      return out.join('\n');
-    }
-
-    function transformVirtualBinModule(file) {
-      const source = state.files[file].content;
-      const moduleKey = JSON.stringify(file);
-      const exportsName = '__vm_exports';
-      const deferredExports = [];
-      const lines = source.split(/\r?\n/);
-      const out = [
-        'globalThis.__JS_VM_MODULES__ = globalThis.__JS_VM_MODULES__ || {};',
-        `globalThis.__JS_VM_MODULES__[${moduleKey}] = (() => {`,
-        `  const ${exportsName} = {};`,
-      ];
-      for (const line of lines) {
-        const importMatch = line.match(/^\s*import\s+([\s\S]+?)\s+from\s+["']([^"']+)["'];?\s*$/);
-        const sideEffectImportMatch = line.match(/^\s*import\s+["']([^"']+)["'];?\s*$/);
-        if (importMatch) {
-          const resolved = resolveVirtualImport(file, importMatch[2]);
-          if (!resolved) {
-            out.push(`  ${line}`);
-          } else {
-            out.push(...importBindingLines(
-              importMatch[1].trim(),
-              `globalThis.__JS_VM_MODULES__[${JSON.stringify(resolved)}]`,
-            ).map((value) => `  ${value}`));
-          }
-          continue;
-        }
-        if (sideEffectImportMatch) {
-          const resolved = resolveVirtualImport(file, sideEffectImportMatch[1]);
-          if (!resolved) out.push(`  ${line}`);
-          continue;
-        }
-        const exportDecl = line.match(/^(\s*)export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
-        if (exportDecl) {
-          out.push(`${exportDecl[1]}${exportDecl[2]} ${exportDecl[3]}${exportDecl[4]}`);
-          out.push(`${exportDecl[1]}${exportsName}[${JSON.stringify(exportDecl[3])}] = ${exportDecl[3]};`);
-          continue;
-        }
-        const exportNamedFn = line.match(/^(\s*)export\s+(function|class)\s+([A-Za-z_$][\w$]*)([\s\S]*)$/);
-        if (exportNamedFn) {
-          out.push(`${exportNamedFn[1]}${exportNamedFn[2]} ${exportNamedFn[3]}${exportNamedFn[4]}`);
-          deferredExports.push(`${exportsName}[${JSON.stringify(exportNamedFn[3])}] = ${exportNamedFn[3]};`);
-          continue;
-        }
-        const exportDefault = line.match(/^(\s*)export\s+default\s+([\s\S]+?);?\s*$/);
-        if (exportDefault) {
-          out.push(`${exportDefault[1]}const __vm_default = ${exportDefault[2].replace(/;$/, '')};`);
-          out.push(`${exportDefault[1]}${exportsName}.default = __vm_default;`);
-          continue;
-        }
-        const exportList = line.match(/^\s*export\s+\{([\s\S]+)\};?\s*$/);
-        if (exportList) {
-          out.push(...exportList[1].split(',').map((part) => {
-            const [local, exported = local] = part.trim().split(/\s+as\s+/);
-            return `  ${exportsName}[${JSON.stringify(exported.trim())}] = ${local.trim()};`;
-          }));
-          continue;
-        }
-        out.push(`  ${line}`);
-      }
-      out.push(...deferredExports.map((value) => `  ${value}`));
-      out.push(`  return ${exportsName};`);
-      out.push('})();');
-      out.push(`globalThis.__JS_VM_MODULES__[${moduleKey}];`);
-      return out.join('\n');
-    }
-
-    function importBindingLines(clause, moduleVariable) {
-      const lines = [];
-      if (clause.startsWith('* as ')) {
-        lines.push(`const ${clause.slice(5).trim()} = ${moduleVariable};`);
-        return lines;
-      }
-      const namedStart = clause.indexOf('{');
-      if (namedStart >= 0) {
-        const defaultPart = clause.slice(0, namedStart).replace(/,$/, '').trim();
-        const namedPart = clause.slice(namedStart + 1, clause.lastIndexOf('}'));
-        if (defaultPart) {
-          lines.push(`const ${defaultPart} = ${moduleVariable}.default;`);
-        }
-        for (const part of namedPart.split(',')) {
-          const item = part.trim();
-          if (!item) continue;
-          const [imported, local = imported] = item.split(/\s+as\s+/);
-          lines.push(`const ${local.trim()} = ${moduleVariable}[${JSON.stringify(imported.trim())}];`);
-        }
-        return lines;
-      }
-      lines.push(`const ${clause.trim()} = ${moduleVariable}.default;`);
-      return lines;
     }
 
     function requestInfo(input, init) {
@@ -4370,24 +4491,15 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
         setEditorSyncState('running');
         await waitForNextPaint();
         saveActiveFile();
-        renderPreviewHtml();
         appendLog('compile', 'Syncing preview');
-        const source = bundleVirtualJavaScript(state.entryFile);
-        compiler = new Compiler(source);
-        const externs = compiler.extern_slots();
-        const configSeed = encodingSeedFromCurrentRowsOnly();
-        artifact = compiler.to_bytecode_artifact(configSeed, externs);
-        const bytes = artifact.bytes();
-        const seed = js_encoding_seed_for_seed_and_bytes(configSeed, bytes);
-        const run = executeBytecode(bytes, seed, externs);
-        state.runDuration = run.duration || performance.now() - started;
+        const runtimePackage = compilePackagedVirtualFiles({ preview: true });
+        clearPreviewObjectUrls();
+        state.previewObjectUrls = runtimePackage.objectUrls;
+        renderPreviewHtml(runtimePackage.entryUrl);
+        state.runDuration = performance.now() - started;
         renderLogs();
-        setStatus(run.ok ? 'ready' : 'error', run.ok ? 'Preview synced' : 'Preview runtime error');
-        if (run.ok) {
-          setEditorSyncState('done');
-        } else {
-          setEditorSyncState('waiting');
-        }
+        setStatus('ready', 'Preview synced');
+        setEditorSyncState('done');
       } catch (err) {
         appendLog('error', `Preview Error\n${formatLogValue(err)}`);
         state.runDuration = performance.now() - started;
@@ -4453,8 +4565,8 @@ export default globalThis.__JS_VM_MODULES__[manifest.entry];`;
             `extern slot mismatch: window resolved to undefined at slot ${windowSlot}; slots=${JSON.stringify(externSlots)}`,
           );
         }
-        const maxCallDepth = readPositiveInt(maxCallDepthInput.value, 128);
-        const maxRecursiveCallDepth = readPositiveInt(maxRecursiveDepthInput.value, 8);
+        const maxCallDepth = readPositiveInt(maxCallDepthInput.value, 2048);
+        const maxRecursiveCallDepth = readPositiveInt(maxRecursiveDepthInput.value, 128);
         const result = typeof js_execute_bytes_with_seed_and_limits === 'function'
           ? js_execute_bytes_with_seed_and_limits(
             bytes,

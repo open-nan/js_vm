@@ -138,6 +138,64 @@ npm test
 
 任意一步失败都会阻止 commit。
 
+## Source Map Debug
+
+编译器会在 `CompilerArtifact` 上暴露 `source_map()`，也可以直接调用 `compiler.source_map(seed, externSlots, sourceFile)` 生成 Source Map v3 兼容 JSON。当前映射以 bytecode `pc` 为核心，额外在 `x_js_vm.sourceSpans`、`x_js_vm.pcRanges`、`x_js_vm.pcOps` 中记录源码 span、byte range、opcode 和函数段，便于把运行时错误里的 `pc` 反查到源码。
+
+执行器的错误定位入口由 `source-map` feature 控制，默认 slim 运行包不包含它。需要错误 pc 映射包时可以单独构建：
+
+```bash
+npm run runtime:features -- pack --features=full,source-map
+```
+
+该包会导出 `js_execute_bytes_with_seed_debug()` / `js_execute_bytes_with_seed_debug_and_runtime_limits()`，返回 `{ ok, stage, value?, error?, stack }`，其中 `stack` 是可与 `x_js_vm.pcRanges` 对齐的 `pc` 列表。
+
+断点调试由 `debugger` feature 控制，`debugger` 会自动包含 `source-map`：
+
+```bash
+npm run runtime:features -- pack --features=full,debugger
+```
+
+编译器生成的分文件 wrapper 会导出 `__jsVmDebugSession(breakpoints)`。浏览器控制台中可以这样定位源码：
+
+```js
+const debug = await import("./example.js");
+const session = await debug.__jsVmDebugSession([{ line: 10, column: 0 }]);
+session.inspect();
+session.resume();
+session.step();
+session.frame(12);
+```
+
+`breakpoints` 可以传 `pc` 数字、`{ pc }`，或 `{ line, column }`。返回事件会包含 `pc`、`reason`、`registers`、`callStack` 和映射后的 `frame`。当前 DebugSession 主要覆盖顶层执行流；函数帧内的暂停/恢复会在后续 call-frame continuation 中继续完善。
+
+## Runtime Perf
+
+`npm run perf` 是运行时性能分析入口。它会使用 `runtime-profile` 版 Node executor 执行 bytecode，输出多轮耗时、p50/p90、opcode 热度、hot pc、HostBridge 计数，并在存在 `.bin.map` 时把 hot pc 映射到源码位置；默认还会调用 `dump-bytecode` 展示热点附近的 bytecode。
+
+对 CLI/Workbench 生成的 wrapper 可以直接传 `.js`，脚本会自动解析 seed、bin、extern slots 和 source map；首次运行如果 `pkg/executor-node-profile` 不存在，可以追加 `--build-profile` 自动构建 profile executor：
+
+```bash
+npm run perf -- --wrapper /private/tmp/nan-blogs-vm-optimized/assets/app-9LyPQIdV.js --steps=1000000 --repeat=10 --build-profile
+```
+
+也可以手动传入 `.bin + seed`：
+
+```bash
+npm run perf -- --bin ./dist/app.bin --seed JSTKSEED2-... --externs Object,Array,window --no-dump
+```
+
+常用参数：
+
+```text
+--steps <n>      每轮 VM 最大执行步数，默认 1000000
+--repeat <n>     统计轮数，默认 10
+--warmup <n>     预热轮数，默认 1
+--top <n>        输出 top opcode / hot pc 数量，默认 20
+--dump-top <n>   自动 dump 前 n 个 hot pc 附近 bytecode，默认 5
+--json <file>    写出结构化性能报告
+```
+
 ## Build CLI
 
 ```bash

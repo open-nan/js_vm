@@ -1,4 +1,4 @@
-// @expect [object]
+// @expect [object Object]
 // @module-expect value=7
 // @seeds 8
 

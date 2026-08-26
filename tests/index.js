@@ -135,7 +135,7 @@ async function runCorpusSuite() {
     log.jest('RUN', name, `${progress} md5=${fileMd5}`);
     let result;
     try {
-      result = runCorpusCase(vm, file);
+      result = await runCorpusCase(vm, file);
     } catch (err) {
       log.jest('FAIL', name, `${progress} md5=${fileMd5}`);
       throw err;
@@ -156,17 +156,30 @@ async function runCorpusSuite() {
   log.finish(`${files.length} test files, ${runs} compile/encode/run checks passed`);
 }
 
-function runCorpusCase(vm, file) {
+async function runCorpusCase(vm, file) {
   const started = Date.now();
   const { rawSource, source, meta } = readCorpusCase(file);
   const md5 = log.md5Text(rawSource);
   const result = runVmSource(vm, source, {
     seeds: meta.seeds ?? DEFAULT_RANDOM_SEEDS,
     baseSeed: BASE_SEED,
-    expect: meta.expect,
+    expect: meta.expectAsync !== undefined ? undefined : meta.expect,
     moduleExpect: meta.moduleExpect,
     id: relative(file),
+    returnValue: meta.expectAsync !== undefined,
   });
+  if (meta.expectAsync !== undefined) {
+    for (const entry of result.results) {
+      const value = await Promise.resolve(entry.result);
+      if (String(value) !== meta.expectAsync) {
+        throw new Error(
+          `${relative(file)} failed on ${entry.label}: expected async ${JSON.stringify(
+            meta.expectAsync,
+          )}, got ${JSON.stringify(String(value))}\nseed=${entry.seed}`,
+        );
+      }
+    }
+  }
   return {
     md5,
     bytes: Buffer.byteLength(rawSource),
@@ -195,7 +208,7 @@ async function runDifferentialSuite(args) {
     const progress = log.progressText(index + 1, selected.length);
     const name = relative(file);
     const test = readCorpusCase(file);
-    const skipReason = differentialSkipReason(test.source);
+    const skipReason = differentialSkipReason(test);
     if (skipReason) {
       stats.skipped += 1;
       log.jest('SKIP', name, `${progress} reason=${skipReason}`);
@@ -234,7 +247,11 @@ async function runDifferentialSuite(args) {
   }
 }
 
-function differentialSkipReason(source) {
+function differentialSkipReason(test) {
+  const source = test.source;
+  if (test.meta.expectAsync !== undefined) {
+    return 'async observable';
+  }
   if (/\b(?:console|window|fetch|document|localStorage|sessionStorage)\b/.test(source)) {
     return 'host external';
   }

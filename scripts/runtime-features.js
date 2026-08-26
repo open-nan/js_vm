@@ -28,11 +28,16 @@ const FEATURE_ALIASES = {
   'test262-compat': ['test262-eval'],
 };
 
+const FEATURE_IMPLICATIONS = {
+  debugger: ['source-map'],
+};
+
 const KNOWN_FEATURES = [
   ...Object.keys(FEATURE_ALIASES),
   'array-builtins',
   'bigint',
   'compact-errors',
+  'debugger',
   'function-builtins',
   'generator',
   'host-builtins',
@@ -40,13 +45,17 @@ const KNOWN_FEATURES = [
   'object-builtins',
   'proxy',
   'regexp',
+  'source-map',
   'string-builtins',
   'test262-compat',
   'test262-eval',
 ];
 
+const NON_RECURSIVE_FEATURES = new Set(['source-map', 'debugger']);
+
 const CANONICAL_FEATURES = KNOWN_FEATURES
   .filter((feature) => !Object.prototype.hasOwnProperty.call(FEATURE_ALIASES, feature))
+  .filter((feature) => !NON_RECURSIVE_FEATURES.has(feature))
   .sort();
 
 function main() {
@@ -69,12 +78,12 @@ function main() {
     return;
   }
 
-  writeManifest(map, args.out);
   if (args.command === 'pack') {
     buildFeaturePackageByMd5(map, args);
     return;
   }
 
+  writeManifest(map, args.out);
   if (args.command === 'map') {
     printMapSummary(map, args.out);
     return;
@@ -141,17 +150,13 @@ function splitFeatures(value) {
 function createFeatureMap(args) {
   const packages = enumerateFeatureSets(args.includeCompactErrors)
     .slice(args.offset, Number.isFinite(args.limit) ? args.offset + args.limit : undefined)
-    .map((item) => ({
-      ...item,
-      dir: `pkg/runtime-features/${item.packageName}`,
-      js: `pkg/runtime-features/${item.packageName}/js_vm_runtime.js`,
-      wasm: `pkg/runtime-features/${item.packageName}/js_vm_runtime_bg.wasm`,
-    }));
+    .map(featurePackageItem);
   return {
     generatedAt: new Date().toISOString(),
     canonicalFeatures: CANONICAL_FEATURES,
     includeCompactErrors: args.includeCompactErrors,
     aliases: FEATURE_ALIASES,
+    implications: FEATURE_IMPLICATIONS,
     count: packages.length,
     packages,
     byCanonical: Object.fromEntries(packages.map((item) => [item.canonical, item.packageName])),
@@ -185,6 +190,7 @@ function expandFeatures(features) {
       return;
     }
     out.add(feature);
+    for (const implied of FEATURE_IMPLICATIONS[feature] || []) visit(implied);
   };
   for (const feature of features) visit(feature);
   return out;
@@ -230,9 +236,22 @@ function buildFeatureMap(map, args) {
 }
 
 function buildFeaturePackageByMd5(map, args) {
+  if (args.features.length) {
+    const item = featurePackageItem(resolveFeatureSet(args.features));
+    printMapSummary(map, args.out);
+    console.log(`RUN ${item.packageName} ${item.canonical || '<empty>'}`);
+    if (!args.dryRun) {
+      fs.mkdirSync(OUT_ROOT, { recursive: true });
+      buildOne(item, args);
+      writeManifest(map, args.out);
+    }
+    console.log(`OK runtime feature package ${args.dryRun ? 'planned' : 'built'} ${item.packageName}`);
+    return;
+  }
+
   const md5 = normalizePackageMd5(args.md5);
   if (!md5) {
-    throw new Error('pack requires a md5 or package name, for example: pack 1f6c5a7a67ff');
+    throw new Error('pack requires a md5, package name, or --features list, for example: pack 1f6c5a7a67ff');
   }
   const item = map.packages.find((candidate) => candidate.md5 === md5);
   if (!item) {
@@ -248,6 +267,15 @@ function buildFeaturePackageByMd5(map, args) {
     writeManifest(map, args.out);
   }
   console.log(`OK runtime feature package ${args.dryRun ? 'planned' : 'built'} ${item.packageName}`);
+}
+
+function featurePackageItem(item) {
+  return {
+    ...item,
+    dir: `pkg/runtime-features/${item.packageName}`,
+    js: `pkg/runtime-features/${item.packageName}/js_vm_runtime.js`,
+    wasm: `pkg/runtime-features/${item.packageName}/js_vm_runtime_bg.wasm`,
+  };
 }
 
 function normalizePackageMd5(value) {
@@ -342,6 +370,7 @@ function printHelp() {
   node scripts/runtime-features.js build --limit=8
   node scripts/runtime-features.js pack 1f6c5a7a67ff
   node scripts/runtime-features.js pack runtime-feature-1f6c5a7a67ff
+  node scripts/runtime-features.js pack --features=full,debugger
 
 Commands:
   resolve   Normalize one feature set and print its package name.
@@ -372,6 +401,7 @@ if (require.main === module) {
 module.exports = {
   CANONICAL_FEATURES,
   FEATURE_ALIASES,
+  FEATURE_IMPLICATIONS,
   KNOWN_FEATURES,
   createFeatureMap,
   enumerateFeatureSets,

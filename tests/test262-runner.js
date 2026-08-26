@@ -468,8 +468,6 @@ function Test262Error(message) {
   this.name = 'Test262Error';
   this.message = message || '';
 }
-Test262Error.prototype = Object.create(Error.prototype);
-Test262Error.prototype.constructor = Test262Error;
 function $ERROR(message) {
   throw new Test262Error(message);
 }
