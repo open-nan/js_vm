@@ -12,7 +12,7 @@ mod parse;
 pub use compiler::{
     ModuleImportInfo, ModuleImportRewrite, ModuleSourceAnalysis, NativeCompilerArtifact,
     PackagedModuleOptions, PackagedModuleSource, RuntimeFeatureManifest, analyze_module_source,
-    compile_source_to_artifact, compile_source_to_artifact_with_source_file,
+    check_source_syntax, compile_source_to_artifact, compile_source_to_artifact_with_source_file,
     encoding_names_from_seed, encoding_seed_for_seed_and_bytes, package_module_source,
 };
 use js_sys::{Array, Object, Reflect};

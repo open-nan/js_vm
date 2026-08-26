@@ -5097,11 +5097,13 @@ impl BytecodeBuilder {
         }
     }
 
+    #[cfg(feature = "compiler-optimizations")]
     fn remove_resolved_instruction_indexes(&mut self, removed: &BTreeSet<usize>) {
         if removed.is_empty() {
             return;
         }
         self.remove_instruction_indexes(removed);
+        #[cfg(feature = "compiler-optimizations")]
         remap_resolved_jump_targets(&mut self.instructions, removed);
     }
 
@@ -5749,6 +5751,7 @@ fn remap_instruction_boundary(boundary: usize, removed: &BTreeSet<usize>) -> u32
     boundary.saturating_sub(removed_before) as u32
 }
 
+#[cfg(feature = "compiler-optimizations")]
 fn remap_resolved_jump_targets(
     instructions: &mut [BytecodeInstruction],
     removed: &BTreeSet<usize>,
@@ -5797,6 +5800,7 @@ fn remap_resolved_jump_targets(
     }
 }
 
+#[cfg(feature = "compiler-optimizations")]
 fn remap_packed_fallthrough_jump_target(
     instruction: &mut BytecodeInstruction,
     operand_index: usize,

@@ -10,7 +10,7 @@
 
 use js_token_core::{BytecodeModule, EncodingConfig};
 use js_vm_compiler::{
-    ModuleImportRewrite, PackagedModuleOptions, analyze_module_source,
+    ModuleImportRewrite, PackagedModuleOptions, analyze_module_source, check_source_syntax,
     compile_source_to_artifact_with_source_file, package_module_source,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,8 +29,11 @@ const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
     "pkg",
+    "dist",
+    "vendor",
     "js-vm-runtime",
     ".issues",
+    ".tmp",
     ".vendor",
 ];
 const GENERATED_RUNTIME_DIR: &str = "js-vm-runtime";
@@ -76,6 +79,12 @@ struct WasmOptions {
     release: bool,
     /// 是否跳过 wasm-opt 压缩。
     skip_opt: bool,
+}
+
+#[derive(Debug)]
+struct CheckOptions {
+    /// 待检查目录。
+    input: PathBuf,
 }
 
 /// 单个模块输出统计。
@@ -129,6 +138,7 @@ fn run() -> Result<(), String> {
         }
         "wasm" => build_wasm(parse_wasm_options(&args)?),
         "package" => compile_runtime_package(parse_package_options(&args)?),
+        "check" => check_sources(parse_check_options(&args)?),
         "dump-bytecode" => dump_bytecode(&args),
         "all" => {
             let split = args.iter().position(|arg| arg == "--");
@@ -150,6 +160,7 @@ fn print_help() {
             "Usage:",
             "  js-vm wasm [--target web|bundler|nodejs] [--dev] [--skip-opt]",
             "  js-vm package <folder> [--out <dir>] [--entry <file>] [--platform web|node|all] [--clean]",
+            "  js-vm check <folder>",
             "  js-vm dump-bytecode <file.bin> --seed <seed> [--around <pc>]",
             "  js-vm all [wasm options] -- <folder> [package options]",
             "",
@@ -402,6 +413,22 @@ fn parse_platforms(value: &str) -> Result<Vec<Platform>, String> {
         return Err("platform cannot be empty".to_string());
     }
     Ok(platforms)
+}
+
+fn parse_check_options(args: &[String]) -> Result<CheckOptions, String> {
+    let mut input = None;
+    for value in args {
+        if value.starts_with('-') {
+            return Err(format!("unknown check option: {value}"));
+        }
+        if input.is_some() {
+            return Err("expected one input folder".to_string());
+        }
+        input = Some(PathBuf::from(value));
+    }
+    let input = input.unwrap_or_else(|| PathBuf::from("."));
+    let input = absolute_path(&input).map_err(|err| format!("invalid input folder: {err}"))?;
+    Ok(CheckOptions { input })
 }
 
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {
@@ -715,6 +742,441 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
     Ok(())
 }
 
+fn check_sources(options: CheckOptions) -> Result<(), String> {
+    if !options.input.is_dir() {
+        return Err(format!(
+            "check input folder does not exist: {}",
+            options.input.display()
+        ));
+    }
+    let started = Instant::now();
+    let mut files = Vec::new();
+    walk_check_files(&options.input, &options.input, &mut files)?;
+    files.sort();
+
+    let mut stats = BTreeMap::<&'static str, usize>::new();
+    let mut errors = Vec::new();
+    for file in &files {
+        match check_one_file(&options.input, file) {
+            Ok(kind) => {
+                *stats.entry(kind).or_insert(0) += 1;
+            }
+            Err(err) => errors.push(err),
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(format!(
+            "syntax check failed for {} file(s):\n{}",
+            errors.len(),
+            errors.join("\n")
+        ));
+    }
+
+    println!(
+        "OK Checked {} file(s) in {}ms: js/ts={}, html={}, css={}, md={}",
+        files.len(),
+        started.elapsed().as_millis(),
+        stats.get("js/ts").copied().unwrap_or(0),
+        stats.get("html").copied().unwrap_or(0),
+        stats.get("css").copied().unwrap_or(0),
+        stats.get("md").copied().unwrap_or(0),
+    );
+    Ok(())
+}
+
+fn walk_check_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let file_type = entry.file_type().map_err(|err| err.to_string())?;
+        if file_type.is_dir() {
+            if SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            walk_check_files(root, &path, files)?;
+        } else if file_type.is_file() && is_checkable_file(&path) {
+            files.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+fn check_one_file(root: &Path, file: &Path) -> Result<&'static str, String> {
+    let full_path = root.join(file);
+    let source =
+        fs::read_to_string(&full_path).map_err(|err| format!("{}: {err}", file.display()))?;
+    let source_file = file.to_string_lossy();
+    match lower_extension(file).as_deref() {
+        Some("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx") => {
+            check_source_syntax(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            Ok("js/ts")
+        }
+        Some("vue") => {
+            check_html_syntax(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            check_embedded_blocks(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            Ok("html")
+        }
+        Some("html") => {
+            check_html_syntax(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            check_embedded_blocks(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            Ok("html")
+        }
+        Some("css") => {
+            check_css_syntax(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            Ok("css")
+        }
+        Some("md") => {
+            check_markdown_syntax(&source, &source_file)
+                .map_err(|err| format!("{}: {err}", file.display()))?;
+            Ok("md")
+        }
+        _ => Ok("other"),
+    }
+}
+
+fn is_checkable_file(path: &Path) -> bool {
+    matches!(
+        lower_extension(path).as_deref(),
+        Some("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "vue" | "html" | "css" | "md")
+    )
+}
+
+fn lower_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .map(|extension| extension.to_ascii_lowercase())
+}
+
+fn check_embedded_blocks(source: &str, source_file: &str) -> Result<(), String> {
+    for block in raw_tag_blocks(source, "script")? {
+        let attrs = block.attrs.to_ascii_lowercase();
+        if attrs.contains(" src=")
+            || attrs.contains(" type=\"application/json\"")
+            || attrs.contains(" type='application/json'")
+            || attrs.contains(" type=\"importmap\"")
+            || attrs.contains(" type='importmap'")
+            || attrs.contains(" type=\"speculationrules\"")
+            || attrs.contains(" type='speculationrules'")
+        {
+            continue;
+        }
+        let virtual_file = if attrs.contains("lang=\"tsx\"") || attrs.contains("lang='tsx'") {
+            format!("{source_file}:script.tsx")
+        } else if attrs.contains("lang=\"ts\"") || attrs.contains("lang='ts'") {
+            format!("{source_file}:script.ts")
+        } else if attrs.contains("lang=\"jsx\"") || attrs.contains("lang='jsx'") {
+            format!("{source_file}:script.jsx")
+        } else {
+            format!("{source_file}:script.js")
+        };
+        check_source_syntax(block.body, &virtual_file)
+            .map_err(|err| format!("embedded <script> at {}: {err}", block.location))?;
+    }
+    for block in raw_tag_blocks(source, "style")? {
+        check_css_syntax(block.body, source_file)
+            .map_err(|err| format!("embedded <style> at {}: {err}", block.location))?;
+    }
+    Ok(())
+}
+
+struct RawTagBlock<'a> {
+    attrs: &'a str,
+    body: &'a str,
+    location: String,
+}
+
+fn raw_tag_blocks<'a>(source: &'a str, tag: &str) -> Result<Vec<RawTagBlock<'a>>, String> {
+    let lower = source.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}");
+    let mut blocks = Vec::new();
+    let mut cursor = 0;
+    while let Some(offset) = lower[cursor..].find(&open) {
+        let start = cursor + offset;
+        let Some(tag_end) = find_markup_tag_end(source, start) else {
+            return Err(format!("unclosed <{tag}> at {}", line_col(source, start)));
+        };
+        let attrs = &source[start + open.len()..tag_end - 1];
+        if attrs.trim_end().ends_with('/') {
+            cursor = tag_end;
+            continue;
+        }
+        let Some(close_offset) = lower[tag_end..].find(&close) else {
+            return Err(format!("missing </{tag}> for {}", line_col(source, start)));
+        };
+        let body_start = tag_end;
+        let close_start = tag_end + close_offset;
+        let Some(close_end) = find_markup_tag_end(source, close_start) else {
+            return Err(format!(
+                "unclosed </{tag}> at {}",
+                line_col(source, close_start)
+            ));
+        };
+        blocks.push(RawTagBlock {
+            attrs,
+            body: &source[body_start..close_start],
+            location: line_col(source, start),
+        });
+        cursor = close_end;
+    }
+    Ok(blocks)
+}
+
+fn check_html_syntax(source: &str, source_file: &str) -> Result<(), String> {
+    let lower = source.to_ascii_lowercase();
+    let mut stack = Vec::<(String, usize)>::new();
+    let mut cursor = 0;
+    while let Some(offset) = source[cursor..].find('<') {
+        let start = cursor + offset;
+        if source[start..].starts_with("<!--") {
+            let Some(end) = source[start + 4..].find("-->") else {
+                return Err(format!("unclosed comment at {}", line_col(source, start)));
+            };
+            cursor = start + 4 + end + 3;
+            continue;
+        }
+        let Some(end) = find_markup_tag_end(source, start) else {
+            return Err(format!("unclosed tag at {}", line_col(source, start)));
+        };
+        let tag = source[start + 1..end - 1].trim();
+        if tag.is_empty() || tag.starts_with('!') || tag.starts_with('?') {
+            cursor = end;
+            continue;
+        }
+        let closing = tag.starts_with('/');
+        let tag_name = html_tag_name(if closing { &tag[1..] } else { tag });
+        if tag_name.is_empty() {
+            cursor = end;
+            continue;
+        }
+        if closing {
+            if let Some(index) = stack.iter().rposition(|(name, _)| name == &tag_name) {
+                stack.truncate(index);
+            } else if !is_optional_html_tag(&tag_name) {
+                return Err(format!(
+                    "unexpected closing </{tag_name}> at {}",
+                    line_col(source, start)
+                ));
+            }
+            cursor = end;
+            continue;
+        }
+        let self_closing = tag.ends_with('/') || is_void_html_tag(&tag_name);
+        if !self_closing {
+            if is_optional_html_tag(&tag_name) {
+                while stack
+                    .last()
+                    .is_some_and(|(open_name, _)| open_name == &tag_name)
+                {
+                    stack.pop();
+                }
+            }
+            stack.push((tag_name.clone(), start));
+        }
+        if tag_name == "script" || tag_name == "style" {
+            let close = format!("</{tag_name}");
+            if let Some(close_offset) = lower[end..].find(&close) {
+                let close_start = end + close_offset;
+                let Some(close_end) = find_markup_tag_end(source, close_start) else {
+                    return Err(format!(
+                        "unclosed </{tag_name}> at {}",
+                        line_col(source, close_start)
+                    ));
+                };
+                stack.pop();
+                cursor = close_end;
+                continue;
+            }
+            return Err(format!(
+                "missing </{tag_name}> for {} in {source_file}",
+                line_col(source, start)
+            ));
+        }
+        cursor = end;
+    }
+    if let Some((tag, start)) = stack.last() {
+        return Err(format!(
+            "unclosed <{tag}> opened at {}",
+            line_col(source, *start)
+        ));
+    }
+    Ok(())
+}
+
+fn find_markup_tag_end(source: &str, start: usize) -> Option<usize> {
+    let mut quote = None;
+    for (offset, ch) in source[start..].char_indices() {
+        match quote {
+            Some(current) if ch == current => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '>' => return Some(start + offset + 1),
+            None => {}
+        }
+    }
+    None
+}
+
+fn html_tag_name(tag: &str) -> String {
+    tag.trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == ':')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn is_void_html_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+fn is_optional_html_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "body" | "html" | "head" | "li" | "p" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr"
+    )
+}
+
+fn check_css_syntax(source: &str, _source_file: &str) -> Result<(), String> {
+    let mut stack = Vec::<(char, usize)>::new();
+    let mut chars = source.char_indices().peekable();
+    let mut quote = None;
+    while let Some((index, ch)) = chars.next() {
+        if let Some(current) = quote {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == current {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            continue;
+        }
+        if ch == '/' && chars.peek().is_some_and(|(_, next)| *next == '*') {
+            chars.next();
+            let mut closed = false;
+            while let Some((_, comment_ch)) = chars.next() {
+                if comment_ch == '*' && chars.peek().is_some_and(|(_, next)| *next == '/') {
+                    chars.next();
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err(format!("unclosed comment at {}", line_col(source, index)));
+            }
+            continue;
+        }
+        match ch {
+            '{' | '(' | '[' => stack.push((ch, index)),
+            '}' | ')' | ']' => {
+                let Some((open, open_index)) = stack.pop() else {
+                    return Err(format!("unexpected `{ch}` at {}", line_col(source, index)));
+                };
+                if !matching_delimiter(open, ch) {
+                    return Err(format!(
+                        "mismatched `{open}` at {} and `{ch}` at {}",
+                        line_col(source, open_index),
+                        line_col(source, index)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(current) = quote {
+        return Err(format!("unclosed string `{current}`"));
+    }
+    if let Some((open, index)) = stack.last() {
+        return Err(format!(
+            "unclosed `{open}` opened at {}",
+            line_col(source, *index)
+        ));
+    }
+    Ok(())
+}
+
+fn matching_delimiter(open: char, close: char) -> bool {
+    matches!((open, close), ('{', '}') | ('(', ')') | ('[', ']'))
+}
+
+fn check_markdown_syntax(source: &str, _source_file: &str) -> Result<(), String> {
+    let mut fence = None::<(char, usize, usize)>;
+    for (line_index, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let marker = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        let Some(marker) = marker else {
+            continue;
+        };
+        let width = trimmed.chars().take_while(|ch| *ch == marker).count();
+        if width < 3 {
+            continue;
+        }
+        match fence {
+            Some((open_marker, open_width, _)) if open_marker == marker && width >= open_width => {
+                fence = None;
+            }
+            None => {
+                fence = Some((marker, width, line_index + 1));
+            }
+            _ => {}
+        }
+    }
+    if let Some((marker, width, line)) = fence {
+        return Err(format!(
+            "unclosed markdown fence {} opened at line {line}",
+            marker.to_string().repeat(width)
+        ));
+    }
+    Ok(())
+}
+
+fn line_col(source: &str, index: usize) -> String {
+    let mut line = 1;
+    let mut col = 1;
+    for ch in source[..index.min(source.len())].chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    format!("{line}:{col}")
+}
+
 fn workspace_root() -> Result<PathBuf, String> {
     let mut dir = env::current_dir().map_err(|err| err.to_string())?;
     loop {
@@ -996,13 +1458,13 @@ fn walk_sources(
 
 fn is_js_ts(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(OsStr::to_str),
-        Some("js") | Some("ts")
+        lower_extension(path).as_deref(),
+        Some("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx")
     )
 }
 
 fn is_html(path: &Path) -> bool {
-    matches!(path.extension().and_then(OsStr::to_str), Some("html"))
+    matches!(lower_extension(path).as_deref(), Some("html"))
 }
 
 fn rewrite_html_for_vm(source: &str, script_versions: &BTreeMap<String, String>) -> String {

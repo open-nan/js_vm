@@ -1504,7 +1504,6 @@
     </footer>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script type="module">
     import initCompiler, * as compilerPkg from './pkg/compiler/js_vm_compiler.js?v=jsvalue-runtime';
     import initExecutor, {
@@ -3594,42 +3593,125 @@ await ready();`;
       state.previewObjectUrls = [];
     }
 
-    async function downloadTextFile(filename, text) {
-      const blob = new Blob([text], { type: 'text/javascript;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      return getRemoteFileContent(url);
-    }
-
-    async function downloadRemoteFile(url, filename) {
-      try {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`${response.status} ${response.statusText}`);
-        }
-        const blob = await response.blob();
-        const objectUrl = URL.createObjectURL(blob);
-        return getRemoteFileContent(objectUrl);
-      } catch (_err) {
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        link.rel = 'noopener';
-        link.target = '_blank';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      }
-    }
-
-    async function getRemoteFileContent(url) {
+    async function fetchBinaryFile(url, filename) {
       const response = await fetch(url);
-
       if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
+        throw new Error(`failed to fetch ${filename}: ${response.status} ${response.statusText}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    }
+
+    function zipContentBytes(content) {
+      if (content instanceof Uint8Array) return content;
+      if (content instanceof ArrayBuffer) return new Uint8Array(content);
+      if (ArrayBuffer.isView(content)) {
+        return new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
+      }
+      return textEncoder.encode(String(content));
+    }
+
+    function zipU16(value) {
+      return new Uint8Array([value & 0xff, (value >>> 8) & 0xff]);
+    }
+
+    function zipU32(value) {
+      return new Uint8Array([
+        value & 0xff,
+        (value >>> 8) & 0xff,
+        (value >>> 16) & 0xff,
+        (value >>> 24) & 0xff,
+      ]);
+    }
+
+    function zipDosTime(date = new Date()) {
+      const year = Math.max(1980, date.getFullYear());
+      const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+      const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+      return { dosDate, dosTime };
+    }
+
+    function crc32ForBytes(bytes) {
+      if (!crc32ForBytes.table) {
+        crc32ForBytes.table = Array.from({ length: 256 }, (_, index) => {
+          let crc = index;
+          for (let bit = 0; bit < 8; bit += 1) {
+            crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+          }
+          return crc >>> 0;
+        });
+      }
+      let crc = 0xffffffff;
+      for (const byte of bytes) {
+        crc = crc32ForBytes.table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+      }
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function createStoredZipBlob(entries) {
+      const localParts = [];
+      const centralParts = [];
+      const { dosDate, dosTime } = zipDosTime();
+      let offset = 0;
+
+      for (const entry of entries) {
+        const nameBytes = textEncoder.encode(entry.name);
+        const data = zipContentBytes(entry.content);
+        const crc = crc32ForBytes(data);
+        const localHeader = [
+          zipU32(0x04034b50),
+          zipU16(20),
+          zipU16(0x0800),
+          zipU16(0),
+          zipU16(dosTime),
+          zipU16(dosDate),
+          zipU32(crc),
+          zipU32(data.byteLength),
+          zipU32(data.byteLength),
+          zipU16(nameBytes.byteLength),
+          zipU16(0),
+          nameBytes,
+        ];
+        localParts.push(...localHeader, data);
+
+        centralParts.push(
+          zipU32(0x02014b50),
+          zipU16(20),
+          zipU16(20),
+          zipU16(0x0800),
+          zipU16(0),
+          zipU16(dosTime),
+          zipU16(dosDate),
+          zipU32(crc),
+          zipU32(data.byteLength),
+          zipU32(data.byteLength),
+          zipU16(nameBytes.byteLength),
+          zipU16(0),
+          zipU16(0),
+          zipU16(0),
+          zipU16(0),
+          zipU32(0),
+          zipU32(offset),
+          nameBytes,
+        );
+
+        offset += localHeader.reduce((sum, part) => sum + part.byteLength, 0) + data.byteLength;
       }
 
-      const content = await response;
-      return content;
+      const centralSize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+      const endOfCentralDirectory = [
+        zipU32(0x06054b50),
+        zipU16(0),
+        zipU16(0),
+        zipU16(entries.length),
+        zipU16(entries.length),
+        zipU32(centralSize),
+        zipU32(offset),
+        zipU16(0),
+      ];
+
+      return new Blob([...localParts, ...centralParts, ...endOfCentralDirectory], {
+        type: 'application/zip',
+      });
     }
 
     async function copyRunnerScript(script) {
@@ -3662,28 +3744,24 @@ await ready();`;
         const baseUrl = new URL('./pkg/executor', window.location.href).href.replace(/\/$/, '');
         const copied = await copyRunnerScript(script);
         const [jsVmRuntime, jsVmRuntimeBg] = await Promise.all([
-          downloadRemoteFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
-          downloadRemoteFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
+          fetchBinaryFile(`${baseUrl}/js_vm_runtime.js`, 'js_vm_runtime.js'),
+          fetchBinaryFile(`${baseUrl}/js_vm_runtime_bg.wasm`, 'js_vm_runtime_bg.wasm'),
         ]);
-        const zip = new JSZip()
-        zip.file('js_vm_runtime.js', jsVmRuntime.text())
-        zip.file('js_vm_runtime_bg.wasm', jsVmRuntimeBg.arrayBuffer())
-        zip.file('js_vm_env_browser.js', envCode)
-        zip.file('manifest.json', JSON.stringify(runtimePackage.manifest, null, 2))
-        zip.file('index.html', previewHtmlWithEntry(`./${entrySource}`))
+        const zipEntries = [
+          { name: 'js_vm_runtime.js', content: jsVmRuntime },
+          { name: 'js_vm_runtime_bg.wasm', content: jsVmRuntimeBg },
+          { name: 'js_vm_env_browser.js', content: envCode },
+          { name: 'manifest.json', content: JSON.stringify(runtimePackage.manifest, null, 2) },
+          { name: 'index.html', content: previewHtmlWithEntry(`./${entrySource}`) },
+        ];
         for (const module of runtimePackage.modules) {
-          zip.file(module.sourcePath, module.wrapperSource)
-          zip.file(module.bin, module.bytes)
-          zip.file(module.sourceMap, module.sourceMapContent)
+          zipEntries.push(
+            { name: module.sourcePath, content: module.wrapperSource },
+            { name: module.bin, content: module.bytes },
+            { name: module.sourceMap, content: module.sourceMapContent },
+          );
         }
-        // 创建下载链接
-        const zipBlob = await zip.generateAsync({
-          type: 'blob',
-          compression: 'DEFLATE',
-          compressionOptions: {
-            level: 6
-          }
-        })
+        const zipBlob = createStoredZipBlob(zipEntries)
         const url = URL.createObjectURL(zipBlob)
         const a = document.createElement('a')
         a.href = url
