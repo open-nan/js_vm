@@ -75,21 +75,19 @@ async function main(nextCommand, args) {
 }
 
 async function runAll(mode) {
-  log.step(mode === 'precommit' ? 'Running pre-commit checks' : 'Running full test chain');
+  log.step(mode === 'precommit' ? 'Running pre-commit test cases' : 'Running full test cases');
   await runStep('Rust unit tests', () => runCommand('Rust unit tests', 'cargo', ['test']));
-  await runStep('Build wasm packages', () => runCommand('Build wasm packages', 'cargo', ['run', '-p', 'js_vm_cli', '--', 'wasm']));
   await runStep('JS VM corpus', () => runCorpusSuite());
   await runStep('Differential tests', () => runDifferentialSuite(parseDifferentialArgs([])));
   await runStep('Fuzz smoke', () => runFuzz(['--r=1', '--seeds=1', '--case-log=failures']));
-  log.finish(mode === 'precommit' ? 'Pre-commit checks passed' : 'Full test chain passed');
+  log.finish(mode === 'precommit' ? 'Pre-commit test cases passed' : 'Full test cases passed');
 }
 
 async function runUnit() {
-  log.step('Running unit test chain');
+  log.step('Running unit test cases');
   await runStep('Rust unit tests', () => runCommand('Rust unit tests', 'cargo', ['test']));
-  await runStep('Build wasm packages', () => runCommand('Build wasm packages', 'cargo', ['run', '-p', 'js_vm_cli', '--', 'wasm']));
   await runStep('JS VM corpus', () => runCorpusSuite());
-  log.finish('Unit test chain passed');
+  log.finish('Unit test cases passed');
 }
 
 async function runStep(label, run) {
@@ -359,15 +357,15 @@ function printHelp() {
   node tests/index.js [command] [options]
 
 Commands:
-  all                 Rust tests -> wasm build -> corpus -> differential -> fuzz smoke. Default.
-  unit                Rust tests -> wasm build -> corpus.
+  all                 Rust tests -> corpus -> differential -> fuzz smoke. Default.
+  unit                Rust tests -> corpus.
   corpus              Run tests/corpus through compile/encode/seed/runtime.
   diff                Compare corpus observable output with jsvu V8.
   fuzz                Run the in-memory JS fuzzer. Pass Fuzz.js options after the command.
   fuzz:diff           Run fuzz with --differential.
   fuzz-smoke          Run a short fuzz smoke: --r=1 --seeds=1 --case-log=failures.
   test262             Run the Test262 conformance profile under tests/test262.
-  precommit           Same chain as all, intended for git hooks.
+  precommit           Same test case chain as all, intended for git hooks.
   update-test262      Update tests/.vendor/test262 from TC39.
   update-js-fuzzer    Update tests/.vendor/js_fuzzer.
 

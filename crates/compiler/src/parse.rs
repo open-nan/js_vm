@@ -13,7 +13,7 @@ use js_token_core as core;
 use std::collections::{BTreeMap, BTreeSet};
 use swc_common::{FileName, SourceMap, Spanned, sync::Lrc};
 use swc_ecma_ast::*;
-use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
+use swc_ecma_parser::{EsSyntax, Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 #[derive(Debug, Clone, PartialEq)]
 enum IrValue {
@@ -4137,6 +4137,7 @@ pub fn parse_source(source: &str) -> Result<Program, String> {
     validate_early_syntax_errors(source)?;
     parse_source_with_syntax(
         source,
+        "input.ts",
         Syntax::Typescript(TsSyntax {
             tsx: false,
             decorators: true,
@@ -4144,15 +4145,68 @@ pub fn parse_source(source: &str) -> Result<Program, String> {
         }),
     )
     .or_else(|ts_err| {
-        parse_source_with_syntax(source, Syntax::Es(Default::default()))
+        parse_source_with_syntax(source, "input.js", Syntax::Es(Default::default()))
             .map_err(|es_err| format!("{ts_err}; fallback parse error: {es_err}"))
     })
 }
 
-fn parse_source_with_syntax(source: &str, syntax: Syntax) -> Result<Program, String> {
+/// 只做语法解析，不执行 lowering。
+///
+/// CLI 的 check 阶段用它检查 `.js/.ts/.jsx/.tsx` 和 Vue `<script>` 内容。
+pub fn check_source_syntax(source: &str, source_file: &str) -> Result<(), String> {
+    parse_source_for_file(source, source_file).map(|_| ())
+}
+
+fn parse_source_for_file(source: &str, source_file: &str) -> Result<Program, String> {
+    validate_early_syntax_errors(source)?;
+    let lower = source_file.to_ascii_lowercase();
+    let syntaxes = if lower.ends_with(".tsx") || lower.ends_with(".jsx") || lower.ends_with(".vue")
+    {
+        vec![
+            Syntax::Typescript(TsSyntax {
+                tsx: true,
+                decorators: true,
+                ..Default::default()
+            }),
+            Syntax::Es(EsSyntax {
+                jsx: true,
+                ..Default::default()
+            }),
+        ]
+    } else if lower.ends_with(".ts") || lower.ends_with(".mts") || lower.ends_with(".cts") {
+        vec![Syntax::Typescript(TsSyntax {
+            tsx: false,
+            decorators: true,
+            ..Default::default()
+        })]
+    } else {
+        vec![
+            Syntax::Typescript(TsSyntax {
+                tsx: false,
+                decorators: true,
+                ..Default::default()
+            }),
+            Syntax::Es(Default::default()),
+        ]
+    };
+    let mut errors = Vec::new();
+    for syntax in syntaxes {
+        match parse_source_with_syntax(source, source_file, syntax) {
+            Ok(program) => return Ok(program),
+            Err(err) => errors.push(err),
+        }
+    }
+    Err(errors.join("; fallback parse error: "))
+}
+
+fn parse_source_with_syntax(
+    source: &str,
+    source_file: &str,
+    syntax: Syntax,
+) -> Result<Program, String> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm = cm.new_source_file(
-        FileName::Custom("input.ts".into()).into(),
+        FileName::Custom(source_file.into()).into(),
         source.to_string(),
     );
 
@@ -4614,7 +4668,7 @@ fn is_regex_literal_start(output: &str) -> bool {
     let Some(previous) = output.chars().rev().find(|ch| !ch.is_whitespace()) else {
         return true;
     };
-    matches!(
+    if matches!(
         previous,
         '(' | '['
             | '{'
@@ -4634,6 +4688,34 @@ fn is_regex_literal_start(output: &str) -> bool {
             | '~'
             | '<'
             | '>'
+    ) {
+        return true;
+    }
+    let trimmed = output.trim_end();
+    let token = trimmed
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '$')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    matches!(
+        token.as_str(),
+        "await"
+            | "case"
+            | "delete"
+            | "do"
+            | "else"
+            | "in"
+            | "instanceof"
+            | "new"
+            | "of"
+            | "return"
+            | "throw"
+            | "typeof"
+            | "void"
+            | "yield"
     )
 }
 

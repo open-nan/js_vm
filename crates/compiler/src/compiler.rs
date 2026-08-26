@@ -8,7 +8,9 @@
 //! - `package_module_source`：把原始 ES module 拆成 wrapper JS 和 VM 内部源码。
 //! - `RuntimeFeatureManifest`：根据源码/IR 推导运行时 feature 包。
 
-use crate::parse::{LoweringContext, parse_source};
+use crate::parse::{
+    LoweringContext, check_source_syntax as parse_check_source_syntax, parse_source,
+};
 use js_token_core::{
     BytecodeModule, BytecodeOperand, EncodingConfig, IrConst, IrModule, IrModuleKind,
 };
@@ -16,6 +18,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use swc_common::{Span, Spanned};
 use swc_ecma_ast::*;
 use wasm_bindgen::prelude::*;
+
+/// 检查源码语法，不生成 IR 或 bytecode。
+pub fn check_source_syntax(source: &str, source_file: &str) -> Result<(), String> {
+    parse_check_source_syntax(source, source_file)
+}
 
 /// 单源码编译器。
 ///

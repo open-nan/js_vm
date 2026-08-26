@@ -49,6 +49,12 @@ jobs:
       - name: Install JS dependencies
         run: npm install
 
+      - name: Check
+        run: npm run check
+
+      - name: Build wasm packages
+        run: npm run build:wasm
+
       - name: Install V8 via jsvu
         run: npx jsvu --os=linux64 --engines=v8
 
