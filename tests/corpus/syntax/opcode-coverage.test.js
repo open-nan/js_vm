@@ -1,4 +1,4 @@
-// @expect [object]
+// @expect [object Object]
 // @seeds 8
 
 import { missing as importedValue } from "coverage-fixture";

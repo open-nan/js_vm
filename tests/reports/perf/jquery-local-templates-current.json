@@ -1,0 +1,1451 @@
+{
+  "generatedAt": "2026-08-13T03:00:11.883Z",
+  "target": {
+    "bin": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-current/jquery.bin",
+    "wrapper": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-current/jquery.js",
+    "map": "/Users/nan/code/nan_project/js_token/tests/.tmp/perf-jquery-current/jquery.bin.map",
+    "byteLength": 102113,
+    "md5": "797e23c3cb793040a408a97624014ca4",
+    "externSlots": [
+      "module",
+      "window",
+      "Array",
+      "Date",
+      "Error",
+      "JSON",
+      "Math",
+      "Object",
+      "RegExp",
+      "String",
+      "Symbol",
+      "TypeError",
+      "define",
+      "encodeURIComponent",
+      "isFinite",
+      "parseFloat",
+      "parseInt",
+      "r",
+      "i",
+      "e",
+      "o",
+      "l",
+      "s",
+      "c"
+    ]
+  },
+  "settings": {
+    "steps": 1000000,
+    "repeat": 3,
+    "warmup": 1,
+    "callDepth": 2048,
+    "recursion": 128
+  },
+  "result": {
+    "ok": true,
+    "value": "true"
+  },
+  "runsMs": [
+    113.560833,
+    110.353375,
+    111.130542
+  ],
+  "stats": {
+    "minMs": 110.353375,
+    "maxMs": 113.560833,
+    "avgMs": 111.68158333333334,
+    "p50Ms": 111.130542,
+    "p90Ms": 113.560833,
+    "p99Ms": 113.560833,
+    "stepsPerSecond": 8954028
+  },
+  "hostBridge": {
+    "get": 1818,
+    "set": 2,
+    "call": 195,
+    "construct": 48
+  },
+  "callbacks": {
+    "total": 0,
+    "fastPath": 0
+  },
+  "inlineCache": {
+    "loadNameHits": 778,
+    "loadNameMisses": 418,
+    "memberConstHits": 678,
+    "memberConstMisses": 281,
+    "callOneHits": 18,
+    "callOneMisses": 258,
+    "memberCallHits": 87,
+    "memberCallMisses": 77
+  },
+  "fused": {
+    "binaryBranch": 603,
+    "moveBranch": 1439,
+    "regBranchJump": 186,
+    "fastBinaryRegConst": 459,
+    "fastBinaryRegReg": 523
+  },
+  "instructionCount": 19602,
+  "opcodes": [
+    {
+      "name": "LOAD_LOCAL_SMALL",
+      "count": 3862
+    },
+    {
+      "name": "MOVE",
+      "count": 2247
+    },
+    {
+      "name": "LOAD_NAME",
+      "count": 1196
+    },
+    {
+      "name": "BINARY_REG_REG",
+      "count": 1070
+    },
+    {
+      "name": "MEMBER_CONST",
+      "count": 1003
+    },
+    {
+      "name": "JUMP",
+      "count": 966
+    },
+    {
+      "name": "MEMBER",
+      "count": 813
+    },
+    {
+      "name": "JUMP_IF_FALSE_REG",
+      "count": 673
+    },
+    {
+      "name": "MOVE_JUMP_FALLTHROUGH_REG",
+      "count": 646
+    },
+    {
+      "name": "DECLARE",
+      "count": 588
+    },
+    {
+      "name": "STORE_NAME",
+      "count": 549
+    },
+    {
+      "name": "FUNCTION_EXPR_START",
+      "count": 539
+    },
+    {
+      "name": "UNARY",
+      "count": 530
+    },
+    {
+      "name": "BINARY_REG_REG_JUMP",
+      "count": 487
+    },
+    {
+      "name": "DECLARE_STORE_LOCAL",
+      "count": 467
+    },
+    {
+      "name": "MOVE_JUMP_REG",
+      "count": 462
+    },
+    {
+      "name": "BINARY_REG_CONST",
+      "count": 446
+    },
+    {
+      "name": "STORE_LOCAL_SMALL",
+      "count": 396
+    },
+    {
+      "name": "CALL_1",
+      "count": 340
+    },
+    {
+      "name": "STORE_MEMBER",
+      "count": 302
+    },
+    {
+      "name": "RETURN_REG",
+      "count": 221
+    },
+    {
+      "name": "LOAD_FALSE",
+      "count": 200
+    },
+    {
+      "name": "CALL",
+      "count": 193
+    },
+    {
+      "name": "LOAD_LOCAL",
+      "count": 190
+    },
+    {
+      "name": "JUMP_IF_TRUE_REG",
+      "count": 176
+    },
+    {
+      "name": "OBJECT",
+      "count": 175
+    },
+    {
+      "name": "LOAD_UNDEFINED",
+      "count": 151
+    },
+    {
+      "name": "LOAD_TRUE",
+      "count": 143
+    },
+    {
+      "name": "STORE_MEMBER_CONST",
+      "count": 84
+    },
+    {
+      "name": "FUNCTION_START",
+      "count": 82
+    },
+    {
+      "name": "BINARY_REG_REG_JUMP_FALLTHROUGH",
+      "count": 65
+    },
+    {
+      "name": "CALL_2",
+      "count": 56
+    },
+    {
+      "name": "NEW",
+      "count": 52
+    },
+    {
+      "name": "JUMP_IF_LOCAL_BINARY_CONST_FALSE",
+      "count": 48
+    },
+    {
+      "name": "STORE_LOCAL",
+      "count": 45
+    }
+  ],
+  "functions": [
+    {
+      "name": "<anonymous>",
+      "bodyStart": 430,
+      "bodyEnd": 627,
+      "callCount": 39,
+      "instructionCount": 8665,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 733,
+      "bodyEnd": 801,
+      "callCount": 31,
+      "instructionCount": 3876,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 33,
+      "bodyEnd": 22488,
+      "callCount": 1,
+      "instructionCount": 1844,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "v",
+      "bodyStart": 133,
+      "bodyEnd": 184,
+      "callCount": 31,
+      "instructionCount": 1058,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 11421,
+      "bodyEnd": 11463,
+      "callCount": 31,
+      "instructionCount": 558,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "h",
+      "bodyStart": 97,
+      "bodyEnd": 119,
+      "callCount": 31,
+      "instructionCount": 465,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 6872,
+      "bodyEnd": 7225,
+      "callCount": 6,
+      "instructionCount": 366,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 18410,
+      "bodyEnd": 18486,
+      "callCount": 6,
+      "instructionCount": 352,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "g",
+      "bodyStart": 121,
+      "bodyEnd": 131,
+      "callCount": 31,
+      "instructionCount": 279,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 652,
+      "bodyEnd": 699,
+      "callCount": 8,
+      "instructionCount": 248,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 7001,
+      "bodyEnd": 7045,
+      "callCount": 13,
+      "instructionCount": 208,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "tJ",
+      "bodyStart": 14544,
+      "bodyEnd": 14591,
+      "callCount": 3,
+      "instructionCount": 195,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "nv",
+      "bodyStart": 18570,
+      "bodyEnd": 18637,
+      "callCount": 2,
+      "instructionCount": 178,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 7671,
+      "bodyEnd": 7749,
+      "callCount": 3,
+      "instructionCount": 155,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 22115,
+      "bodyEnd": 22135,
+      "callCount": 22,
+      "instructionCount": 110,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 1162,
+      "bodyEnd": 1171,
+      "callCount": 10,
+      "instructionCount": 90,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "eT",
+      "bodyStart": 2661,
+      "bodyEnd": 2668,
+      "callCount": 11,
+      "instructionCount": 77,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_CONST"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 6993,
+      "bodyEnd": 7079,
+      "callCount": 5,
+      "instructionCount": 75,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 6804,
+      "bodyEnd": 6870,
+      "callCount": 12,
+      "instructionCount": 60,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 16699,
+      "bodyEnd": 16705,
+      "callCount": 10,
+      "instructionCount": 60,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 7230,
+      "bodyEnd": 7765,
+      "callCount": 1,
+      "instructionCount": 58,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 14081,
+      "bodyEnd": 14150,
+      "callCount": 3,
+      "instructionCount": 57,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 6879,
+      "bodyEnd": 6883,
+      "callCount": 10,
+      "instructionCount": 40,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_CONST"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 11864,
+      "bodyEnd": 11907,
+      "callCount": 4,
+      "instructionCount": 36,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 16240,
+      "bodyEnd": 16276,
+      "callCount": 3,
+      "instructionCount": 33,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 16290,
+      "bodyEnd": 16302,
+      "callCount": 6,
+      "instructionCount": 30,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 21905,
+      "bodyEnd": 22035,
+      "callCount": 6,
+      "instructionCount": 30,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 22041,
+      "bodyEnd": 22051,
+      "callCount": 6,
+      "instructionCount": 30,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "FUNCTION_EXPR_START"
+      }
+    },
+    {
+      "name": "ej",
+      "bodyStart": 2747,
+      "bodyEnd": 2793,
+      "callCount": 7,
+      "instructionCount": 28,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "name": "P",
+      "bodyStart": 1240,
+      "bodyEnd": 1270,
+      "callCount": 4,
+      "instructionCount": 28,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "ARRAY"
+      }
+    },
+    {
+      "name": "<anonymous>",
+      "bodyStart": 11783,
+      "bodyEnd": 11859,
+      "callCount": 2,
+      "instructionCount": 26,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE"
+      }
+    },
+    {
+      "name": "eS",
+      "bodyStart": 4355,
+      "bodyEnd": 4533,
+      "callCount": 1,
+      "instructionCount": 26,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    }
+  ],
+  "hotPcs": [
+    {
+      "pc": 490,
+      "op": "BINARY_REG_REG_JUMP",
+      "count": 187,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "BINARY_REG_REG_JUMP"
+      }
+    },
+    {
+      "pc": 491,
+      "op": "MOVE_JUMP_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE_JUMP_REG"
+      }
+    },
+    {
+      "pc": 492,
+      "op": "MOVE_JUMP_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE_JUMP_REG"
+      }
+    },
+    {
+      "pc": 500,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 533,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 534,
+      "op": "BINARY_REG_CONST",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "BINARY"
+      }
+    },
+    {
+      "pc": 535,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 536,
+      "op": "JUMP",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "JUMP"
+      }
+    },
+    {
+      "pc": 574,
+      "op": "MEMBER",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MEMBER"
+      }
+    },
+    {
+      "pc": 575,
+      "op": "DECLARE_STORE_LOCAL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "DECLARE_STORE_LOCAL"
+      }
+    },
+    {
+      "pc": 576,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 577,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 578,
+      "op": "MEMBER",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MEMBER"
+      }
+    },
+    {
+      "pc": 579,
+      "op": "STORE_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "STORE_NAME"
+      }
+    },
+    {
+      "pc": 580,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 581,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 582,
+      "op": "BINARY_REG_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "BINARY"
+      }
+    },
+    {
+      "pc": 583,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 584,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 585,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 586,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 587,
+      "op": "BINARY_REG_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "BINARY"
+      }
+    },
+    {
+      "pc": 588,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 589,
+      "op": "JUMP",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "JUMP"
+      }
+    },
+    {
+      "pc": 590,
+      "op": "LOAD_LOCAL_SMALL",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 591,
+      "op": "MOVE",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    },
+    {
+      "pc": 592,
+      "op": "JUMP_IF_FALSE_REG",
+      "count": 148,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "JUMP_IF_FALSE"
+      }
+    },
+    {
+      "pc": 528,
+      "op": "LOAD_UNDEFINED",
+      "count": 146,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_CONST"
+      }
+    },
+    {
+      "pc": 529,
+      "op": "LOAD_LOCAL",
+      "count": 146,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "LOAD_NAME"
+      }
+    },
+    {
+      "pc": 530,
+      "op": "BINARY_REG_REG",
+      "count": 146,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "BINARY"
+      }
+    },
+    {
+      "pc": 531,
+      "op": "MOVE_JUMP_FALLTHROUGH_REG",
+      "count": 146,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE_JUMP_FALLTHROUGH_REG"
+      }
+    },
+    {
+      "pc": 532,
+      "op": "MOVE",
+      "count": 146,
+      "source": {
+        "sourceFile": "jquery.js",
+        "line": 2,
+        "column": 0,
+        "endLine": 2,
+        "endColumn": 78659,
+        "byteStart": 16629,
+        "byteEnd": 102092,
+        "pcStart": 33,
+        "pcEnd": 22488,
+        "function": 1,
+        "op": "MOVE"
+      }
+    }
+  ]
+}

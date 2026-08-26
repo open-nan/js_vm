@@ -1,5 +1,5 @@
 [package]
-name = "js_vm_runtime"
+name = "js_vm_runtime_core"
 version.workspace = true
 edition.workspace = true
 
@@ -8,15 +8,37 @@ js_token_core.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+[features]
+default = [
+    "bigint",
+    "generator",
+    "host-builtins",
+    "module",
+    "proxy",
+    "regexp",
+    "test262-compat",
+]
+array-builtins = []
+bigint = []
+compact-errors = []
+debugger = []
+function-builtins = []
+generator = []
+host-builtins = [
+    "array-builtins",
+    "function-builtins",
+    "object-builtins",
+    "string-builtins",
+]
+module = []
+object-builtins = []
+proxy = []
+regexp = []
+runtime-profile = []
+source-map = []
+string-builtins = []
+test262-compat = ["test262-eval"]
+test262-eval = []
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]

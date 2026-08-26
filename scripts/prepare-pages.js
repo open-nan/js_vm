@@ -20,6 +20,10 @@ const FILES = [
   ['pkg/executor/package.json', 'pkg/executor/package.json'],
 ];
 
+const DIRS = [
+  ['vendor/monaco', 'vendor/monaco'],
+];
+
 main();
 
 function main() {
@@ -30,13 +34,10 @@ function main() {
 
   fs.rmSync(DIST, { recursive: true, force: true });
   for (const [from, to] of FILES) {
-    const source = path.join(ROOT, from);
-    const target = path.join(DIST, to);
-    if (!fs.existsSync(source)) {
-      throw new Error(`missing site payload file: ${from}`);
-    }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(source, target);
+    copyFile(from, to);
+  }
+  for (const [from, to] of DIRS) {
+    copyDir(from, to);
   }
   fs.writeFileSync(path.join(DIST, '.nojekyll'), '');
 
@@ -52,9 +53,34 @@ function verifyPayload() {
       throw new Error(`missing dist payload file: ${path.relative(ROOT, target)}`);
     }
   }
+  for (const [, to] of DIRS) {
+    const target = path.join(DIST, to);
+    if (!fs.existsSync(target)) {
+      throw new Error(`missing dist payload dir: ${path.relative(ROOT, target)}`);
+    }
+  }
   for (const file of walk(DIST)) {
     console.log(path.relative(ROOT, file));
   }
+}
+
+function copyFile(from, to) {
+  const source = path.join(ROOT, from);
+  const target = path.join(DIST, to);
+  if (!fs.existsSync(source)) {
+    throw new Error(`missing site payload file: ${from}`);
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target);
+}
+
+function copyDir(from, to) {
+  const source = path.join(ROOT, from);
+  const target = path.join(DIST, to);
+  if (!fs.existsSync(source)) {
+    throw new Error(`missing site payload dir: ${from}`);
+  }
+  fs.cpSync(source, target, { recursive: true });
 }
 
 function walk(dir) {

@@ -7,8 +7,9 @@ edition.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-js_token_core.workspace = true
+js_token_core = { workspace = true, features = ["compiler-optimizations"] }
 wasm-bindgen.workspace = true
+js-sys.workspace = true
 swc_ecma_ast.workspace = true
 swc_ecma_parser.workspace = true
 swc_common.workspace = true

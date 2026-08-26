@@ -1,0 +1,49 @@
+[package]
+name = "js_vm_runtime_node"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+js_token_core.workspace = true
+js_vm_runtime_core.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+
+[features]
+default = ["compact-errors"]
+array-builtins = ["js_vm_runtime_core/array-builtins"]
+bigint = ["js_vm_runtime_core/bigint"]
+compact-errors = ["js_vm_runtime_core/compact-errors"]
+debugger = ["js_vm_runtime_core/debugger", "source-map"]
+function-builtins = ["js_vm_runtime_core/function-builtins"]
+generator = ["js_vm_runtime_core/generator"]
+host-builtins = [
+    "array-builtins",
+    "function-builtins",
+    "object-builtins",
+    "string-builtins",
+]
+module = ["js_vm_runtime_core/module"]
+object-builtins = ["js_vm_runtime_core/object-builtins"]
+proxy = ["js_vm_runtime_core/proxy"]
+regexp = ["js_vm_runtime_core/regexp"]
+runtime-profile = ["js_vm_runtime_core/runtime-profile"]
+source-map = ["js_vm_runtime_core/source-map"]
+string-builtins = ["js_vm_runtime_core/string-builtins"]
+test262-compat = ["js_vm_runtime_core/test262-compat"]
+test262-eval = ["js_vm_runtime_core/test262-eval"]
+full = [
+    "host-builtins",
+    "bigint",
+    "generator",
+    "module",
+    "proxy",
+    "regexp",
+    "test262-compat",
+]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]

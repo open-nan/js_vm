@@ -4,18 +4,31 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build:wasm": "node scripts/build-wasm.js",
+    "build:wasm": "cargo run -p js_vm_cli -- wasm",
+    "size:runtime": "node scripts/size-profile.js --target runtime-browser",
+    "size:profile": "node scripts/size-profile.js --out tests/reports/size/latest.json --twiggy",
     "test": "node tests/index.js",
     "test:unit": "node tests/index.js unit",
     "test:diff": "node tests/index.js diff",
+    "test:test262": "node tests/index.js test262",
     "test:fuzz": "node tests/index.js fuzz",
+    "perf": "node tests/perf.js",
     "precommit": "node tests/index.js precommit",
+    "compile:runtime": "cargo run -p js_vm_cli -- package",
+    "runtime:features": "node scripts/runtime-features.js",
+    "runtime:features:map": "node scripts/runtime-features.js map",
+    "runtime:features:build": "node scripts/runtime-features.js build",
+    "runtime:features:pack": "node scripts/runtime-features.js pack",
     "hooks:install": "git config core.hooksPath .githooks",
+    "update:test262": "node tests/index.js update-test262",
     "update:js-fuzzer": "node tests/index.js update-js-fuzzer",
     "pages:prepare": "node scripts/prepare-pages.js",
     "pages:verify": "node scripts/prepare-pages.js --verify"
   },
   "dependencies": {
     "jsvu": "^3.0.4"
+  },
+  "devDependencies": {
+    "monaco-editor": "^0.52.2"
   }
 }

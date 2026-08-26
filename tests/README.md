@@ -129,6 +129,31 @@ npm run test:diff
 
 它会对 host-runnable 的 corpus 文件注入可观测输出，比较 jsvu V8 和 VM。TypeScript/JSX 与模块语法用例会跳过；未安装 jsvu V8 时测试会失败并提示安装命令。
 
+## Test262 Conformance
+
+Test262 适配层放在 `tests/test262`，官方语料通过下面命令更新到被忽略的 `tests/.vendor/test262`：
+
+```bash
+npm run update:test262
+```
+
+默认基线运行：
+
+```bash
+npm run test:test262
+```
+
+runner 会解析 Test262 frontmatter、注入 harness、按 `noStrict` / `onlyStrict` / 默认双模式执行，并处理 `negative` 用例。默认使用轻量 harness 来绕开当前 VM 尚未对齐的官方 harness 初始化差异；需要精确检查官方 harness 时加 `--official-harness`。完整报告写入 `tests/test262/reports/latest.json`；如果出现与 Test262 期望不一致的行为，只额外输出错误报告 `tests/test262/reports/latest-errors.md`，控制台也只给失败摘要和报告位置。
+
+需要扩大范围时：
+
+```bash
+npm run test:test262 -- --path=language/expressions/addition --max-cases=50
+npm run test:test262 -- --all --max-cases=1000
+```
+
+默认会跳过 `tests/test262/unsupported.json` 记录的模块、async、Intl、Atomics 等当前 VM 尚未纳入基线的能力。修复或支持新语义后，先定向跑对应 `--path`，再更新 `tests/test262/baseline.txt` / `unsupported.json`。
+
 V8 上游 `js_fuzzer` 镜像放在 `tests/.vendor/js_fuzzer`，使用下面命令更新：
 
 ```bash

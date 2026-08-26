@@ -337,9 +337,18 @@ name = "js_token_core"
 version = "0.1.0"
 
 [[package]]
+name = "js_vm_cli"
+version = "0.1.0"
+dependencies = [
+ "js_token_core",
+ "js_vm_compiler",
+]
+
+[[package]]
 name = "js_vm_compiler"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "js_token_core",
  "swc_common",
  "swc_ecma_ast",
@@ -353,6 +362,26 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "js_token_core",
+ "js_vm_runtime_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "js_vm_runtime_core"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "js_token_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "js_vm_runtime_node"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "js_token_core",
+ "js_vm_runtime_core",
  "wasm-bindgen",
 ]
 

@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const nodeVm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '../..');
 
@@ -61,6 +62,26 @@ const OPCODES = [
   'BINARY_REG_CONST',
   'LOAD_LOCAL_SMALL',
   'STORE_LOCAL_SMALL',
+  'OBJECT_REST',
+  'YIELD',
+  'AWAIT',
+  'RETURN_IF_LOCAL_FALSE',
+  'JUMP_IF_LOCAL_BINARY_CONST_FALSE',
+  'RETURN_IF_LOCAL_FALSE_ELSE_MEMBER_BINARY_CONST',
+  'STORE_LOCAL_MEMBER_CONST',
+  'JUMP_IF_TRUE_REG',
+  'JUMP_IF_LOCAL_BINARY_CONST_TRUE',
+  'DECLARE_STORE_LOCAL',
+  'MOVE_JUMP_REG',
+  'BINARY_REG_REG_JUMP',
+  'MOVE_JUMP_FALLTHROUGH_REG',
+  'BINARY_REG_REG_JUMP_FALLTHROUGH',
+  'MEMBER_LOCAL_CONST',
+  'BINARY_LOCAL_CONST',
+  'MEMBER_LOCAL',
+  'CALL_LOCAL_0',
+  'CALL_LOCAL_1',
+  'CALL_LOCAL_2',
 ];
 
 const OPERAND_TAGS = [
@@ -75,7 +96,7 @@ const OPERAND_TAGS = [
   'function',
 ];
 
-const CONSTANT_TAGS = ['number', 'string', 'bool', 'null', 'undefined'];
+const CONSTANT_TAGS = ['number', 'string', 'bool', 'null', 'undefined', 'bigint'];
 
 class JsVmAdapter {
   constructor(packages) {
@@ -140,6 +161,7 @@ function externSlotsForIteration(externs, iteration, baseSeed = 1337) {
 }
 
 function createDefaultHostEnvironment() {
+  const freshBigInt = createFreshBigInt();
   const hostMath = Object.create(Math);
   hostMath.random = () => 0.5;
   const emit = (level, args) => {
@@ -198,22 +220,41 @@ function createDefaultHostEnvironment() {
       return undefined;
     },
     Object,
+    Function,
     Array,
     Date,
     Error,
+    AggregateError,
+    EvalError,
     JSON,
+    RangeError,
+    ReferenceError,
+    Reflect,
     RegExp,
+    Set,
+    Map,
+    WeakSet,
+    WeakMap,
     String,
+    SyntaxError,
     TypeError,
+    URIError,
     Number,
+    BigInt: freshBigInt,
     Boolean,
+    Promise,
+    Proxy,
     Symbol,
     Math: hostMath,
     encodeURIComponent,
+    eval: (source) => globalThis.eval(String(source)),
     isFinite,
+    isNaN,
     parseFloat,
     parseInt,
     hostStringPrimitive: 'hello',
+    __jsVmIntrinsicDeflateTable: jsVmIntrinsicDeflateTable,
+    __jsVmIntrinsicBitReverseTable: jsVmIntrinsicBitReverseTable,
     __vmPrint: (...args) => emit('log', args),
     print: (...args) => emit('log', args),
     alert: (...args) => emit('log', args),
@@ -225,6 +266,38 @@ function createDefaultHostEnvironment() {
     triggerAssertFalse: () => undefined,
     quit: () => undefined,
   };
+}
+
+function jsVmIntrinsicDeflateTable(Uint16ArrayCtor, Int32ArrayCtor) {
+  return function deflateTable(lengths, base) {
+    const bits = new Uint16ArrayCtor(31);
+    for (let index = 0; index < 31; index += 1) {
+      bits[index] = base += 1 << lengths[index - 1];
+    }
+    const reverse = new Int32ArrayCtor(bits[30]);
+    for (let index = 1; index < 30; index += 1) {
+      for (let value = bits[index]; value < bits[index + 1]; value += 1) {
+        reverse[value] = ((value - bits[index]) << 5) | index;
+      }
+    }
+    return { b: bits, r: reverse };
+  };
+}
+
+function jsVmIntrinsicBitReverseTable(Uint16ArrayCtor) {
+  const table = new Uint16ArrayCtor(32768);
+  for (let value = 0; value < 32768; value += 1) {
+    let reversed = ((value & 43690) >> 1) | ((value & 21845) << 1);
+    reversed = ((reversed & 52428) >> 2) | ((reversed & 13107) << 2);
+    reversed = ((reversed & 61680) >> 4) | ((reversed & 3855) << 4);
+    table[value] = (((reversed & 65280) >> 8) | ((reversed & 255) << 8)) >> 1;
+  }
+  return table;
+}
+
+function createFreshBigInt() {
+  const context = nodeVm.createContext({});
+  return nodeVm.runInContext('BigInt', context);
 }
 
 function resolveExternalValue(name, environment = createDefaultHostEnvironment()) {
@@ -249,8 +322,8 @@ async function loadVm() {
 async function loadVmPackages() {
   const compilerPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler.js');
   const compilerWasmPath = path.join(ROOT, 'pkg/compiler/js_vm_compiler_bg.wasm');
-  const runtimePath = path.join(ROOT, 'pkg/executor/js_vm_runtime.js');
-  const runtimeWasmPath = path.join(ROOT, 'pkg/executor/js_vm_runtime_bg.wasm');
+  const runtimePath = path.join(ROOT, 'pkg/executor-node/js_vm_runtime_node.js');
+  const runtimeWasmPath = path.join(ROOT, 'pkg/executor-node/js_vm_runtime_node_bg.wasm');
 
   for (const file of [compilerPath, compilerWasmPath, runtimePath, runtimeWasmPath]) {
     if (!fs.existsSync(file)) {
@@ -261,15 +334,15 @@ async function loadVmPackages() {
   globalThis.__jsVmHostLog = globalThis.__jsVmHostLog || (() => {});
 
   const compilerPkg = await import(pathToFileURL(compilerPath).href);
-  const runtimePkg = await import(pathToFileURL(runtimePath).href);
+  const runtimePkg = require(runtimePath);
   await compilerPkg.default({ module_or_path: fs.readFileSync(compilerWasmPath) });
-  await runtimePkg.default({ module_or_path: fs.readFileSync(runtimeWasmPath) });
 
   return {
     Compiler: compilerPkg.Compiler,
     js_encoding_seed_from_rows: compilerPkg.js_encoding_seed_from_rows,
     js_encoding_seed_for_seed_and_bytes: compilerPkg.js_encoding_seed_for_seed_and_bytes,
     js_execute_bytes_with_seed: runtimePkg.js_execute_bytes_with_seed,
+    js_execute_value_bytes_with_seed: runtimePkg.js_execute_value_bytes_with_seed,
     js_execute_module_bytes_with_seed: runtimePkg.js_execute_module_bytes_with_seed,
   };
 }
@@ -320,7 +393,11 @@ function runVmSourceWithPackages(vm, source, options = {}) {
         }
         let result;
         try {
-          result = vm.js_execute_bytes_with_seed(
+          const execute =
+            options.returnValue && typeof vm.js_execute_value_bytes_with_seed === 'function'
+              ? vm.js_execute_value_bytes_with_seed
+              : vm.js_execute_bytes_with_seed;
+          result = execute(
             bytes,
             seed,
             externValuesForSlots(externSlots, options.externEnvironment),

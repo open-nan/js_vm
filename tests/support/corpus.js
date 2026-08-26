@@ -39,11 +39,15 @@ function parseMeta(source, file) {
     if (!match) continue;
     meta[match[1]] = match[2];
   }
-  if (!Object.prototype.hasOwnProperty.call(meta, 'expect')) {
-    throw new Error(`${relative(file)} is missing // @expect <value>`);
+  if (
+    !Object.prototype.hasOwnProperty.call(meta, 'expect') &&
+    !Object.prototype.hasOwnProperty.call(meta, 'expect-async')
+  ) {
+    throw new Error(`${relative(file)} is missing // @expect <value> or // @expect-async <value>`);
   }
   return {
     expect: meta.expect,
+    expectAsync: meta['expect-async'],
     moduleExpect: meta['module-expect'],
     seeds: meta.seeds ? Number.parseInt(meta.seeds, 10) : undefined,
   };
@@ -64,26 +68,46 @@ function hostRunnable(file) {
 
 function observableHostSource(source, host = 'node') {
   const lines = source.split(/\r?\n/);
-  const index = findLastExpressionLine(lines);
-  if (index < 0) return null;
-  const expression = lines[index].trim().replace(/;$/, '');
-  lines[index] = `__vmObserve(${expression});`;
+  const range = findLastExpressionRange(lines);
+  if (!range) return null;
+  const expression = lines
+    .slice(range.start, range.end + 1)
+    .join('\n')
+    .trim()
+    .replace(/;$/, '');
+  lines.splice(range.start, range.end - range.start + 1, `__vmObserve((${expression}));`);
   return `${observablePrelude(host)}\n${lines.join('\n')}`;
 }
 
-function findLastExpressionLine(lines) {
+function findLastExpressionRange(lines) {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index].trim();
     if (!line || line.startsWith('//') || line.startsWith('<!--')) continue;
-    if (line === '}' || line === '};') return -1;
-    if (!line.endsWith(';')) return -1;
-    const expression = line.slice(0, -1).trim();
-    if (!expression || /^(?:const|let|var|function|class|if|for|while|switch|try|catch|finally|throw|return|export|import)\b/.test(expression)) {
-      return -1;
+    if (line === '}' || line === '};') return null;
+    if (!line.endsWith(';')) return null;
+    let start = index;
+    while (start > 0) {
+      const previous = lines[start - 1].trim();
+      if (!previous || previous.startsWith('//') || previous.startsWith('<!--')) break;
+      if (previous.endsWith(';') || previous === '}' || previous === '};') break;
+      start -= 1;
     }
-    return index;
+    const expression = lines
+      .slice(start, index + 1)
+      .join('\n')
+      .trim()
+      .replace(/;$/, '');
+    if (
+      !expression ||
+      /^(?:const|let|var|function|class|if|for|while|switch|try|catch|finally|throw|return|export|import)\b/.test(
+        expression,
+      )
+    ) {
+      return null;
+    }
+    return { start, end: index };
   }
-  return -1;
+  return null;
 }
 
 function observablePrelude(host) {

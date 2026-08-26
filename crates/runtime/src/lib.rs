@@ -1,3 +1,14 @@
+//! JS VM 执行器核心。
+//!
+//! 该 crate 只实现 bytecode 解释执行、作用域模型、Value 模型和 HostBridge trait。
+//! 浏览器/Node 的具体 wasm 绑定位于 `runtime/bin/browser` 和 `runtime/bin/node`。
+//!
+//! 运行时主流程：
+//! 1. `BytecodeModule` 由 Core Layer 解码得到。
+//! 2. `Executor` 按 pc 顺序执行指令，并维护寄存器、词法环境和调用栈。
+//! 3. 遇到 extern/global/宿主对象时，通过 `HostBridge` 访问真实环境。
+//! 4. script 返回最后一个表达式值，module 返回模块 namespace 对象。
+
 mod env;
 mod error;
 mod executor;
@@ -5,117 +16,18 @@ mod host;
 mod ops;
 mod value;
 
-use executor::{DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_RECURSIVE_CALL_DEPTH};
-use host::{fallback_global_external, value_to_js_value};
-use js_token_core::{BytecodeModule, BytecodeModuleKind};
-use wasm_bindgen::prelude::*;
-
 pub use env::{EnvironmentRecord, LexicalEnv, ScopeFrame, ScopeKind};
 pub use error::ExecuteError;
-pub use executor::Executor;
-pub use host::HostBridge;
+pub use executor::{
+    DEFAULT_MAX_CALL_DEPTH, DEFAULT_MAX_EXECUTION_STEPS, DEFAULT_MAX_RECURSIVE_CALL_DEPTH, Executor,
+};
+#[cfg(feature = "debugger")]
+pub use executor::{DebugSnapshot, ExecutorDebugSession};
+#[cfg(feature = "runtime-profile")]
+pub use executor::{
+    RuntimeProfile, RuntimeProfileEntry, RuntimeProfileFunctionEntry, RuntimeProfilePcEntry,
+};
+pub use host::{HostBridge, HostValue, JsHostBridge, value_to_js_value};
 pub use value::{
     ClassValue, ExternalRefValue, FunctionValue, ModuleValue, NativeFunctionValue, Value,
 };
-
-#[wasm_bindgen]
-pub fn js_execute_bytes_with_seed(
-    bytes: &[u8],
-    seed: &str,
-    externals: Box<[JsValue]>,
-) -> Result<String, String> {
-    execute_bytes_with_seed_and_limits(
-        bytes,
-        seed,
-        externals.into_vec(),
-        DEFAULT_MAX_CALL_DEPTH,
-        DEFAULT_MAX_RECURSIVE_CALL_DEPTH,
-    )
-}
-
-#[wasm_bindgen]
-pub fn js_execute_bytes_with_seed_and_limits(
-    bytes: &[u8],
-    seed: &str,
-    externals: Box<[JsValue]>,
-    max_call_depth: u32,
-    max_recursive_call_depth: u32,
-) -> Result<String, String> {
-    execute_bytes_with_seed_and_limits(
-        bytes,
-        seed,
-        externals.into_vec(),
-        max_call_depth as usize,
-        max_recursive_call_depth as usize,
-    )
-}
-
-#[wasm_bindgen]
-pub fn js_execute_module_bytes_with_seed(
-    bytes: &[u8],
-    seed: &str,
-    externals: Box<[JsValue]>,
-) -> Result<JsValue, String> {
-    execute_module_bytes_with_seed_and_limits(
-        bytes,
-        seed,
-        externals.into_vec(),
-        DEFAULT_MAX_CALL_DEPTH,
-        DEFAULT_MAX_RECURSIVE_CALL_DEPTH,
-    )
-}
-
-fn execute_bytes_with_seed_and_limits(
-    bytes: &[u8],
-    seed: &str,
-    externals: Vec<JsValue>,
-    max_call_depth: usize,
-    max_recursive_call_depth: usize,
-) -> Result<String, String> {
-    let module =
-        BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
-    let host_bridge = HostBridge::from_js_values(normalize_js_externals(&module, externals));
-    Executor::run_with_host_bridge_and_limits(
-        &module,
-        host_bridge,
-        max_call_depth,
-        max_recursive_call_depth,
-    )
-    .map(|value| value.to_string())
-    .map_err(|err| err.to_string())
-}
-
-fn execute_module_bytes_with_seed_and_limits(
-    bytes: &[u8],
-    seed: &str,
-    externals: Vec<JsValue>,
-    max_call_depth: usize,
-    max_recursive_call_depth: usize,
-) -> Result<JsValue, String> {
-    let module =
-        BytecodeModule::from_bytes_with_seed(bytes, seed).map_err(|err| err.to_string())?;
-    let is_module = module.kind == BytecodeModuleKind::Module;
-    let host_bridge = HostBridge::from_js_values(normalize_js_externals(&module, externals));
-    let value = Executor::run_with_host_bridge_and_limits(
-        &module,
-        host_bridge,
-        max_call_depth,
-        max_recursive_call_depth,
-    )
-    .map_err(|err| err.to_string())?;
-    if is_module {
-        value_to_js_value(&value, &HostBridge::empty()).map_err(|err| err.to_string())
-    } else {
-        Ok(JsValue::UNDEFINED)
-    }
-}
-
-fn normalize_js_externals(module: &BytecodeModule, mut externals: Vec<JsValue>) -> Vec<JsValue> {
-    for (index, name) in module.extern_slots.iter().enumerate() {
-        if index < externals.len() {
-            continue;
-        }
-        externals.push(fallback_global_external(name).unwrap_or(JsValue::UNDEFINED));
-    }
-    externals
-}
