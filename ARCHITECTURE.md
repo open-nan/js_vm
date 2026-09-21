@@ -75,12 +75,15 @@ Core Layer 是底层数据结构和编解码接口，主要由 `js_token_core` �
 - `EncodingConfig`
   - `default() -> EncodingConfig`
   - `from_names(names: &EncodingNames) -> Result<EncodingConfig, EncodingError>`
+  - `with_string_cipher_key(key: u64) -> EncodingConfig`
   - `names() -> EncodingNames`
   - `config_seed() -> Result<String, EncodingError>`
   - `paired_seed(bytes: &[u8]) -> Result<String, EncodingError>`
   - `to_seed(bytes: &[u8]) -> Result<String, EncodingError>`
   - `from_seed(seed: &str) -> Result<EncodingConfig, EncodingError>`
   - `from_seed_for_bytes(seed: &str, bytes: &[u8]) -> Result<EncodingConfig, EncodingError>`
+  - 加固产物会把随机字符串密钥写入 Seed；名称表、字符串常量和 BigInt 文本仅在
+    bytecode 解析阶段解密一次，执行热路径直接使用已解析值。
   - YAML 解析仍作为内部兼容能力存在，但不再作为公开传输格式。
 - `EncodingNames`
   - `opcodes: Vec<String>`

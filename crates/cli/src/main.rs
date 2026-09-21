@@ -20,9 +20,29 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 const RUNTIME_WASM_STACK_SIZE: usize = 64 * 1024 * 1024;
+static STRING_CIPHER_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn fresh_string_cipher_key(module_path: &str) -> u64 {
+    let counter = STRING_CIPHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+    let mut value = now ^ u64::from(std::process::id()) ^ counter.rotate_left(17);
+    for byte in module_path.bytes() {
+        value = value.rotate_left(9) ^ u64::from(byte);
+        value = value.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
 
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -574,9 +594,6 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
 
     let mut modules = Vec::new();
     let mut script_versions = BTreeMap::new();
-    let base_seed = EncodingConfig::default()
-        .paired_seed(&[])
-        .map_err(|err| err.to_string())?;
     for file in &order {
         // 第一次包装/编译使用空 seed 产出 bytes；拿到 bytes 后再生成与内容绑定的 seed，
         // 第二次包装把最终 seed 和 extern slot 写进 wrapper，保证运行时先校验再执行。
@@ -609,6 +626,11 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
             },
         )
         .map_err(|err| format!("{file}: {err}"))?;
+        let base_encoding =
+            EncodingConfig::default().with_string_cipher_key(fresh_string_cipher_key(file));
+        let base_seed = base_encoding
+            .paired_seed(&[])
+            .map_err(|err| err.to_string())?;
         let artifact = compile_source_to_artifact_with_source_file(
             &prepared.vm_source,
             Some(&base_seed),
@@ -616,7 +638,7 @@ fn compile_runtime_package(options: PackageOptions) -> Result<(), String> {
             file,
         )
         .map_err(|err| format!("{file}: {err}"))?;
-        let seed = EncodingConfig::default()
+        let seed = base_encoding
             .paired_seed(&artifact.bytes)
             .map_err(|err| err.to_string())?;
         let bin_cache_version = seed_cache_version(&seed);

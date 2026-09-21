@@ -531,6 +531,8 @@ pub struct EncodingConfig {
     pub operand_tags: BTreeMap<String, u8>,
     /// 常量 tag 名称到 tag byte 的映射。
     pub constant_tags: BTreeMap<String, u8>,
+    /// 字符串段流加密密钥。`None` 保持旧格式，`Some` 会加密名称和常量中的原始 UTF-8。
+    pub string_cipher_key: Option<u64>,
 }
 
 /// 只保存编码表名称顺序的轻量结构。
@@ -578,6 +580,8 @@ pub struct ObfuscationConfig {
     pub encoding: EncodingNames,
     /// extern slot 的排列。为空表示使用编译器默认 extern 顺序。
     pub extern_slots: Vec<u8>,
+    /// 字符串段流加密密钥。密钥随 seed 传输，不写入 bytecode。
+    pub string_cipher_key: Option<u64>,
 }
 
 impl Default for ObfuscationConfig {
@@ -585,6 +589,7 @@ impl Default for ObfuscationConfig {
         Self {
             encoding: EncodingNames::default(),
             extern_slots: Vec::new(),
+            string_cipher_key: None,
         }
     }
 }
@@ -597,6 +602,7 @@ impl ObfuscationConfig {
         let config = Self {
             encoding,
             extern_slots: Vec::new(),
+            string_cipher_key: None,
         };
         config.validate()?;
         Ok(config)
@@ -613,6 +619,7 @@ impl ObfuscationConfig {
         let config = Self {
             encoding,
             extern_slots,
+            string_cipher_key: None,
         };
         config.validate()?;
         Ok(config)
@@ -620,12 +627,22 @@ impl ObfuscationConfig {
 
     /// 从完整编码表提取名称排列并构建混淆配置。
     pub fn from_encoding_config(encoding: &EncodingConfig) -> Result<Self, EncodingError> {
-        Self::from_encoding_names(encoding.names())
+        let mut config = Self::from_encoding_names(encoding.names())?;
+        config.string_cipher_key = encoding.string_cipher_key;
+        Ok(config)
     }
 
     /// 把混淆配置恢复成可直接编码/解码 bytes 的 `EncodingConfig`。
     pub fn encoding_config(&self) -> Result<EncodingConfig, EncodingError> {
-        EncodingConfig::from_names(&self.encoding)
+        let mut encoding = EncodingConfig::from_names(&self.encoding)?;
+        encoding.string_cipher_key = self.string_cipher_key;
+        Ok(encoding)
+    }
+
+    /// 设置字符串段流加密密钥。
+    pub fn with_string_cipher_key(mut self, key: u64) -> Self {
+        self.string_cipher_key = Some(key);
+        self
     }
 
     /// 生成只描述配置的 seed。
@@ -682,6 +699,12 @@ impl ObfuscationConfig {
                 &self.extern_slots,
                 "extern slot",
             )?);
+        }
+        if let Some(key) = self.string_cipher_key {
+            if self.extern_slots.is_empty() {
+                sections.push(String::new());
+            }
+            sections.push(format!("k{key:016x}"));
         }
         Ok(sections.join("."))
     }
@@ -803,11 +826,18 @@ impl Default for EncodingConfig {
             opcodes,
             operand_tags,
             constant_tags,
+            string_cipher_key: None,
         }
     }
 }
 
 impl EncodingConfig {
+    /// 启用字符串段流加密。密钥通过 seed 传递，不写入 bytecode 本体。
+    pub fn with_string_cipher_key(mut self, key: u64) -> Self {
+        self.string_cipher_key = Some(key);
+        self
+    }
+
     /// 按名称排列恢复完整编码表。
     pub fn from_names(names: &EncodingNames) -> Result<Self, EncodingError> {
         let mut config = Self::default();
@@ -1390,8 +1420,8 @@ impl BytecodeModule {
         bytes.push(bytecode_module_kind_id(self.kind));
         write_u32(&mut bytes, self.extern_slots.len() as u32);
         write_u32(&mut bytes, self.names.len() as u32);
-        for name in &self.names {
-            write_name_string(&mut bytes, name, &[]);
+        for (index, name) in self.names.iter().enumerate() {
+            write_name_string(&mut bytes, name, &[], encoding.string_cipher_key, index);
         }
         write_u32(&mut bytes, self.functions.len() as u32);
         for function in &self.functions {
@@ -1406,7 +1436,7 @@ impl BytecodeModule {
             }
         }
         write_u32(&mut bytes, self.constants.len() as u32);
-        for constant in &self.constants {
+        for (index, constant) in self.constants.iter().enumerate() {
             match constant {
                 BytecodeConstant::Number(value) => {
                     bytes.push(encoding.constant_tag("number")?);
@@ -1414,11 +1444,11 @@ impl BytecodeModule {
                 }
                 BytecodeConstant::String(value) => {
                     bytes.push(encoding.constant_tag("string")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::BigInt(value) => {
                     bytes.push(encoding.constant_tag("bigint")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::Bool(value) => {
                     bytes.push(encoding.constant_tag("bool")?);
@@ -1456,8 +1486,8 @@ impl BytecodeModule {
         bytes.push(bytecode_module_kind_id(self.kind));
         write_u32(&mut bytes, self.extern_slots.len() as u32);
         write_u32(&mut bytes, self.names.len() as u32);
-        for name in &self.names {
-            write_name_string(&mut bytes, name, &[]);
+        for (index, name) in self.names.iter().enumerate() {
+            write_name_string(&mut bytes, name, &[], encoding.string_cipher_key, index);
         }
         write_u32(&mut bytes, self.functions.len() as u32);
         for function in &self.functions {
@@ -1472,7 +1502,7 @@ impl BytecodeModule {
             }
         }
         write_u32(&mut bytes, self.constants.len() as u32);
-        for constant in &self.constants {
+        for (index, constant) in self.constants.iter().enumerate() {
             match constant {
                 BytecodeConstant::Number(value) => {
                     bytes.push(encoding.constant_tag("number")?);
@@ -1480,11 +1510,11 @@ impl BytecodeModule {
                 }
                 BytecodeConstant::String(value) => {
                     bytes.push(encoding.constant_tag("string")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::BigInt(value) => {
                     bytes.push(encoding.constant_tag("bigint")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::Bool(value) => {
                     bytes.push(encoding.constant_tag("bool")?);
@@ -1543,8 +1573,8 @@ impl BytecodeModule {
 
         let start = bytes.len();
         write_u32(&mut bytes, self.names.len() as u32);
-        for name in &self.names {
-            write_name_string(&mut bytes, name, &[]);
+        for (index, name) in self.names.iter().enumerate() {
+            write_name_string(&mut bytes, name, &[], encoding.string_cipher_key, index);
         }
         profile.add_section("names", bytes.len() - start);
 
@@ -1570,7 +1600,7 @@ impl BytecodeModule {
 
         let start = bytes.len();
         write_u32(&mut bytes, self.constants.len() as u32);
-        for constant in &self.constants {
+        for (index, constant) in self.constants.iter().enumerate() {
             match constant {
                 BytecodeConstant::Number(value) => {
                     bytes.push(encoding.constant_tag("number")?);
@@ -1578,11 +1608,11 @@ impl BytecodeModule {
                 }
                 BytecodeConstant::String(value) => {
                     bytes.push(encoding.constant_tag("string")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::BigInt(value) => {
                     bytes.push(encoding.constant_tag("bigint")?);
-                    write_constant_string(&mut bytes, value);
+                    write_constant_string(&mut bytes, value, encoding.string_cipher_key, index);
                 }
                 BytecodeConstant::Bool(value) => {
                     bytes.push(encoding.constant_tag("bool")?);
@@ -1646,8 +1676,8 @@ impl BytecodeModule {
 
         let name_count = cursor.read_bounded_count("names")?;
         let mut names = Vec::with_capacity(name_count);
-        for _ in 0..name_count {
-            names.push(cursor.read_name_string(&[])?);
+        for index in 0..name_count {
+            names.push(cursor.read_name_string(&[], encoding.string_cipher_key, index)?);
         }
 
         let function_count = cursor.read_bounded_count("functions")?;
@@ -1675,8 +1705,8 @@ impl BytecodeModule {
 
         let constant_count = cursor.read_bounded_count("constants")?;
         let mut constants = Vec::with_capacity(constant_count);
-        for _ in 0..constant_count {
-            constants.push(cursor.read_constant(encoding)?);
+        for index in 0..constant_count {
+            constants.push(cursor.read_constant(encoding, index)?);
         }
 
         let instruction_count = cursor.read_bounded_count("instructions")?;
@@ -9145,9 +9175,11 @@ fn obfuscation_config_from_seed_permutation(
     let operand_perm = parts.next().unwrap_or_default();
     let constant_perm = parts.next().unwrap_or_default();
     let extern_perm = parts.next();
+    let string_cipher_key = parts.next();
     if parts.next().is_some() {
         return Err(EncodingError::Seed(
-            "expected opcodes.operand_tags.constant_tags[.extern_slots] permutation".to_string(),
+            "expected opcodes.operand_tags.constant_tags[.extern_slots[.string_key]] permutation"
+                .to_string(),
         ));
     }
 
@@ -9166,9 +9198,11 @@ fn obfuscation_config_from_seed_permutation(
             )?,
         },
         extern_slots: extern_perm
+            .filter(|permutation| !permutation.is_empty())
             .map(|permutation| seed_permutation_to_indexes(permutation, "extern slot"))
             .transpose()?
             .unwrap_or_default(),
+        string_cipher_key: string_cipher_key.map(parse_string_cipher_key).transpose()?,
     };
     config.validate()?;
     Ok(config)
@@ -9378,9 +9412,11 @@ fn validate_seed_permutation(permutation: &str) -> Result<(), EncodingError> {
     let operand_perm = parts.next().unwrap_or_default();
     let constant_perm = parts.next().unwrap_or_default();
     let extern_perm = parts.next();
+    let string_cipher_key = parts.next();
     if parts.next().is_some() {
         return Err(EncodingError::Seed(
-            "expected opcodes.operand_tags.constant_tags[.extern_slots] permutation".to_string(),
+            "expected opcodes.operand_tags.constant_tags[.extern_slots[.string_key]] permutation"
+                .to_string(),
         ));
     }
     if opcode_perm.len() != BytecodeOp::all().len()
@@ -9391,10 +9427,28 @@ fn validate_seed_permutation(permutation: &str) -> Result<(), EncodingError> {
             "seed permutation has invalid section length".to_string(),
         ));
     }
-    if let Some(extern_perm) = extern_perm {
+    if let Some(extern_perm) = extern_perm.filter(|permutation| !permutation.is_empty()) {
         seed_permutation_to_indexes(extern_perm, "extern slot")?;
     }
+    if let Some(string_cipher_key) = string_cipher_key {
+        parse_string_cipher_key(string_cipher_key)?;
+    }
     Ok(())
+}
+
+fn parse_string_cipher_key(value: &str) -> Result<u64, EncodingError> {
+    let Some(hex) = value.strip_prefix('k') else {
+        return Err(EncodingError::Seed(
+            "string cipher key must use k<16-hex> format".to_string(),
+        ));
+    };
+    if hex.len() != 16 {
+        return Err(EncodingError::Seed(
+            "string cipher key must contain exactly 16 hex digits".to_string(),
+        ));
+    }
+    u64::from_str_radix(hex, 16)
+        .map_err(|err| EncodingError::Seed(format!("invalid string cipher key: {err}")))
 }
 
 fn encode_base36_digit(value: u8) -> Result<char, EncodingError> {
@@ -9455,16 +9509,25 @@ impl<'a> ByteReader<'a> {
     fn read_constant(
         &mut self,
         encoding: &EncodingConfig,
+        index: usize,
     ) -> Result<BytecodeConstant, EncodingError> {
         let tag = self.read_u8()?;
         if tag == encoding.constant_tag("number")? {
             return Ok(BytecodeConstant::Number(self.read_number()?));
         }
         if tag == encoding.constant_tag("string")? {
-            return Ok(BytecodeConstant::String(self.read_constant_string()?));
+            return Ok(BytecodeConstant::String(self.read_constant_string(
+                encoding.string_cipher_key,
+                STRING_CIPHER_CONSTANT_DOMAIN,
+                index,
+            )?));
         }
         if tag == encoding.constant_tag("bigint")? {
-            return Ok(BytecodeConstant::BigInt(self.read_constant_string()?));
+            return Ok(BytecodeConstant::BigInt(self.read_constant_string(
+                encoding.string_cipher_key,
+                STRING_CIPHER_CONSTANT_DOMAIN,
+                index,
+            )?));
         }
         if tag == encoding.constant_tag("bool")? {
             return Ok(BytecodeConstant::Bool(self.read_u8()? != 0));
@@ -9537,7 +9600,12 @@ impl<'a> ByteReader<'a> {
         }
     }
 
-    fn read_constant_string(&mut self) -> Result<String, EncodingError> {
+    fn read_constant_string(
+        &mut self,
+        cipher_key: Option<u64>,
+        cipher_domain: u64,
+        cipher_index: usize,
+    ) -> Result<String, EncodingError> {
         match self.read_u32()? {
             0 => {
                 let index = self.read_u32()? as usize;
@@ -9545,20 +9613,26 @@ impl<'a> ByteReader<'a> {
                     .map(str::to_string)
                     .ok_or_else(|| EncodingError::UnknownCode(format!("string atom {index}")))
             }
-            1 => self.read_prefixed_string(),
+            1 => self.read_prefixed_string(cipher_key, cipher_domain, cipher_index),
             len_plus_two => {
                 let len = len_plus_two
                     .checked_sub(2)
                     .ok_or_else(|| EncodingError::UnknownCode("string length marker".to_string()))?
                     as usize;
-                let bytes = self.read_slice(len)?;
-                String::from_utf8(bytes.to_vec())
+                let mut bytes = self.read_slice(len)?.to_vec();
+                crypt_string_bytes(&mut bytes, cipher_key, cipher_domain, cipher_index);
+                String::from_utf8(bytes)
                     .map_err(|err| EncodingError::UnknownCode(format!("utf8 string: {err}")))
             }
         }
     }
 
-    fn read_name_string(&mut self, extern_slots: &[String]) -> Result<String, EncodingError> {
+    fn read_name_string(
+        &mut self,
+        extern_slots: &[String],
+        cipher_key: Option<u64>,
+        cipher_index: usize,
+    ) -> Result<String, EncodingError> {
         let marker = self.read_u32()? as usize;
         if marker < extern_slots.len() {
             return Ok(extern_slots[marker].clone());
@@ -9571,22 +9645,36 @@ impl<'a> ByteReader<'a> {
                 .ok_or_else(|| EncodingError::UnknownCode(format!("name string atom {index}")));
         }
         if marker == atom_marker + 1 {
-            return self.read_prefixed_string();
+            return self.read_prefixed_string(cipher_key, STRING_CIPHER_NAME_DOMAIN, cipher_index);
         }
 
         let len = marker
             .checked_sub(atom_marker + 2)
             .ok_or_else(|| EncodingError::UnknownCode("name string length marker".to_string()))?;
-        let bytes = self.read_slice(len)?;
-        String::from_utf8(bytes.to_vec())
+        let mut bytes = self.read_slice(len)?.to_vec();
+        crypt_string_bytes(
+            &mut bytes,
+            cipher_key,
+            STRING_CIPHER_NAME_DOMAIN,
+            cipher_index,
+        );
+        String::from_utf8(bytes)
             .map_err(|err| EncodingError::UnknownCode(format!("utf8 name string: {err}")))
     }
 
-    fn read_prefixed_string(&mut self) -> Result<String, EncodingError> {
+    fn read_prefixed_string(
+        &mut self,
+        cipher_key: Option<u64>,
+        cipher_domain: u64,
+        cipher_index: usize,
+    ) -> Result<String, EncodingError> {
         let prefix_index = self.read_u32()? as usize;
         let prefix = string_prefix_atom(prefix_index)
             .ok_or_else(|| EncodingError::UnknownCode(format!("string prefix {prefix_index}")))?;
-        Ok(format!("{prefix}{}", self.read_constant_string()?))
+        Ok(format!(
+            "{prefix}{}",
+            self.read_constant_string(cipher_key, cipher_domain, cipher_index)?
+        ))
     }
 
     fn read_slice(&mut self, len: usize) -> Result<&'a [u8], EncodingError> {
@@ -9658,21 +9746,57 @@ fn decode_zigzag_u32(value: u32) -> i32 {
     ((value >> 1) as i32) ^ (-((value & 1) as i32))
 }
 
-fn write_constant_string(bytes: &mut Vec<u8>, value: &str) {
+const STRING_CIPHER_NAME_DOMAIN: u64 = 0x4e41_4d45_5f53_5452;
+const STRING_CIPHER_CONSTANT_DOMAIN: u64 = 0x434f_4e53_545f_5354;
+
+fn write_constant_string(
+    bytes: &mut Vec<u8>,
+    value: &str,
+    cipher_key: Option<u64>,
+    cipher_index: usize,
+) {
+    write_string_payload(
+        bytes,
+        value,
+        cipher_key,
+        STRING_CIPHER_CONSTANT_DOMAIN,
+        cipher_index,
+    );
+}
+
+fn write_string_payload(
+    bytes: &mut Vec<u8>,
+    value: &str,
+    cipher_key: Option<u64>,
+    cipher_domain: u64,
+    cipher_index: usize,
+) {
     if let Some(index) = constant_string_atom_index(value) {
         write_u32(bytes, 0);
         write_u32(bytes, index as u32);
     } else if let Some((prefix, suffix)) = string_prefix_atom_index(value) {
         write_u32(bytes, 1);
         write_u32(bytes, prefix as u32);
-        write_constant_string(bytes, suffix);
+        write_string_payload(bytes, suffix, cipher_key, cipher_domain, cipher_index);
     } else {
         write_u32(bytes, value.len() as u32 + 2);
-        bytes.extend_from_slice(value.as_bytes());
+        write_encrypted_string_bytes(
+            bytes,
+            value.as_bytes(),
+            cipher_key,
+            cipher_domain,
+            cipher_index,
+        );
     }
 }
 
-fn write_name_string(bytes: &mut Vec<u8>, value: &str, extern_slots: &[String]) {
+fn write_name_string(
+    bytes: &mut Vec<u8>,
+    value: &str,
+    extern_slots: &[String],
+    cipher_key: Option<u64>,
+    cipher_index: usize,
+) {
     if let Some(index) = extern_slot_index(extern_slots, value) {
         write_u32(bytes, index as u32);
     } else if let Some(index) = constant_string_atom_index(value) {
@@ -9681,10 +9805,68 @@ fn write_name_string(bytes: &mut Vec<u8>, value: &str, extern_slots: &[String]) 
     } else if let Some((prefix, suffix)) = string_prefix_atom_index(value) {
         write_u32(bytes, extern_slots.len() as u32 + 1);
         write_u32(bytes, prefix as u32);
-        write_constant_string(bytes, suffix);
+        write_string_payload(
+            bytes,
+            suffix,
+            cipher_key,
+            STRING_CIPHER_NAME_DOMAIN,
+            cipher_index,
+        );
     } else {
         write_u32(bytes, extern_slots.len() as u32 + value.len() as u32 + 2);
-        bytes.extend_from_slice(value.as_bytes());
+        write_encrypted_string_bytes(
+            bytes,
+            value.as_bytes(),
+            cipher_key,
+            STRING_CIPHER_NAME_DOMAIN,
+            cipher_index,
+        );
+    }
+}
+
+fn write_encrypted_string_bytes(
+    output: &mut Vec<u8>,
+    value: &[u8],
+    cipher_key: Option<u64>,
+    cipher_domain: u64,
+    cipher_index: usize,
+) {
+    let start = output.len();
+    output.extend_from_slice(value);
+    crypt_string_bytes(
+        &mut output[start..],
+        cipher_key,
+        cipher_domain,
+        cipher_index,
+    );
+}
+
+/// 使用按 seed 派生的 SplitMix64 流异或原始字符串字节。
+///
+/// 编解码调用同一函数。运行时只在 bytecode 解析阶段执行一次，常量加载热路径不承担
+/// 解密开销；不同 domain/index 也避免相同明文在同一产物中产生相同密文。
+fn crypt_string_bytes(
+    bytes: &mut [u8],
+    cipher_key: Option<u64>,
+    cipher_domain: u64,
+    cipher_index: usize,
+) {
+    let Some(cipher_key) = cipher_key else {
+        return;
+    };
+    let mut state = cipher_key
+        ^ cipher_domain
+        ^ (cipher_index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93)
+        ^ (bytes.len() as u64).rotate_left(29);
+    for chunk in bytes.chunks_mut(8) {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut stream = state;
+        stream = (stream ^ (stream >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        stream = (stream ^ (stream >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        stream ^= stream >> 31;
+        for (byte, mask) in chunk.iter_mut().zip(stream.to_le_bytes()) {
+            *byte ^= mask;
+        }
     }
 }
 
@@ -11807,6 +11989,46 @@ mod tests {
         assert_eq!(count_subslice(&bytes, b"prototype."), 0);
         assert_eq!(count_subslice(&bytes, b"document."), 0);
         assert_eq!(count_subslice(&bytes, b"module."), 0);
+    }
+
+    #[test]
+    fn string_segments_are_seed_encrypted_and_diverse() {
+        let secret = "api-secret-7f5c2a9d-do-not-leak";
+        let private_name = "privateRuntimeBinding_91ac";
+        let bytecode = super::BytecodeModule {
+            kind: super::BytecodeModuleKind::Script,
+            extern_slots: Vec::new(),
+            names: vec![private_name.to_string()],
+            functions: Vec::new(),
+            constants: vec![
+                super::BytecodeConstant::String(secret.to_string()),
+                super::BytecodeConstant::BigInt("987654321012345678909876543210".to_string()),
+            ],
+            instructions: Vec::new(),
+        };
+        let encoding_a =
+            super::EncodingConfig::default().with_string_cipher_key(0x1020_3040_5060_7080);
+        let encoding_b =
+            super::EncodingConfig::default().with_string_cipher_key(0x8877_6655_4433_2211);
+        let bytes_a = bytecode.to_bytes_with_encoding(&encoding_a).unwrap();
+        let bytes_b = bytecode.to_bytes_with_encoding(&encoding_b).unwrap();
+        let seed_a = encoding_a.paired_seed(&bytes_a).unwrap();
+        let seed_b = encoding_b.paired_seed(&bytes_b).unwrap();
+
+        assert_ne!(bytes_a, bytes_b);
+        assert_ne!(seed_a, seed_b);
+        assert_eq!(count_subslice(&bytes_a, secret.as_bytes()), 0);
+        assert_eq!(count_subslice(&bytes_a, private_name.as_bytes()), 0);
+        assert_eq!(count_subslice(&bytes_b, secret.as_bytes()), 0);
+        assert_eq!(count_subslice(&bytes_b, private_name.as_bytes()), 0);
+        assert_semantic_bytecode_eq(
+            &super::BytecodeModule::from_bytes_with_seed(&bytes_a, &seed_a).unwrap(),
+            &bytecode,
+        );
+        assert_semantic_bytecode_eq(
+            &super::BytecodeModule::from_bytes_with_seed(&bytes_b, &seed_b).unwrap(),
+            &bytecode,
+        );
     }
 
     #[test]
