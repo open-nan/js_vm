@@ -17,7 +17,31 @@ pub use compiler::{
 };
 use js_sys::{Array, Object, Reflect};
 use js_token_core::{EncodingConfig, EncodingNames};
+use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_bindgen::prelude::*;
+
+static STRING_CIPHER_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn fresh_string_cipher_key() -> u64 {
+    let counter = STRING_CIPHER_NONCE.fetch_add(1, Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let entropy = js_sys::Date::now().to_bits() ^ js_sys::Math::random().to_bits();
+    #[cfg(not(target_arch = "wasm32"))]
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default()
+        ^ u64::from(std::process::id());
+    mix_string_cipher_key(entropy ^ counter.rotate_left(17))
+}
+
+fn mix_string_cipher_key(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
 
 #[wasm_bindgen]
 /// wasm 侧编译器对象。
@@ -148,7 +172,9 @@ pub fn js_encoding_seed_from_rows(
         operand_tags: js_values_to_strings(&operand_tag_names),
         constant_tags: js_values_to_strings(&constant_tag_names),
     };
-    let encoding = EncodingConfig::from_names(&names).map_err(|err| err.to_string())?;
+    let encoding = EncodingConfig::from_names(&names)
+        .map_err(|err| err.to_string())?
+        .with_string_cipher_key(fresh_string_cipher_key());
     encoding.paired_seed(bytes).map_err(|err| err.to_string())
 }
 

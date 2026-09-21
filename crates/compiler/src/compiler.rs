@@ -1839,7 +1839,7 @@ fn module_wrapper_source(
     // - script 模式只执行副作用，不暴露无意义的 default 值。
     let mut out = Vec::new();
     out.push(format!(
-        "import {{ executeModule, executeScript, executeDebug, createDebugSession, loadBin, loadSourceMap, resolveExternal, sourceFrame, breakpointPcs, decorateDebugEvent }} from {};",
+        "import {{ executeModule, executeScript, executeDebug, createDebugSession, loadBin, loadSourceMap, ready, resolveExternal, sourceFrame, breakpointPcs, decorateDebugEvent }} from {};",
         json_string(&options.env_specifier)
     ));
     out.extend(imports.iter().cloned());
@@ -1936,7 +1936,11 @@ function __jsVmResolveDynamicImport(specifier) {
             &options.bin_specifier
         ))
     ));
-    out.push(format!("const __jsVmBin = await loadBin(__jsVmBinUrl);"));
+    // The browser runtime is initialized asynchronously by wasm-bindgen.  A
+    // standalone wrapper must wait for it before executeScript/executeModule;
+    // otherwise the module evaluation fails as soon as its bytecode runs.
+    out.push("await ready();".to_string());
+    out.push("const __jsVmBin = await loadBin(__jsVmBinUrl);".to_string());
     let externs = options
         .extern_slots
         .iter()
@@ -2542,8 +2546,13 @@ mod tests {
         );
         assert!(
             packaged.wrapper_source.contains(
-                "import { executeModule, executeScript, executeDebug, createDebugSession, loadBin, loadSourceMap, resolveExternal, sourceFrame, breakpointPcs, decorateDebugEvent }"
+                "import { executeModule, executeScript, executeDebug, createDebugSession, loadBin, loadSourceMap, ready, resolveExternal, sourceFrame, breakpointPcs, decorateDebugEvent }"
             ),
+            "{}",
+            packaged.wrapper_source
+        );
+        assert!(
+            packaged.wrapper_source.contains("await ready();"),
             "{}",
             packaged.wrapper_source
         );

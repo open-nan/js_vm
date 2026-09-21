@@ -2083,6 +2083,7 @@ message;`,
         this.operandTags = sections.operandTags || '';
         this.constantTags = sections.constantTags || '';
         this.externSlots = sections.externSlots || '';
+        this.stringCipherKey = sections.stringCipherKey || '';
       }
 
       static fromSeedSections(sections) {
@@ -2091,13 +2092,17 @@ message;`,
           operandTags: sections[1] || '',
           constantTags: sections[2] || '',
           externSlots: sections[3] || '',
+          stringCipherKey: sections[4] || '',
         });
       }
 
       permutation() {
         const sections = [this.opcodes, this.operandTags, this.constantTags];
-        if (this.externSlots) {
+        if (this.externSlots || this.stringCipherKey) {
           sections.push(this.externSlots);
+        }
+        if (this.stringCipherKey) {
+          sections.push(this.stringCipherKey);
         }
         return sections.join('.');
       }
@@ -3087,8 +3092,11 @@ message;`,
       const parsed = parseEncodingSeed(seed);
       const sections = parsed.sections.slice(0, 3);
       const externPermutation = currentExternPermutation();
-      if (externPermutation) {
+      if (externPermutation || parsed.config.stringCipherKey) {
         sections.push(externPermutation);
+      }
+      if (parsed.config.stringCipherKey) {
+        sections.push(parsed.config.stringCipherKey);
       }
       return seedFromPermutation(sections.join('.'), bytes);
     }
@@ -3177,15 +3185,20 @@ message;`,
       return values.map(encodeBase36Digit).join('');
     }
 
+    function randomStringCipherKey() {
+      const words = new Uint32Array(2);
+      crypto.getRandomValues(words);
+      return `k${Array.from(words, (word) => word.toString(16).padStart(8, '0')).join('')}`;
+    }
+
     function randomObfuscationSeed() {
       const sections = [
         randomPermutationSection(defaultOpcodeRows.length),
         randomPermutationSection(defaultOperandTagRows.length),
         randomPermutationSection(defaultConstantTagRows.length),
       ];
-      if (state.externRows.length) {
-        sections.push(randomPermutationSection(state.externRows.length));
-      }
+      sections.push(state.externRows.length ? randomPermutationSection(state.externRows.length) : '');
+      sections.push(randomStringCipherKey());
       return seedFromPermutation(sections.join('.'));
     }
 
